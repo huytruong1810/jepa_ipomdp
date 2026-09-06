@@ -17,3 +17,4 @@ outputs/
 *_tensorboard/
 *.tmp
 
+*.egg-info/
