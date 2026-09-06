@@ -1,0 +1,44 @@
+[project]
+name = "jepa-ipomdp"
+version = "0.1.0"
+description = "Latent space planning and I-POMDP research using Causal-JEPA and MCTS"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "torchvision",
+    "torchaudio",
+    "markupsafe==2.1.5",
+    "torch>=2.5.0",
+    "tqdm>=4.67.0",
+    "networkx>=3.6.1",
+    "matplotlib>=3.10.8",
+    "scikit-learn>=1.8.0",
+    "plotly>=6.6.0",
+    "tensorboard>=2.20.0",
+    "hydra-core>=1.3.3",
+    "omegaconf>=2.3.1",
+    "pytest>=9.1.1"
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torchvision = { index = "pytorch-cu128" }
+torchaudio = { index = "pytorch-cu128" }
+torch = { index = "pytorch-cu128" }
+
+
+

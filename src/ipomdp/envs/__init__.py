@@ -1,0 +1,83 @@
+# ABSOLUTE PATH: src/ipomdp/envs/__init__.py
+"""Multi-agent partially observable environments, vectorization, and Bayesian oracles."""
+
+from .tiger import (
+    MultiAgentTigerEnv,
+    TigerBayesianOracle,
+    encode_observation_to_index,
+    decode_index_to_observation,
+    OBS_CATEGORIES,
+    NUM_OBS_CLASSES,
+    LISTEN,
+    OPEN_LEFT,
+    OPEN_RIGHT,
+    TIGER_LEFT,
+    TIGER_RIGHT,
+    GROWL_LEFT,
+    GROWL_RIGHT,
+    SILENCE,
+    CREAK_LEFT,
+    CREAK_RIGHT,
+)
+from .vector import SyncVectorEnv
+from .gridworlds import UAVEnv, UP, DOWN, LEFT, RIGHT, UAV, TARGET
+from .wumpus import (
+    MultiAgentWumpusEnv,
+    FORWARD,
+    TURN_LEFT,
+    TURN_RIGHT,
+    GRAB,
+    SHOOT,
+    WUMPUS_STILL,
+    WUMPUS_FORWARD,
+    WUMPUS_TURN_LEFT,
+    WUMPUS_TURN_RIGHT,
+    NORTH,
+    EAST,
+    SOUTH,
+    WEST,
+)
+
+__all__ = [
+    "MultiAgentTigerEnv",
+    "TigerBayesianOracle",
+    "encode_observation_to_index",
+    "decode_index_to_observation",
+    "OBS_CATEGORIES",
+    "NUM_OBS_CLASSES",
+    "LISTEN",
+    "OPEN_LEFT",
+    "OPEN_RIGHT",
+    "TIGER_LEFT",
+    "TIGER_RIGHT",
+    "GROWL_LEFT",
+    "GROWL_RIGHT",
+    "SILENCE",
+    "CREAK_LEFT",
+    "CREAK_RIGHT",
+    "SyncVectorEnv",
+    "UAVEnv",
+    "UP",
+    "DOWN",
+    "LEFT",
+    "RIGHT",
+    "UAV",
+    "TARGET",
+    "MultiAgentWumpusEnv",
+    "FORWARD",
+    "TURN_LEFT",
+    "TURN_RIGHT",
+    "GRAB",
+    "SHOOT",
+    "WUMPUS_STILL",
+    "WUMPUS_FORWARD",
+    "WUMPUS_TURN_LEFT",
+    "WUMPUS_TURN_RIGHT",
+    "NORTH",
+    "EAST",
+    "SOUTH",
+    "WEST",
+]
+
+
+

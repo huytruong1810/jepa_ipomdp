@@ -1,0 +1,29 @@
+# ABSOLUTE PATH: conf/env/wumpus.yaml
+# ==============================================================================
+# INTERACTIVE MULTI-AGENT WUMPUS WORLD DOMAIN HYDRA CONFIGURATION
+# ==============================================================================
+
+name: wumpus
+obs_dim: 5
+action_dim_i: 5
+action_dim_j: 4
+extractor_name: mlp
+
+action_map:
+  0: "FORWARD"
+  1: "TURN_LEFT"
+  2: "TURN_RIGHT"
+  3: "GRAB"
+  4: "SHOOT"
+
+action_map_j:
+  0: "STILL"
+  1: "FORWARD"
+  2: "TURN_LEFT"
+  3: "TURN_RIGHT"
+
+env_kwargs:
+  grid_size: 4
+  pit_prob: 0.2
+  max_steps: 50
+

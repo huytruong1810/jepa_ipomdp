@@ -1,0 +1,56 @@
+# ABSOLUTE PATH: conf/env/tiger.yaml
+# ==============================================================================
+# CANONICAL MULTI-AGENT TIGER I-POMDP ENVIRONMENT CONFIGURATION
+# ==============================================================================
+#
+# DESIGN DECISIONS & THEORETICAL FOUNDATIONS:
+# 1. Canonical POMDP Benchmark Fidelity:
+#    - Conforms strictly to Kaelbling et al. (1998) POMDP and Doshi & Gmytrasiewicz (2006)
+#      Multi-Agent I-POMDP standards without non-canonical artifacts (zero pseudo-observations).
+#    - State Space: S = {Tiger-Left: 0, Tiger-Right: 1} with uniform start prior b_0 = [0.5, 0.5].
+#    - Action Space: A_i = A_j = {LISTEN: 0, OPEN_LEFT: 1, OPEN_RIGHT: 2}.
+#
+# 2. Canonical Observation Distribution O(s_{t+1}, a_t, o_{t+1}):
+#    - obs_dim: 2 channels [Growl, Creak].
+#    - Growl Signal (Tiger Position):
+#      * Emitted from arrival state s_{t+1} with precision growl_accuracy = 0.85.
+#      * GROWL_LEFT = 0.0, GROWL_RIGHT = 1.0.
+#      * At t=0, an initial canonical observation o_0 ~ O(s_0, LISTEN, LISTEN) is emitted
+#        directly from initial state s_0, providing an unbiased noisy growl signal.
+#    - Creak Signal (Opponent Action Intent):
+#      * Emitted based on opponent action a_j with precision creak_accuracy = 1.0.
+#      * SILENCE = -1.0 (Opponent Listens).
+#      * CREAK_LEFT = 0.0 (Opponent Opens Left Door).
+#      * CREAK_RIGHT = 1.0 (Opponent Opens Right Door).
+#
+# 3. Payoff Matrix R(s_t, a_t^i):
+#    - Listen Action: -1.0 step cost.
+#    - Open Correct Door (Treasure): +10.0 reward.
+#    - Open Incorrect Door (Tiger): -100.0 penalty.
+#
+# 4. Multi-Agent Baseline:
+#    - action_dim_i: 3 (Ego Agent Action Dimensionality).
+#    - action_dim_j: 3 (Opponent Agent Action Dimensionality).
+#    - opponent_epsilon: 0.0 (Deterministic baseline opponent playing action 0: LISTEN).
+# ==============================================================================
+
+name: tiger
+extractor_name: mlp
+obs_dim: 2
+action_dim_i: 3
+action_dim_j: 3
+
+# Keyword arguments passed dynamically into registry.make_env("tiger", **env_kwargs)
+env_kwargs:
+  growl_accuracy: 0.85        # Canonical Tiger growl emission precision (alpha = 0.85)
+  creak_accuracy: 1.0         # Canonical door creak emission accuracy (1.0 = deterministic creaks)
+  max_steps: 20               # Episode truncation step horizon
+
+# Baseline stochastic perturbation level for opponent policy
+opponent_epsilon: 0.0
+
+# Discrete Action Identifier to String Name Mapping (Diagnostics & Plotting)
+action_map:
+  0: "Listen"
+  1: "Open L"
+  2: "Open R"

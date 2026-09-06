@@ -1,0 +1,63 @@
+# ABSOLUTE PATH: conf/config.yaml
+# ==============================================================================
+# HYDRA TOP-LEVEL GLOBAL ORCHESTRATION CONFIGURATION
+# ==============================================================================
+#
+# DESIGN DECISIONS & THEORETICAL FOUNDATIONS:
+# 1. Temporal Sequence Learning Contracts (Seq-PER):
+#    - burn_in: 5 steps. Used strictly to warm up the recurrent GRU context encoder
+#      b_t = Filter(b_{t-1}, a_{t-1}, o_t) before loss backpropagation.
+#    - train_seq_len: 10 steps. Active temporal horizon over which JEPA prediction,
+#      two-hot symlog return/reward regression, and multi-step hallucination
+#      consistency losses are backpropagated.
+#    - Total contiguous sequence chunk: chunk_len = burn_in + train_seq_len = 15 steps.
+#    - max_steps: 20 steps. Guaranteed horizon headroom ensuring episodes provide
+#      valid sequence chunks without excessive absorbing-state padding.
+#
+# 2. Vectorized Hardware Orchestration:
+#    - env_batch_size: 16 parallel synchronous environment channels (SyncVectorEnv).
+#    - batch_size: 16 sequence chunks sampled per gradient optimization step.
+#    - update_freq: 8 environment steps between gradient updates. With 16 parallel
+#      channels, exactly 128 environment transitions are pushed to the Prioritized
+#      Sequence Buffer between training iterations.
+#
+# 3. Open-Loop Latent MCTS Branching:
+#    - num_simulations: 50 MCTS search rollouts per action decision.
+#    - num_latent_obs: 4 stochastic prior child branches evaluated per discrete ego action.
+#      Because transition dynamics are stochastic, each action expands K=4 latent
+#      branches sampled directly from the world model prior p_phi(b_{t+1} | b_t, a_i, a_j).
+#
+# 4. Latent Space Capacity:
+#    - latent_dim: 32 continuous features per object slot.
+#    - num_objects: 2 dynamically tracked object slots (Belief tensor: B x 2 x 32).
+#    - hidden_dim: 64 hidden units in SwiGLU gated residual stacks.
+#    - num_blocks: 1 Pre-RMSNorm SwiGLU residual block per neural head.
+# ==============================================================================
+
+defaults:
+  - env: tiger
+  - _self_
+
+training:
+  inference_mode: false
+  env_batch_size: 16          # Number of parallel SyncVectorEnv execution streams
+  batch_size: 16              # Number of sequence chunks sampled from Seq-PER per update
+  burn_in: 5                  # Recurrent context GRU filter warmup steps (loss masked out)
+  train_seq_len: 10           # Active training horizon (chunk_len = burn_in + train_seq_len = 15)
+  max_steps: 20               # Episode truncation horizon limit per environment channel
+  total_steps: 1000000        # Total training environment steps (1 Million)
+  warmup_episodes: 100        # Random exploration episodes before neural policy engagement
+  update_freq: 8              # Frequency of gradient descent steps relative to env steps
+  save_freq: 500              # Frequency of model checkpoint serialization
+  viz_freq: 100               # Frequency of latent PCA and MCTS tree visualizations
+  compile: false              # Whether to use torch.compile on neural networks (disabled by default for low memory footprint)
+
+model:
+  latent_dim: 32              # Latent representation dimension per object slot (D_latent)
+  num_objects: 2              # Number of object tokens in structured latent state (N_obj)
+  hidden_dim: 64              # Intermediate feature dimension for SwiGLU ResMLP blocks
+  num_blocks: 1               # Number of residual blocks per representation/prediction tower
+
+mcts:
+  num_simulations: 50         # Number of search tree simulation traversals per step
+  num_latent_obs: 4           # Stochastic prior child branches per discrete ego action

@@ -1,0 +1,364 @@
+Metadata-Version: 2.4
+Name: jepa-ipomdp
+Version: 0.1.0
+Summary: Latent space planning and I-POMDP research using Causal-JEPA and MCTS
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: torchvision
+Requires-Dist: torchaudio
+Requires-Dist: markupsafe==2.1.5
+Requires-Dist: torch>=2.5.0
+Requires-Dist: tqdm>=4.67.0
+Requires-Dist: networkx>=3.6.1
+Requires-Dist: matplotlib>=3.10.8
+Requires-Dist: scikit-learn>=1.8.0
+Requires-Dist: plotly>=6.6.0
+Requires-Dist: tensorboard>=2.20.0
+Requires-Dist: hydra-core>=1.3.3
+Requires-Dist: omegaconf>=2.3.1
+Requires-Dist: pytest>=9.1.1
+
+<!-- ABSOLUTE PATH: README.md -->
+
+# JEPA-IPOMDP: Recurrent Joint-Embedding Predictive Architecture for Interactive POMDPs
+
+This repository contains the complete research implementation of a model-based reinforcement learning agent designed for sequential, partially observable, multi-agent task environments. The architecture constructs a learned neural surrogate of a Bayesian-Adaptive Interactive POMDP (BA-I-POMDP). 
+
+Rather than relying on explicit recursive belief trees or pixel-level observation reconstruction autoencoders, this framework constructs a compact, recurrent, multi-object latent belief state, models interactive swarm constraints in latent space, and plans over dynamic horizons using an open-loop Monte Carlo Tree Search (MCTS) executed entirely within learned embeddings.
+
+---
+
+## 🗺️ System Flow and Architecture
+
+```
+                                  [ Environment Step ]
+                                           │
+                                           ├─► o_t (Canonical Observation: [Growl, Creak])
+                                           └─► r_t (Scalar Transition Step Reward)
+                                           │
+                                           v
+                             ┌───────────────────────────┐
+                             │    CNN/MLP Extractor      │ (Dynamic Rank Reshaping &
+                             └─────────────┬─────────────┘  Slot-Identity Encodings)
+                                           │
+                                           ▼
+                             ┌───────────────────────────┐
+                             │  RecurrentContextEncoder  │◄── prev_action a_{t-1}
+                             │       (GRU Filter)        │◄── prev_belief b_{t-1}
+                             └─────────────┬─────────────┘
+                                           │
+                                           ▼
+                                 Current Belief (b_t) ∈ R^(B x N_obj x D_latent)
+                                           │
+         ┌─────────────────────────────────┼─────────────────────────────────┐
+         ▼                                 ▼                                 ▼
+┌─────────────────┐               ┌─────────────────┐               ┌──────────────────┐
+│   ValueHead     │               │   RewardHead    │               │  OpponentHead    │
+│ (255-Bin TwoHot)│               │ (255-Bin TwoHot)│               │  (Policy Head)   │
+└───────┬─────────┘               └────────┬────────┘               └────────┬─────────┘
+        │                                  │                                 │
+        ▼ V(b_t)                           ▼ R(b_t, a_i, a_j)                ▼ π_η(a_j | b_t)
+        └─────────────────┬────────────────┴─────────────────────────────────┘
+                          │
+                          ▼
+             ┌───────────────────────────┐
+             │    DiscreteLatentMCTS     │ ◄── [Open-Loop Planning & Lookahead]
+             │         Planner           │
+             └────────────┬──────────────┘
+                          │ (Rollouts over Predictor Prior)
+                          ▼
+            Imagined Belief (b_{t+1}) ~ Predictor(b_t, a_i, a_j, z_t)
+```
+
+---
+
+## 🧠 Theoretical Foundations & Mapping
+
+### 1. Interactive POMDP (I-POMDP) & BA-POMDP Formulation
+
+A classical POMDP models partial observability over an underlying physical state space $\mathcal{S}$. An Interactive POMDP (I-POMDP) extends this framework to multi-agent settings: agent $i$ must maintain recursive, nested beliefs about the physical state of the world, hidden transition parameters, and the beliefs, capabilities, and policies of opponent agents $a^{-i}$.
+
+To ensure computational tractability, this architecture models a **Finitely-Nested I-POMDP** (Level-$l$ model). At Level-$l$, an agent models opponents at all lower levels $k \in \{0, \dots, l-1\}$, where Level-0 models a baseline or uniform random policy:
+
+$$\Theta^{<l}_{-i} = \bigcup_{k=0}^{l-1} \Theta^k_{-i}, \quad \text{where } \Theta^k_{-i} = \langle b^k_{-i}, \Theta^{<k}_i \rangle \quad \text{for } k \ge 1, \quad \pi^0(a) = \frac{1}{|\mathcal{A}|}$$
+
+#### Neural Surrogate Mapping
+* **Hidden Physical State ($\mathcal{S}$)**: Represented implicitly as a structured collection of $N_{\text{obj}}$ dynamically tracked object tokens in latent space: $b_t \in \mathbb{R}^{B \times N_{\text{obj}} \times D_{\text{latent}}}$.
+* **Parameter Posterior ($\Theta$)**: Modeled implicitly through the learned stochastic state transitions of a causal dynamics predictor conditioned on discrete categorical latent variables $z_t \sim \text{Categorical}(N_{\text{cat}} \times N_{\text{class}})$.
+* **Interactive Multi-Agent Believing ($\pi_\eta(a^{-i} \mid b_t)$)**: Approximated by a cross-attentive opponent policy head that queries belief slots to sample opponent actions $a^{-i}$ directly during MCTS lookahead branching.
+* **Belief Update Filter**: Implemented by `RecurrentContextEncoder`, advancing the information state natively in latent space:
+  $$b_t = \text{Filter}(b_{t-1}, a_{t-1}, o_t)$$
+
+---
+
+### 2. Recurrent Joint-Embedding Predictive Architecture (R-JEPA)
+
+Unlike generative world models (e.g., autoencoder-based RSSMs) that reconstruct high-dimensional observation pixels, JEPA avoids observation reconstruction entirely. It eliminates the reconstruction noise trap—wasting representational capacity on task-irrelevant environmental background details.
+
+An online encoder maps observations into latent space, while a causal dynamics predictor is trained to align its imagined outputs directly with representations produced by an Exponential Moving Average (EMA) target encoder:
+
+$$\mathcal{L}_{\text{JEPA}} = \text{SmoothL1}(\hat{b}_{t+1}, b_{t+1}^{\text{target}})$$
+
+#### Variance-Invariance-Covariance Regularization (VICReg)
+To prevent representational collapse (where encoders collapse to trivial, constant output vectors), we employ **Dimension-Normalized VICReg**:
+
+$$\mathcal{L}_{\text{VICReg}} = \lambda_{\text{sim}}\mathcal{L}_{\text{sim}}(X, Y) + \mu_{\text{std}}\mathcal{L}_{\text{std}}(X, Y) + \nu_{\text{cov}}\mathcal{L}_{\text{cov}}(X, Y)$$
+
+1. **Invariance ($\mathcal{L}_{\text{sim}}$)**: Measures the dimension-normalized Mean Squared Error between online predicted belief $\hat{b}_{t+1}$ and EMA target belief $b_{t+1}^{\text{target}}$:
+   $$\mathcal{L}_{\text{sim}}(X, Y) = \frac{1}{N \cdot D} \sum_{i=1}^N \|x_i - y_i\|_2^2$$
+2. **Variance ($\mathcal{L}_{\text{std}}$)**: A hinge loss forcing the standard deviation of each embedding dimension within a batch to remain above $\gamma = 1$:
+   $$\mathcal{L}_{\text{std}}(X) = \frac{1}{D} \sum_{j=1}^D \max\left(0, \gamma - \sqrt{\text{Var}(X_{:, j}) + \epsilon}\right)$$
+3. **Covariance ($\mathcal{L}_{\text{cov}}$)**: Penalizes off-diagonal elements of the covariance matrix to decorrelate embedding dimensions:
+   $$\mathcal{L}_{\text{cov}}(X) = \frac{1}{D} \sum_{j \neq k} [C(X)]_{j, k}^2 \quad \text{where} \quad C(X) = \frac{1}{N-1} X_c^T X_c$$
+
+---
+
+### 3. DreamerV3 Distributional Regression & KL Balancing
+
+#### Distributional Two-Hot Symlog Targets
+To stabilize value and reward prediction across extreme return scales (e.g., $-100.0$ to $+10.0$ in the Tiger domain) without scale-dependent clipping, continuous targets $y$ are compressed via symlog and regressed over $K=255$ discrete bins:
+
+$$\text{symlog}(x) = \text{sign}(x) \ln(|x| + 1), \qquad \text{symexp}(y) = \text{sign}(y) (\exp(|y|) - 1)$$
+
+Targets are mapped into two adjacent categorical bins with linear interpolation weights:
+
+$$\text{below} = \left\lfloor \frac{y_{\text{sym}} - \text{min\_val}}{\Delta} \right\rfloor, \quad \text{above} = \text{below} + 1$$
+$$w_{\text{above}} = \frac{y_{\text{sym}} - b_{\text{below}}}{\Delta}, \quad w_{\text{below}} = 1 - w_{\text{above}}$$
+$$\mathcal{L}_{\text{TwoHot}}(z, y) = - w_{\text{below}} \ln(\text{softmax}(z)_{\text{below}}) - w_{\text{above}} \ln(\text{softmax}(z)_{\text{above}})$$
+
+#### DreamerV3 KL Balancing ($\alpha = 0.8$)
+Stochastic state transitions condition on discrete categorical variables $z_t \sim \text{Categorical}(N_{\text{cat}} \times N_{\text{class}})$ sampled via Straight-Through Gumbel-Softmax. To prevent posterior collapse and stabilize open-loop rollout imagination:
+
+$$\mathcal{L}_{\text{KL}} = \alpha D_{\text{KL}}\left(\text{sg}(q_\psi(z_t \mid a_t, b_{t+1}^{\text{target}})) \parallel p_\phi(z_t \mid b_t, a_t)\right) + (1 - \alpha) D_{\text{KL}}\left(q_\psi(z_t \mid a_t, b_{t+1}^{\text{target}}) \parallel \text{sg}(p_\phi(z_t \mid b_t, a_t))\right)$$
+
+---
+
+## 🎨 Core Architectural Components
+
+### 1. Recurrent Context Encoder (`src/ipomdp/core/networks.py`)
+Maintains the recurrent information filter:
+$$b_t = \text{GRUCell}(\text{Fusion}(f_{\text{enc}}(o_t), a_{t-1}), b_{t-1})$$
+* **Slot-Identity Encodings**: Injects learnable positional embeddings $\sigma = 0.02$ into vector slots to preserve semantic role distinctions (e.g. ego vs. target objects) across temporal updates.
+* **Pre-RMSNorm SwiGLU Gating**: Implements $1/\sqrt{2}$ linear variance scaling and zero-initialized residual projections ($W_3 = 0$) for exact identity initialization.
+
+### 2. Causal Relational Predictor (`src/ipomdp/core/networks.py`)
+Predicts latent dynamics over dynamic lookahead horizons:
+$$\hat{b}_{t+1} = f_\phi(b_t, a^i_t, a^{-i}_t, z_t)$$
+Utilizes Transformer Prior and Posterior towers paired with a Transformer Decoder to capture relational object dynamics and stochastic multi-agent interactions.
+
+### 3. Open-Loop Latent MCTS (`src/ipomdp/core/discrete_planner.py`)
+Executes lookahead search natively in latent space:
+* **Bellman Step-Reward Inclusion**: PUCT evaluates expected branch Q-values with immediate transition step-rewards:
+  $$Q(s, a) = \frac{1}{|C(s, a)|} \sum_{c \in C(s, a)} \left[ r_c + \gamma \cdot \left(\mathbb{I}(N_c > 0) V_c + \mathbb{I}(N_c = 0) \hat{V}_c\right) \right]$$
+* **MinMax Normalization**: Dynamically rescales $Q(s, a) \in [0, 1]$ to maintain balanced PUCT exploration bonuses across changing return scales.
+* **Row-Aligned Opponent Sampling**: Samples $a^{-i} \sim \pi_\eta(\cdot \mid b)$ with row alignment to support parallel vectorized environment channels ($B > 1$).
+
+### 4. Sequence Prioritized Experience Replay (Seq-PER) (`src/ipomdp/core/memory.py`)
+* **Contiguous Pinned CPU Buffer**: Pre-allocates sequence chunks in pinned memory (`pin_memory()`) for non-blocking asynchronous DMA transfers to VRAM.
+* **Zero-Drift SumTree**: Recomputes parent nodes directly from children:
+  $$\text{tree}[idx] = \text{tree}[2 \cdot idx + 1] + \text{tree}[2 \cdot idx + 2]$$
+  eliminating floating-point precision drift over millions of updates.
+* **Burn-in Warmup Mask**: Slices sequences as $(\text{burn\_in} + \text{train\_seq\_len})$, masking gradients across the initial warmup steps.
+
+---
+
+## 🐅 Canonical Multi-Agent Tiger Specification
+
+To maintain comparability against established POMDP benchmarks (Kaelbling et al., 1998; Doshi & Gmytrasiewicz, 2006), the Tiger environment is formulated without artificial pseudo-observations.
+
+```
+Canonical Multi-Agent Tiger Domain Properties:
+├── State Space: S = {Tiger-Left: 0, Tiger-Right: 1}. Initial state s_0 ~ Uniform({TL, TR}).
+├── Action Space: A_i = A_j = {LISTEN: 0, OPEN_LEFT: 1, OPEN_RIGHT: 2}.
+├── State Transition T(s, a_i, a_j, s'):
+│   ├── If ANY agent opens a door: s_{t+1} ~ Uniform({TL, TR}) (Stochastic reset).
+│   └── If BOTH agents listen:     s_{t+1} = s_t (State persists).
+├── Canonical Observation Emission O(s_{t+1}, a_t, o_{t+1}):
+│   ├── o_t = [o_growl, o_creak]
+│   ├── Growl Signal (Tiger Position):
+│   │   * GROWL_LEFT = 0.0, GROWL_RIGHT = 1.0 (growl_accuracy = 0.85).
+│   │   * Emitted from arrival state s_{t+1}.
+│   │   * At t=0, initial observation o_0 ~ O(s_0, LISTEN, LISTEN) is emitted from s_0.
+│   └── Creak Signal (Opponent Action):
+│       * SILENCE = -1.0, CREAK_LEFT = 0.0, CREAK_RIGHT = 1.0 (creak_accuracy = 1.0).
+│       * Emitted based on opponent action a_j.
+└── Payoff Function R(s_t, a_t^i):
+    ├── Listen Step Cost: -1.0
+    ├── Safe Treasure Door: +10.0
+    └── Fatal Tiger Door: -100.0
+```
+
+---
+
+## ⚡ Hardware Acceleration & Compilation Architecture
+
+### 1. Selective PyTorch Compilation (`torch.compile`)
+To extract maximum throughput on modern hardware (e.g. NVIDIA RTX 5080 Blackwell, Intel Ultra i9, CUDA 12.8) while avoiding TorchDynamo graph breaks caused by Python tree traversals:
+* **Compiled Fixed-Shape Neural Blocks**: `jepa_model`, `value_head`, `reward_head`, and `opponent_head` are compiled via `torch.compile(mode="reduce-overhead")`.
+* **Eager MCTS Control Flow**: Dynamic tree search loops, node expansions, and recursive backpropagation run in eager Python mode.
+
+### 2. CUDA Graph Memory Safety
+Under compiled reduce-overhead mode, PyTorch caches execution graphs in static CUDA memory pools. To prevent downstream modules from corrupting upstream tensor addresses during sequential MCTS lookahead evaluations, explicit `.clone()` calls decouple intermediate representations from static memory pools:
+
+```python
+with torch.amp.autocast('cuda' if self.device.type == 'cuda' else 'cpu', dtype=torch.bfloat16):
+    opp_logits = self.opponent_head(batched_beliefs).clone()
+    opp_probs = F.softmax(opp_logits, dim=-1)
+    
+    # ... Row-Aligned Opponent Sampling ...
+    
+    next_beliefs = self.jepa_model.predict_next_belief(rep_beliefs, rep_ego_a, rep_opp_a).clone()
+    rewards_logits = self.reward_head(rep_beliefs, rep_ego_a, rep_opp_a).clone()
+    v_logits = self.value_head(next_beliefs).clone()
+```
+
+---
+
+## 🪵 Verification, Telemetry & Probing
+
+### 1. Non-Intrusive Observation Probing & Analytical Oracle Benchmarking (`eval_kl_tiger.py`)
+Because JEPA lacks an observation decoder, we verify that the latent belief state $b_t$ behaves as a sufficient statistic by training an action-conditioned `ObservationProbeHead` $P_\theta(o_{t+1} \mid b_{t+1}, a_t)$ with stop-gradients on frozen JEPA representations.
+
+Rollouts are benchmarked step-by-step against an exact analytical Bayesian filter (`TigerBayesianOracle`), evaluating:
+1. **Kullback-Leibler Divergence**:
+   $$D_{\text{KL}}(P^*(o_{t+1} \mid b_t^*, \mathbf{a}_t) \parallel P_\theta(o_{t+1} \mid \hat{b}_{t+1}, \mathbf{a}_t))$$
+2. **Top-1 Hard Classification Accuracy**: $\mathbb{E}[\mathbb{I}(\arg\max P_\theta = y)]$.
+3. **Negative Log-Likelihood (NLL)**: $\mathbb{E}[-\ln P_\theta(y)]$.
+4. **Brier Calibration Score**: $\frac{1}{K} \sum_{k=1}^K (P_\theta(k) - \mathbb{I}(y = k))^2$.
+5. **Bayes-Optimal Relative Efficiency Ratio**: $\frac{\text{Acc}_{\text{JEPA}}}{\text{Acc}_{\text{Oracle}}} \times 100$.
+
+### 2. Mechanistic Amnesia Gate Verification (`probe_tiger.py`)
+When an agent opens a door in Multi-Agent Tiger, the game persists, but the physical tiger location is stochastically randomized. A mathematically correct recurrent filter must exhibit an **Amnesia Gate**—instantly dumping accumulated listening history:
+
+$$\mathcal{H}(P_{\text{probe}}(s \mid b_{\text{post\_reset}})) \approx \ln(2) \approx 0.693\text{ nats}, \qquad \|\mathbf{b}_{\text{post\_reset}} - \mathbf{b}_0\|_2 \to 0$$
+
+```
+Belief Entropy (H)
+  ▲
+1.0 ┼                                        Post-Reset (OPEN Action)
+    │                                                │
+0.7 ┼────────────────────────────────────────────────* (H ≈ 0.693 nats)
+    │                                               /
+    │   H ≈ 0.693 (Start listening)                /
+    │      *                                      /
+    │     / \                                    /
+    │    /   \                                  /
+0.0 ┼───*─────*────────────────────────────────*───► Timesteps
+       t=0   Hear Left (H -> 0)
+```
+
+---
+
+## 📁 Repository Structure
+
+```
+.
+├── conf/                                # Hydra configuration schemas
+│   ├── config.yaml                      # Global orchestration & sequence parameters
+│   └── env/
+│       └── tiger.yaml                   # Canonical Multi-Agent Tiger parameters
+│
+├── src/ipomdp/
+│   ├── core/                            # Core neural planning machinery
+│   │   ├── agent.py                     # Stateful DiscreteJEPAAgent & StatelessAgent
+│   │   ├── datatypes.py                 # Immutable State, Observation, Action, StepResult
+│   │   ├── discrete_planner.py          # Latent Open-Loop MCTS with Bellman PUCT
+│   │   ├── discrete_trainer.py          # TD(λ), VICReg, and consistency sequence trainer
+│   │   ├── extractors.py                # SOTA SwiGLU MLP & Slot Attention extractors
+│   │   ├── heads.py                     # AttentionPooler, ValueHead, RewardHead, PolicyHead
+│   │   ├── interfaces.py                # AbstractPlanner, IPOMDPAgent, IPOMDPEnv
+│   │   ├── memory.py                    # Contiguous Seq-PER pinned replay buffer
+│   │   └── networks.py                  # RecurrentContextEncoder, CausalPredictor, RecurrentJEPA
+│   │
+│   ├── envs/                            # Multi-agent environments & oracles
+│   │   ├── multi_tiger.py               # Canonical Multi-Agent Tiger I-POMDP benchmark
+│   │   ├── tiger_oracle.py              # Exact Bayesian filter & 6-class analytical oracle
+│   │   └── vector.py                    # SyncVectorEnv preserving terminal transitions
+│   │
+│   └── utils/                           # Numerical & diagnostic utilities
+│       ├── builder.py                   # SwiGLU residual stack & Pre-RMSNorm builder
+│       ├── checkpointing.py             # Adaptive model checkpointing & restoration
+│       ├── latent_viz.py                # Permutation-invariant attention-pooled PCA
+│       ├── logger.py                    # JSONL machine-readable logger with stack traces
+│       ├── metrics.py                   # TensorBoard time-series tracker
+│       ├── metrics_kl.py                # High-precision Float64 distribution KL calculator
+│       ├── metrics_obs_accuracy.py      # Calibration, NLL, Brier & Bayes-optimal metrics
+│       ├── registry.py                  # Declarative factory registry pattern
+│       ├── semantics_probe.py           # Batched GPU covariance trace variance probing
+│       ├── sum_tree.py                  # Double-precision zero-drift segment tree
+│       ├── symlog.py                    # Distributional Two-Hot Symlog regression module
+│       └── tree_viz.py                  # Integer-layer multipartite Plotly tree renderer
+│
+├── enjoy_tiger.py                       # Interactive terminal walkthrough CLI
+├── eval_kl_tiger.py                     # Information-theoretic Bayesian Oracle benchmark
+├── main.py                              # High-performance selective compilation trainer
+├── probe_tiger.py                       # Mechanistic amnesia & semantic linear probe
+├── pyproject.toml                       # Build system dependencies
+└── recreate_venv.sh                     # Environment setup script
+```
+
+---
+
+## 🚀 Getting Started
+
+### 1. Environment Setup (WSL Ubuntu 22.04 / Python 3.12 / CUDA 12.8)
+
+Ensure you are operating inside your local Linux filesystem (avoid `/mnt/c/` Windows mounts) and execute:
+
+```bash
+# Set up Python virtual environment
+chmod +x recreate_venv.sh
+./recreate_venv.sh
+source .venv/bin/activate
+```
+
+### 2. Training the Model
+
+To train the JEPA-IPOMDP agent across 16 parallel environment channels with selective compilation:
+
+```bash
+python main.py
+```
+
+### 3. Monitoring Real-Time Telemetry
+
+Launch TensorBoard to monitor training losses, TD errors, and undiscounted episodic returns:
+
+```bash
+tensorboard --logdir=tiger_tensorboard
+```
+
+### 4. Interactive Walkthrough
+
+Run an interactive episode showing step-by-step hidden states, observations, and MCTS decisions:
+
+```bash
+python enjoy_tiger.py
+```
+
+### 5. Running the Analytical Bayesian Oracle Benchmark
+
+Evaluate empirical observation accuracy, KL divergence, and Bayes-Optimal relative efficiency against the exact Bayesian filter:
+
+```bash
+python eval_kl_tiger.py
+```
+
+### 6. Running Semantic Probing & Mechanistic Amnesia Verification
+
+Verify that the learned latent space encodes physical states and exhibits memory reset upon door opening:
+
+```bash
+python probe_tiger.py
+```
+
+---
+
+## 📚 References
+
+1. **DreamerV3**: Hafner, D., et al. (2023). *Mastering Diverse Domains through World Models*. arXiv:2301.04104.
+2. **POMDP Benchmark**: Kaelbling, L. P., Littman, M. L., & Cassandra, A. R. (1998). *Planning and acting in partially observable stochastic domains*. Artificial Intelligence, 101(1-2), 99-134.
+3. **Interactive POMDPs**: Doshi, P., & Gmytrasiewicz, P. J. (2006). *On the foundations of open-nested and finitely nested interactive POMDPs*. In Proceedings of the National Conference on Artificial Intelligence.
+4. **Joint-Embedding Predictive Architecture (JEPA)**: LeCun, Y. (2022). *A Path Towards Autonomous Machine Intelligence*. Open Review.
+5. **VICReg**: Bardes, A., Ponce, J., & LeCun, Y. (2022). *VICReg: Variance-Invariance-Covariance Regularization for Self-Supervised Learning*. ICLR.
+6. **Slot Attention**: Locatello, F., et al. (2020). *Object-Centric Learning with Slot Attention*. NeurIPS.
