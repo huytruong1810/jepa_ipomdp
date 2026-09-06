@@ -15,6 +15,9 @@ from .visualizers import (
 )
 from .checkpointer import ModelCheckpointer
 from .registry import register_env, make_env, register_extractor, make_extractor
+from .system_monitor import SystemTelemetryMonitor
+from .profiler import PipelineProfiler
+from .guardrails import ExecutionGuardrail
 
 __all__ = [
     "JSONFormatter",
@@ -32,4 +35,8 @@ __all__ = [
     "make_env",
     "register_extractor",
     "make_extractor",
+    "SystemTelemetryMonitor",
+    "PipelineProfiler",
+    "ExecutionGuardrail",
 ]
+

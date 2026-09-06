@@ -46,7 +46,11 @@ from .telemetry import (
     make_env,
     register_extractor,
     make_extractor,
+    SystemTelemetryMonitor,
+    PipelineProfiler,
+    ExecutionGuardrail,
 )
+
 
 __version__ = "0.1.0"
 
@@ -106,5 +110,9 @@ __all__ = [
     "make_env",
     "register_extractor",
     "make_extractor",
+    "SystemTelemetryMonitor",
+    "PipelineProfiler",
+    "ExecutionGuardrail",
 ]
+
 

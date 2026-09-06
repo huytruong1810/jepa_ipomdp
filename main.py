@@ -55,7 +55,11 @@ from ipomdp.telemetry import (
     make_env,
     register_extractor,
     make_extractor,
+    SystemTelemetryMonitor,
+    PipelineProfiler,
+    ExecutionGuardrail,
 )
+
 import ipomdp.telemetry.registry as registry
 
 import ipomdp.envs
@@ -222,12 +226,30 @@ def main(cfg: DictConfig):
     tree_viz = MCTSGraphVisualizer(save_dir=f"{cfg.env.name}_plots/trees")
     reward_viz = RewardTrajectoryVisualizer(save_dir=f"{cfg.env.name}_plots")
 
+    system_monitor = SystemTelemetryMonitor(thermal_threshold_c=82.0)
+    profiler = PipelineProfiler(window_size=100)
+
     models_dict = {
         "jepa": jepa_model,
         "value": value_head,
         "reward": reward_head,
         "opponent": opponent_head
     }
+
+    current_step_holder = [0]
+    guardrail = ExecutionGuardrail(
+        logger=logger,
+        system_monitor=system_monitor,
+        profiler=profiler,
+        thermal_trip_c=82.0,
+        thermal_recovery_c=72.0,
+        vram_trip_mb=13500.0,
+        rss_trip_mb=18000.0,
+        emergency_save_fn=lambda: checkpointer.save(
+            current_step_holder[0], models_dict, trainer.optimizer, float('inf'), filename="emergency_guardrail_checkpoint.pt"
+        )
+    )
+
 
     start_step = 0
     try:
@@ -274,8 +296,11 @@ def main(cfg: DictConfig):
     try:
         pbar = tqdm(range(start_step, cfg.training.total_steps), desc="Steps", initial=start_step, total=cfg.training.total_steps)
         for step in pbar:
-            agents["agent_0"].update_belief(observations["agent_0"], prev_actions["agent_0"])
-            agents["agent_1"].update_belief(observations["agent_1"], prev_actions["agent_1"])
+            current_step_holder[0] = step
+
+            with profiler.profile("update_belief"):
+                agents["agent_0"].update_belief(observations["agent_0"], prev_actions["agent_0"])
+                agents["agent_1"].update_belief(observations["agent_1"], prev_actions["agent_1"])
 
             if do_viz:
                 viz_beliefs.append(agents["agent_0"].belief[0].clone().detach().unsqueeze(0))
@@ -283,9 +308,8 @@ def main(cfg: DictConfig):
                 ts_val = ts.data[0] if isinstance(ts, State) else ts[0]
                 viz_true_states.append(ts_val.clone().detach())
 
-
-
-            actions = {aid: agent.act(observations[aid]) for aid, agent in agents.items()}
+            with profiler.profile("mcts_search"):
+                actions = {aid: agent.act(observations[aid]) for aid, agent in agents.items()}
 
             if do_viz:
                 viz_actions.append(int(actions["agent_0"].data[0].item()))
@@ -295,9 +319,12 @@ def main(cfg: DictConfig):
                     except Exception as e:
                         logger.warning(f"MCTS tree visualization skipped: {e}")
 
-            next_obs, rews, terms, truncs, infos = vec_env.step(actions)
+            with profiler.profile("env_step"):
+                next_obs, rews, terms, truncs, infos = vec_env.step(actions)
 
             for i in range(cfg.training.env_batch_size):
+
+
                 step_reward = float(rews["agent_0"][i].item())
                 act_taken = int(actions["agent_0"].data[i].item())
                 ep_returns[i] += step_reward
@@ -374,13 +401,16 @@ def main(cfg: DictConfig):
             observations = next_obs
             prev_actions = actions
 
+            performed_train = False
             if buffer.tree.size >= cfg.training.batch_size and step % cfg.training.update_freq == 0:
                 if device.type == "cuda":
                     torch.compiler.cudagraph_mark_step_begin()
 
-                batch, is_weights, tree_indices = buffer.sample_sequence(cfg.training.batch_size)
-                metrics, td_errors = trainer.train_sequence(batch, is_weights)
-                buffer.update_priorities(tree_indices, td_errors)
+                with profiler.profile("train_sequence"):
+                    batch, is_weights, tree_indices = buffer.sample_sequence(cfg.training.batch_size)
+                    metrics, td_errors = trainer.train_sequence(batch, is_weights)
+                    buffer.update_priorities(tree_indices, td_errors)
+                performed_train = True
 
                 if len(recent_ep_returns) > 0:
                     metrics["episode_reward_mean"] = float(np.mean(recent_ep_returns))
@@ -411,6 +441,21 @@ def main(cfg: DictConfig):
 
                 latest_metrics = metrics
                 metrics_logger.log_metrics(metrics, step, prefix="Train")
+                metrics_logger.log_metrics(system_monitor.get_metrics(), step, prefix="System")
+                metrics_logger.log_metrics(profiler.get_all_metrics(), step, prefix="Profiler")
+                metrics_logger.log_metrics(guardrail.get_incident_metrics(), step, prefix="Guardrail")
+
+            profiler.record_step(transitions=cfg.training.env_batch_size, train_steps=1 if performed_train else 0)
+
+            # Autonomous Execution Guardrail Supervision
+            if step % 25 == 0 and step > 0:
+                is_healthy = guardrail.check_system_health(step)
+                if not is_healthy:
+                    logger.critical("[!] ExecutionGuardrail triggered emergency abort. Halting training.")
+                    break
+                guardrail.check_step_latency(step, "mcts_search")
+                last_val = getattr(agents["agent_0"], "last_value", 0.0)
+                guardrail.check_value_bounds(step, last_val)
 
             if step % 10 == 0:
                 pbar_dict = {}
@@ -420,8 +465,14 @@ def main(cfg: DictConfig):
                         pbar_dict["r_loss"] = f"{latest_metrics['loss_reward']:.3f}"
                 if len(recent_ep_returns) > 0:
                     pbar_dict["ep_rew"] = f"{np.mean(recent_ep_returns):.1f}"
-                if pbar_dict:
-                    pbar.set_postfix(pbar_dict)
+                pbar_dict["tps"] = f"{profiler.get_tps():.0f}"
+                m_sys = system_monitor.get_metrics()
+                temp = m_sys.get("gpu/temp_celsius", 0.0)
+                pbar_dict["gpu"] = f"{temp:.0f}°C" if temp > 0 else "Active"
+                vram_used = m_sys.get("gpu/physical_vram_used_mb", m_sys.get("gpu/vram_reserved_mb", 0.0)) / 1024.0
+                pbar_dict["vram"] = f"{vram_used:.1f}G"
+                pbar.set_postfix(pbar_dict)
+
 
             if step % 1000 == 0 and step > 0 and len(recent_ep_returns) > 0:
                 logger.info(
