@@ -48,6 +48,11 @@ class ValueHead(nn.Module):
         super().__init__()
         self.pooler = AttentionPooler(latent_dim)
         self.net = build_residual_stack(latent_dim, hidden_dim, num_bins, num_blocks)
+        # DreamerV3 standard: Zero-initialize final projection weights and biases
+        # Ensures uniform logits (1/255) and exactly 0.0 decoded expected return at step 0
+        nn.init.zeros_(self.net[-1].weight)
+        if self.net[-1].bias is not None:
+            nn.init.zeros_(self.net[-1].bias)
 
     def forward(self, belief: torch.Tensor) -> torch.Tensor:
         """
@@ -80,6 +85,11 @@ class RewardHead(nn.Module):
         self.pooler = AttentionPooler(latent_dim)
         self.swarm_encoder = SwarmActionEncoder(action_dim_i, action_dim_j, hidden_dim=hidden_dim, num_heads=4)
         self.net = build_residual_stack(latent_dim + self.swarm_encoder.hidden_dim, hidden_dim, num_bins, num_blocks)
+        # DreamerV3 standard: Zero-initialize final projection weights and biases
+        # Ensures uniform logits (1/255) and exactly 0.0 decoded expected reward at step 0
+        nn.init.zeros_(self.net[-1].weight)
+        if self.net[-1].bias is not None:
+            nn.init.zeros_(self.net[-1].bias)
 
     def forward(
         self,

@@ -35,6 +35,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from omegaconf import DictConfig
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 
 warnings.filterwarnings("ignore", category=UserWarning, module="torch._inductor")
@@ -76,7 +77,7 @@ from ipomdp.models import (
 from ipomdp.planning import DiscreteLatentOpenLoopSearch
 from ipomdp.training import PrioritizedSequenceBuffer, DiscreteRecurrentIPOMDPTrainer
 from ipomdp.agents import DiscreteJEPAAgent, StatelessAgent
-from ipomdp.types import Action
+from ipomdp.types import Action, State
 
 torch.set_float32_matmul_precision('high')
 torch.backends.cudnn.benchmark = True
@@ -293,6 +294,7 @@ def main(cfg: DictConfig):
     do_viz = False
     viz_beliefs, viz_true_states, viz_actions = [], [], []
 
+    warmup_episodes = getattr(cfg.training, "warmup_episodes", 0)
     try:
         pbar = tqdm(range(start_step, cfg.training.total_steps), desc="Steps", initial=start_step, total=cfg.training.total_steps)
         for step in pbar:
@@ -305,11 +307,20 @@ def main(cfg: DictConfig):
             if do_viz:
                 viz_beliefs.append(agents["agent_0"].belief[0].clone().detach().unsqueeze(0))
                 ts = infos["agent_0"]["true_state"]
-                ts_val = ts.data[0] if isinstance(ts, State) else ts[0]
+                ts_val = ts[0].data if isinstance(ts[0], State) else (ts.data[0] if isinstance(ts, State) else ts[0])
                 viz_true_states.append(ts_val.clone().detach())
 
             with profiler.profile("mcts_search"):
-                actions = {aid: agent.act(observations[aid]) for aid, agent in agents.items()}
+                if episodes_completed < warmup_episodes:
+                    # Fast uniform exploration during buffer warmup
+                    rand_act = torch.randint(0, cfg.env.action_dim_i, (cfg.training.env_batch_size, 1), device=device).float()
+                    actions = {
+                        "agent_0": Action(data=rand_act),
+                        "agent_1": agents["agent_1"].act(observations["agent_1"])
+                    }
+                    agents["agent_0"].prev_action = F.one_hot(rand_act.squeeze(-1).long(), num_classes=cfg.env.action_dim_i).float()
+                else:
+                    actions = {aid: agent.act(observations[aid]) for aid, agent in agents.items()}
 
             if do_viz:
                 viz_actions.append(int(actions["agent_0"].data[0].item()))
@@ -356,7 +367,8 @@ def main(cfg: DictConfig):
                     active_trajectories[i] = {"cum_rewards": [0.0], "actions": [], "rewards": []}
 
                     term_obs = infos["agent_0"]["terminal_obs"][i]
-                    buffer.end_episode(env_idx=i, final_obs=term_obs)
+                    is_term = bool(terms["agent_0"][i].item())
+                    buffer.end_episode(env_idx=i, final_obs=term_obs, terminated=is_term)
 
                     prev_actions["agent_0"].data[i].zero_()
                     prev_actions["agent_1"].data[i].zero_()
@@ -393,6 +405,7 @@ def main(cfg: DictConfig):
                                 logger.error(f"Reward trajectory visualization failed: {e}")
 
                         episodes_completed += 1
+                        agents["agent_0"].anneal_temperature()
                         do_viz = (episodes_completed % cfg.training.viz_freq == 0) and (episodes_completed > 0)
                         viz_beliefs.clear()
                         viz_true_states.clear()
@@ -433,11 +446,18 @@ def main(cfg: DictConfig):
 
                 metrics["step_reward_mean"] = float(rews["agent_0"].mean().item())
                 metrics["episodes_completed"] = episodes_completed
+                metrics["agent_temperature"] = float(agents["agent_0"].temperature)
 
                 act_data = actions["agent_0"].data.view(-1)
                 for a_idx, a_name in action_map.items():
                     act_key = f"action_pct_{a_name.lower().replace(' ', '_')}"
                     metrics[act_key] = float((act_data == a_idx).float().mean().item())
+
+                if hasattr(planner, 'last_avg_depth'):
+                    metrics["mcts_avg_depth"] = float(planner.last_avg_depth)
+                    metrics["mcts_max_depth"] = float(planner.last_max_depth)
+                    metrics["mcts_q_spread"] = float(planner.last_q_spread)
+                    metrics["mcts_entropy"] = float(planner.last_entropy)
 
                 latest_metrics = metrics
                 metrics_logger.log_metrics(metrics, step, prefix="Train")

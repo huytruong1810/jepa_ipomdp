@@ -32,7 +32,7 @@
 # ==============================================================================
 
 import logging
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -108,7 +108,13 @@ class DiscreteRecurrentIPOMDPTrainer:
         self.ce_criterion = nn.CrossEntropyLoss(reduction='none')
         self.twohot_criterion = TwoHotSymlog().to(self.device)
 
-    def compute_lambda_returns(self, rewards: torch.Tensor, values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def compute_lambda_returns(
+        self,
+        rewards: torch.Tensor,
+        values: torch.Tensor,
+        mask: torch.Tensor,
+        dones: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """
         Computes TD(lambda) target returns across temporal sequence horizons.
 
@@ -116,6 +122,7 @@ class DiscreteRecurrentIPOMDPTrainer:
             rewards: Immediate rewards tensor of shape (B, T, 1).
             values: Decoded continuous value predictions of shape (B, T + 1, 1).
             mask: Sequence mask tensor of shape (B, T, 1).
+            dones: Optional episode termination tensor of shape (B, T, 1).
 
         Returns:
             Calculated lambda return targets of shape (B, T, 1).
@@ -125,7 +132,8 @@ class DiscreteRecurrentIPOMDPTrainer:
         last_lambda_return = values[:, -1, :]
 
         for t in reversed(range(t_steps)):
-            ret = rewards[:, t, :] + self.gamma * (
+            discount = self.gamma * (1.0 - dones[:, t, :]) if dones is not None else self.gamma
+            ret = rewards[:, t, :] + discount * (
                 (1.0 - self.lam) * values[:, t + 1, :] + self.lam * last_lambda_return
             )
             last_lambda_return = ret * mask[:, t, :] + values[:, t, :] * (1.0 - mask[:, t, :])
@@ -160,6 +168,7 @@ class DiscreteRecurrentIPOMDPTrainer:
             reward_seq = batch["rewards"].to(self.device, non_blocking=True)
             mask = batch["mask"].to(self.device, non_blocking=True)
             is_weights = is_weights.to(self.device, non_blocking=True)
+            dones_seq = batch["dones"].to(self.device, non_blocking=True) if "dones" in batch else None
 
             act_i_seq = F.one_hot(
                 batch["act_i"].to(self.device, non_blocking=True).long().squeeze(-1),
@@ -201,13 +210,17 @@ class DiscreteRecurrentIPOMDPTrainer:
                 v_logits = self.value_head(flat_beliefs)
                 v_vals = self.twohot_criterion.decode(v_logits, real_scale=True).view(b_batch, t_steps + 1, 1)
 
-                real_returns = self.compute_lambda_returns(reward_seq, v_vals, mask)
+                real_returns = self.compute_lambda_returns(reward_seq, v_vals, mask, dones_seq)
 
             seq_loss_jepa, seq_loss_rl, seq_loss_consistency = 0.0, 0.0, 0.0
             seq_loss_value, seq_loss_reward, seq_loss_opp = 0.0, 0.0, 0.0
             seq_mask_sum = torch.zeros(b_batch, 1, device=self.device)
             seq_td_errors = torch.zeros(b_batch, t_steps, device=self.device)
-            total_loss_vicreg = torch.tensor(0.0, device=self.device)
+            vicreg_loss_accum = torch.tensor(0.0, device=self.device)
+            vicreg_steps = 0
+            vicreg_sim_accum, vicreg_std_accum, vicreg_cov_accum, latent_std_accum = 0.0, 0.0, 0.0, 0.0
+            opp_correct_accum, opp_total_accum = 0.0, 0.0
+            all_y_true, all_y_pred, all_td_errors = [], [], []
 
             for t in range(t_steps):
                 a_i_t = act_i_seq[:, t, :]
@@ -230,11 +243,17 @@ class DiscreteRecurrentIPOMDPTrainer:
 
                 if m_t.sum() > 1:
                     valid_idx = m_t.squeeze(-1).bool()
-                    total_loss_vicreg += self._vicreg_loss_batch(
+                    step_v_loss, step_sim, step_std, step_cov, step_m_std = self._vicreg_loss_batch(
                         predicted_b_t1[valid_idx].view(-1, self.latent_dim),
                         target_b_t1[valid_idx].view(-1, self.latent_dim),
                         is_weights[valid_idx]
                     )
+                    vicreg_loss_accum = vicreg_loss_accum + step_v_loss
+                    vicreg_sim_accum += step_sim.item()
+                    vicreg_std_accum += step_std.item()
+                    vicreg_cov_accum += step_cov.item()
+                    latent_std_accum += step_m_std.item()
+                    vicreg_steps += 1
 
                 b_for_rl = current_b.detach() if self.detach_belief_for_rl else current_b
                 pred_v_logits = self.value_head(b_for_rl)
@@ -251,10 +270,24 @@ class DiscreteRecurrentIPOMDPTrainer:
                 loss_opp = self.ce_criterion(flat_pred_opp, flat_targ_opp).view(b_curr, num_opps).mean(dim=1).unsqueeze(-1) * m_t
 
                 with torch.no_grad():
+                    pred_opp_choice = flat_pred_opp.argmax(dim=-1)
+                    opp_mask = m_t.repeat_interleave(num_opps, dim=0).squeeze(-1).bool()
+                    if opp_mask.sum() > 0:
+                        opp_correct_accum += (pred_opp_choice[opp_mask] == flat_targ_opp[opp_mask]).float().sum().item()
+                        opp_total_accum += float(opp_mask.sum().item())
+
+                with torch.no_grad():
+                    pred_v_real = self.twohot_criterion.decode(pred_v_logits, real_scale=True)
                     td_error = torch.abs(
                         self.twohot_criterion.decode(pred_v_logits, real_scale=False) - symlog(real_returns[:, t, :])
                     ) * m_t
                     seq_td_errors[:, t] = td_error.squeeze(-1)
+
+                    valid_m = m_t.squeeze(-1).bool()
+                    if valid_m.sum() > 0:
+                        all_y_true.append(real_returns[:, t, :][valid_m].view(-1))
+                        all_y_pred.append(pred_v_real[valid_m].view(-1))
+                        all_td_errors.append(td_error[valid_m].view(-1))
 
                 seq_loss_value += loss_value
                 seq_loss_reward += loss_reward
@@ -262,17 +295,19 @@ class DiscreteRecurrentIPOMDPTrainer:
                 seq_loss_rl += (loss_value + loss_reward + loss_opp)
 
                 dream_b = current_b
-                dream_states, dream_rewards = [], []
+                dream_states, dream_rewards, dream_discounts = [], [], []
 
                 for h in range(self.hallucination_horizon):
                     if t + h >= t_steps:
                         break
                     future_a_i = act_i_seq[:, t + h, :]
                     future_a_j = F.one_hot(act_j_seq[:, t + h, :], num_classes=self.action_dim_j).float()
+                    step_done = dones_seq[:, t + h, :] if dones_seq is not None else torch.zeros_like(mask[:, t + h, :])
 
                     dream_b = self.jepa_model.predict_next_belief(dream_b, future_a_i, future_a_j)
                     dream_states.append((dream_b, mask[:, t + h, :]))
                     dream_rewards.append(self.reward_head(dream_b, future_a_i, future_a_j))
+                    dream_discounts.append(self.gamma * (1.0 - step_done))
 
                 if dream_states:
                     with torch.no_grad():
@@ -282,7 +317,8 @@ class DiscreteRecurrentIPOMDPTrainer:
                     for h_idx in reversed(range(len(dream_states))):
                         d_b, d_m = dream_states[h_idx]
                         r_val = self.twohot_criterion.decode(dream_rewards[h_idx], real_scale=True)
-                        dream_lambda_target = r_val + self.gamma * dream_lambda_target
+                        disc = dream_discounts[h_idx]
+                        dream_lambda_target = r_val + disc * dream_lambda_target
 
                         v_dream_logits = self.value_head(d_b)
                         loss_consist = self.twohot_criterion(v_dream_logits, dream_lambda_target.detach(), auto_symlog=True)
@@ -290,6 +326,7 @@ class DiscreteRecurrentIPOMDPTrainer:
 
             total_mask_sum = seq_mask_sum.sum().clamp(min=1.0)
             total_loss_jepa = (seq_loss_jepa * is_weights).sum() / total_mask_sum
+            total_loss_vicreg = (vicreg_loss_accum / max(vicreg_steps, 1)) if vicreg_steps > 0 else torch.tensor(0.0, device=self.device)
             total_loss_rl = (seq_loss_rl * is_weights).sum() / total_mask_sum
             total_loss_value = (seq_loss_value * is_weights).sum() / total_mask_sum
             total_loss_reward = (seq_loss_reward * is_weights).sum() / total_mask_sum
@@ -305,6 +342,22 @@ class DiscreteRecurrentIPOMDPTrainer:
 
         mean_seq_td_errors = seq_td_errors.sum(dim=1) / seq_mask_sum.squeeze(-1).clamp(min=1.0)
 
+        with torch.no_grad():
+            if all_y_true and len(all_y_true) > 0:
+                y_true_cat = torch.cat(all_y_true)
+                y_pred_cat = torch.cat(all_y_pred)
+                var_y = torch.var(y_true_cat)
+                var_diff = torch.var(y_true_cat - y_pred_cat)
+                explained_var = float((1.0 - var_diff / (var_y + 1e-8)).item()) if var_y > 1e-6 else 0.0
+
+                td_cat = torch.cat(all_td_errors)
+                td_p50 = float(torch.quantile(td_cat, 0.50).item()) if td_cat.numel() > 0 else 0.0
+                td_p95 = float(torch.quantile(td_cat, 0.95).item()) if td_cat.numel() > 0 else 0.0
+            else:
+                explained_var, td_p50, td_p95 = 0.0, 0.0, 0.0
+
+        opp_accuracy = float(opp_correct_accum / max(opp_total_accum, 1.0) * 100.0)
+
         metrics = {
             "loss_jepa": total_loss_jepa.item(),
             "loss_vicreg": total_loss_vicreg.item(),
@@ -313,14 +366,28 @@ class DiscreteRecurrentIPOMDPTrainer:
             "loss_reward": total_loss_reward.item(),
             "loss_opp": total_loss_opp.item(),
             "loss_consistency": total_loss_consistency.item(),
-            "mean_td_error": mean_seq_td_errors.mean().item()
+            "mean_td_error": mean_seq_td_errors.mean().item(),
+            "vicreg_sim": vicreg_sim_accum / max(vicreg_steps, 1),
+            "vicreg_std": vicreg_std_accum / max(vicreg_steps, 1),
+            "vicreg_cov": vicreg_cov_accum / max(vicreg_steps, 1),
+            "latent_mean_std": latent_std_accum / max(vicreg_steps, 1),
+            "opp_acc_pct": opp_accuracy,
+            "value_explained_var": explained_var,
+            "td_error_p50": td_p50,
+            "td_error_p95": td_p95
         }
         return metrics, mean_seq_td_errors
 
-    def _vicreg_loss_batch(self, x: torch.Tensor, y: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+    def _vicreg_loss_batch(
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        weights: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Dimension-Normalized VICReg Regularization Loss.
         Promotes representations to float32 to prevent bfloat16 mantissa underflow.
+        Returns: Tuple of (loss, sim_loss, std_loss, cov_loss, mean_std).
         """
         x_f32 = x.float()
         y_f32 = y.float()
@@ -341,9 +408,12 @@ class DiscreteRecurrentIPOMDPTrainer:
         std_x = torch.sqrt(var_x + 1e-4)
         std_y = torch.sqrt(var_y + 1e-4)
         std_loss = torch.mean(F.relu(1.0 - std_x)) + torch.mean(F.relu(1.0 - std_y))
+        mean_std = 0.5 * (std_x.mean() + std_y.mean())
 
         if n <= 1:
-            return self.vicreg_sim_coeff * sim_loss + self.vicreg_std_coeff * std_loss
+            cov_loss = torch.tensor(0.0, device=x.device)
+            loss = self.vicreg_sim_coeff * sim_loss + self.vicreg_std_coeff * std_loss
+            return loss, sim_loss, std_loss, cov_loss, mean_std
 
         cov_x = (x_c.T @ (weights_f32 * x_c)) / w_sum
         cov_y = (y_c.T @ (weights_f32 * y_c)) / w_sum
@@ -352,4 +422,5 @@ class DiscreteRecurrentIPOMDPTrainer:
         cov_loss_y = (cov_y.pow(2).sum() - cov_y.diagonal().pow(2).sum()) / float(d)
         cov_loss = cov_loss_x + cov_loss_y
 
-        return self.vicreg_sim_coeff * sim_loss + self.vicreg_std_coeff * std_loss + self.vicreg_cov_coeff * cov_loss
+        loss = self.vicreg_sim_coeff * sim_loss + self.vicreg_std_coeff * std_loss + self.vicreg_cov_coeff * cov_loss
+        return loss, sim_loss, std_loss, cov_loss, mean_std

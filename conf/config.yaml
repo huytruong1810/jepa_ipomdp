@@ -23,9 +23,8 @@
 #
 # 3. Open-Loop Latent MCTS Branching:
 #    - num_simulations: 50 MCTS search rollouts per action decision.
-#    - num_latent_obs: 4 stochastic prior child branches evaluated per discrete ego action.
-#      Because transition dynamics are stochastic, each action expands K=4 latent
-#      branches sampled directly from the world model prior p_phi(b_{t+1} | b_t, a_i, a_j).
+#    - num_latent_obs: 1 canonical open-loop latent transition per discrete ego action.
+#      Avoids exponential branching explosion and enables deep planning horizons.
 #
 # 4. Latent Space Capacity:
 #    - latent_dim: 32 continuous features per object slot.
@@ -60,4 +59,4 @@ model:
 
 mcts:
   num_simulations: 50         # Number of search tree simulation traversals per step
-  num_latent_obs: 4           # Stochastic prior child branches per discrete ego action
+  num_latent_obs: 1           # Canonical open-loop: 1 sampled latent branch per action

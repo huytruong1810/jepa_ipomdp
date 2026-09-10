@@ -34,6 +34,7 @@
 import math
 import random
 from typing import Dict, List, Optional
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -72,7 +73,13 @@ class LatentSearchNode:
     Represents an open-loop belief state node within the latent MCTS search tree.
     """
 
-    def __init__(self, belief: torch.Tensor, action_taken: Optional[int] = None, reward: float = 0.0):
+    def __init__(
+        self,
+        belief: torch.Tensor,
+        action_taken: Optional[int] = None,
+        reward: float = 0.0,
+        prior: float = 1.0
+    ):
         """
         Initializes latent search node.
 
@@ -80,10 +87,12 @@ class LatentSearchNode:
             belief: Single-sample belief tensor of shape (1, N_obj, D_latent).
             action_taken: Discrete ego action leading to this node.
             reward: Immediate step reward r_t emitted during arrival transition.
+            prior: Action selection prior probability P(s, a).
         """
         self.belief = belief
         self.action_taken = action_taken
         self.reward = float(reward)
+        self.prior = float(prior)
         self.children: Dict[int, List['LatentSearchNode']] = {}
         self.visit_count = 0
         self.value = 0.0
@@ -104,9 +113,11 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
         action_dim_i: int,
         action_dim_j: int,
         num_simulations: int = 50,
-        num_latent_obs: int = 4,
+        num_latent_obs: int = 1,
         discount: float = 0.99,
-        c_puct: float = 1.25
+        c_puct: float = 1.25,
+        dirichlet_alpha: float = 0.3,
+        dirichlet_epsilon: float = 0.25
     ):
         """
         Initializes Discrete Latent MCTS Planner.
@@ -119,9 +130,11 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
             action_dim_i: Ego action dimensionality.
             action_dim_j: Opponent action dimensionality.
             num_simulations: Number of search rollouts per decision step.
-            num_latent_obs: Number of stochastic prior branches sampled per discrete action.
+            num_latent_obs: Number of stochastic prior branches sampled per discrete action (default: 1 for canonical open-loop).
             discount: Discount factor gamma.
             c_puct: PUCT exploration constant.
+            dirichlet_alpha: Alpha parameter for root Dirichlet noise (default: 0.3).
+            dirichlet_epsilon: Mixing weight for root Dirichlet noise (default: 0.25).
         """
         super().__init__()
         self.jepa_model = jepa_model
@@ -134,6 +147,8 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
         self.num_latent_obs = int(num_latent_obs)
         self.discount = float(discount)
         self.c_puct = float(c_puct)
+        self.dirichlet_alpha = float(dirichlet_alpha)
+        self.dirichlet_epsilon = float(dirichlet_epsilon)
 
         self.device = next(self.value_head.parameters()).device
         self.twohot = TwoHotSymlog().to(self.device)
@@ -141,6 +156,12 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
         # Multi-root references across parallel environment channels
         self.roots: List[LatentSearchNode] = []
         self.root: Optional[LatentSearchNode] = None
+
+        # Search telemetry diagnostics
+        self.last_avg_depth: float = 0.0
+        self.last_max_depth: float = 0.0
+        self.last_q_spread: float = 0.0
+        self.last_entropy: float = 0.0
 
     def encode_context(self, obs: torch.Tensor, action: torch.Tensor, prev_belief: torch.Tensor) -> torch.Tensor:
         """Advances latent belief state through recurrent context filter."""
@@ -166,9 +187,10 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
         self.roots = roots
         self.root = roots[0]
 
-        # Evaluate and expand initial root nodes
-        self._evaluate_and_expand_batched(roots)
+        # Evaluate and expand initial root nodes with Dirichlet exploration noise
+        self._evaluate_and_expand_batched(roots, is_root=True)
 
+        all_search_depths = []
         for _ in range(self.num_simulations):
             search_paths = []
             leaf_nodes = []
@@ -178,15 +200,20 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
                 path = [node]
                 while node.children:
                     action = self._select_action(node, stats[b])
-                    node = random.choice(node.children[action])
+                    children = node.children[action]
+                    node = children[0] if len(children) == 1 else random.choice(children)
                     path.append(node)
                 search_paths.append(path)
                 leaf_nodes.append(node)
+                all_search_depths.append(len(path) - 1)
 
-            self._evaluate_and_expand_batched(leaf_nodes)
+            self._evaluate_and_expand_batched(leaf_nodes, is_root=False)
 
             for b in range(b_batch):
                 self._backpropagate(search_paths[b], leaf_nodes[b].bootstrap_value, stats[b])
+
+        self.last_avg_depth = float(np.mean(all_search_depths)) if all_search_depths else 0.0
+        self.last_max_depth = float(np.max(all_search_depths)) if all_search_depths else 0.0
 
         dists = [self._get_action_distribution(roots[b], temperature) for b in range(b_batch)]
         return torch.tensor(dists, dtype=torch.float32, device=self.device)
@@ -194,20 +221,22 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
     def _select_action(self, node: LatentSearchNode, stats: MinMaxStats) -> int:
         """
         Selects ego action maximizing Bellman-integrated PUCT score:
-        Q(s, a) = E_{c ~ C(s, a)} [ r_c + gamma * V_c ]
+        Q(s, a) = (1 / |C(s, a)|) * sum_{c in C(s, a)} [ r_c + gamma * V_c ]
         """
         best_score = -float('inf')
         best_action = -1
-        ego_prior = 1.0 / self.action_dim_i
 
         for action in range(self.action_dim_i):
             if action not in node.children:
                 continue
             children = node.children[action]
             action_visits = sum(c.visit_count for c in children)
+            action_prior = children[0].prior if children else (1.0 / self.action_dim_i)
 
             if action_visits == 0:
-                score = self.c_puct * ego_prior * math.sqrt(node.visit_count + 1)
+                total_boot = sum(c.bootstrap_value for c in children) / max(len(children), 1)
+                q_init = stats.normalize(total_boot)
+                score = q_init + self.c_puct * action_prior * math.sqrt(node.visit_count + 1)
             else:
                 total_q = 0.0
                 for c in children:
@@ -216,7 +245,7 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
                 expected_q = total_q / len(children)
 
                 normalized_q = stats.normalize(expected_q)
-                u = self.c_puct * ego_prior * math.sqrt(node.visit_count) / (1 + action_visits)
+                u = self.c_puct * action_prior * math.sqrt(node.visit_count) / (1 + action_visits)
                 score = normalized_q + u
 
             if score > best_score:
@@ -225,7 +254,7 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
 
         return best_action if best_action != -1 else random.randint(0, self.action_dim_i - 1)
 
-    def _evaluate_and_expand_batched(self, nodes: List[LatentSearchNode]):
+    def _evaluate_and_expand_batched(self, nodes: List[LatentSearchNode], is_root: bool = False):
         """
         Evaluates neural heads and expands child branches across all leaf nodes.
         Enforces bfloat16-safe multinomial sampling and CUDA Graph address safety via explicit .clone().
@@ -263,15 +292,24 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
         rewards = self.twohot.decode(rewards_logits.float(), real_scale=True).squeeze(-1).tolist()
         next_values = self.twohot.decode(v_logits.float(), real_scale=True).squeeze(-1).tolist()
 
+        base_prior = 1.0 / self.action_dim_i
         for b_idx, node in enumerate(nodes):
+            dirichlet_noise = (
+                np.random.dirichlet([self.dirichlet_alpha] * self.action_dim_i) if is_root else None
+            )
             for a_idx in range(self.action_dim_i):
                 node.children[a_idx] = []
+                action_prior = (
+                    (1.0 - self.dirichlet_epsilon) * base_prior + self.dirichlet_epsilon * float(dirichlet_noise[a_idx])
+                ) if is_root else base_prior
+
                 for k_idx in range(self.num_latent_obs):
                     flat_idx = (b_idx * num_branches) + (a_idx * self.num_latent_obs) + k_idx
                     child_node = LatentSearchNode(
                         belief=next_beliefs[flat_idx:flat_idx + 1].detach(),
                         action_taken=a_idx,
-                        reward=rewards[flat_idx]
+                        reward=rewards[flat_idx],
+                        prior=action_prior
                     )
                     child_node.bootstrap_value = next_values[flat_idx]
                     node.children[a_idx].append(child_node)
@@ -286,19 +324,30 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
             stats.update(value)
 
     def _get_action_distribution(self, root: LatentSearchNode, temperature: float = 1.0) -> List[float]:
-        """Calculates policy probability distribution from root child visit counts."""
+        """Calculates policy probability distribution from root child visit counts and computes search telemetry."""
         counts = [
             sum(c.visit_count for c in root.children[i]) if i in root.children else 0
             for i in range(self.action_dim_i)
         ]
+        q_vals = [
+            sum(c.value for c in root.children[i]) / max(len(root.children[i]), 1)
+            if (i in root.children and sum(c.visit_count for c in root.children[i]) > 0) else 0.0
+            for i in range(self.action_dim_i)
+        ]
+        self.last_q_spread = float(max(q_vals) - min(q_vals)) if q_vals else 0.0
+
         if sum(counts) == 0:
+            self.last_entropy = float(np.log(self.action_dim_i))
             return [1.0 / self.action_dim_i] * self.action_dim_i
 
         if temperature == 0.0:
             best_idx = counts.index(max(counts))
+            self.last_entropy = 0.0
             return [1.0 if i == best_idx else 0.0 for i in range(len(counts))]
 
         max_count = max(counts)
         adjusted = [(c / max_count) ** (1.0 / max(temperature, 1e-4)) for c in counts]
         total_adj = sum(adjusted)
-        return [c / total_adj for c in adjusted]
+        probs = [c / total_adj for c in adjusted]
+        self.last_entropy = float(-sum(p * np.log(max(p, 1e-8)) for p in probs))
+        return probs

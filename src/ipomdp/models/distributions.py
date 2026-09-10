@@ -133,8 +133,8 @@ class TwoHotSymlog(nn.Module):
         if targets_f32.dim() == logits_f32.dim() and targets_f32.size(-1) == 1:
             targets_f32 = targets_f32.squeeze(-1)
 
-        # Ensure bins match device
-        bins = self.bins.to(device=logits.device, dtype=torch.float32)
+        # Ensure bins match device without redundant transfer
+        bins = self.bins if self.bins.device == logits.device else self.bins.to(device=logits.device)
 
         # Compress targets to symlog space if requested
         if auto_symlog:
@@ -183,7 +183,7 @@ class TwoHotSymlog(nn.Module):
         """
         orig_dtype = logits.dtype
         logits_f32 = logits.float()
-        bins = self.bins.to(device=logits.device, dtype=torch.float32)
+        bins = self.bins if self.bins.device == logits.device else self.bins.to(device=logits.device)
 
         probs = F.softmax(logits_f32, dim=-1)
         symlog_expectation = torch.sum(probs * bins, dim=-1, keepdim=True)

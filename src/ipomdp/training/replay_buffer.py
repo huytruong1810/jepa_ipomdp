@@ -211,6 +211,7 @@ class PrioritizedSequenceBuffer:
         self.rewards_buf: Optional[torch.Tensor] = None
         self.mask_buf: Optional[torch.Tensor] = None
         self.prev_a_buf: Optional[torch.Tensor] = None
+        self.dones_buf: Optional[torch.Tensor] = None
 
         # Ephemeral active trajectory lists mapped per environment channel index
         self._current_obs: Dict[int, List[torch.Tensor]] = {}
@@ -229,6 +230,7 @@ class PrioritizedSequenceBuffer:
         self.rewards_buf = allocate(sample_chunk["rewards"])
         self.mask_buf = allocate(sample_chunk["mask"])
         self.prev_a_buf = allocate(sample_chunk["prev_act_i"])
+        self.dones_buf = allocate(sample_chunk["dones"])
         self._initialized = True
 
     def _ensure_env(self, env_idx: int):
@@ -274,7 +276,7 @@ class PrioritizedSequenceBuffer:
         if len(self._current_rewards[env_idx]) >= self.max_ep_len:
             self.end_episode(env_idx, obs_clean)
 
-    def end_episode(self, env_idx: int, final_obs: torch.Tensor):
+    def end_episode(self, env_idx: int, final_obs: torch.Tensor, terminated: bool = False):
         """
         Slices and pushes sequence chunks from completed episode trajectory into main storage.
         """
@@ -294,6 +296,10 @@ class PrioritizedSequenceBuffer:
         act_j_t = torch.stack(self._current_act_j[env_idx])      # Shape: (horizon, *act_j_shape)
         rewards_t = torch.tensor(self._current_rewards[env_idx], dtype=torch.float32).unsqueeze(-1)
 
+        dones_t = torch.zeros(horizon, 1, dtype=torch.float32)
+        if terminated:
+            dones_t[-1, 0] = 1.0
+
         for start_idx in range(horizon):
             burn_start = start_idx - self.burn_in
             pad_front = max(0, -burn_start)
@@ -306,6 +312,7 @@ class PrioritizedSequenceBuffer:
             ai = act_i_t[actual_start: train_end]
             aj = act_j_t[actual_start: train_end]
             r = rewards_t[actual_start: train_end]
+            d = dones_t[actual_start: train_end]
             prev_a = torch.zeros_like(act_i_t[0]) if actual_start == 0 else act_i_t[actual_start - 1]
 
             m_burn = torch.zeros(start_idx - actual_start, 1, dtype=torch.float32)
@@ -317,6 +324,7 @@ class PrioritizedSequenceBuffer:
                 ai = torch.cat([torch.zeros((pad_front, *ai.shape[1:]), dtype=ai.dtype), ai], dim=0)
                 aj = torch.cat([torch.zeros((pad_front, *aj.shape[1:]), dtype=aj.dtype), aj], dim=0)
                 r = torch.cat([torch.zeros((pad_front, 1), dtype=r.dtype), r], dim=0)
+                d = torch.cat([torch.zeros((pad_front, 1), dtype=d.dtype), d], dim=0)
                 mask = torch.cat([torch.zeros((pad_front, 1), dtype=mask.dtype), mask], dim=0)
 
             pad_back = self.chunk_len - (pad_front + actual_len)
@@ -325,6 +333,7 @@ class PrioritizedSequenceBuffer:
                 ai = torch.cat([ai, torch.zeros((pad_back, *ai.shape[1:]), dtype=ai.dtype)], dim=0)
                 aj = torch.cat([aj, torch.zeros((pad_back, *aj.shape[1:]), dtype=aj.dtype)], dim=0)
                 r = torch.cat([r, torch.zeros((pad_back, 1), dtype=r.dtype)], dim=0)
+                d = torch.cat([d, torch.zeros((pad_back, 1), dtype=d.dtype)], dim=0)
                 mask = torch.cat([mask, torch.zeros((pad_back, 1), dtype=mask.dtype)], dim=0)
 
             chunk = {
@@ -332,6 +341,7 @@ class PrioritizedSequenceBuffer:
                 "act_i": ai,
                 "act_j": aj,
                 "rewards": r,
+                "dones": d,
                 "mask": mask,
                 "prev_act_i": prev_a
             }
@@ -344,6 +354,7 @@ class PrioritizedSequenceBuffer:
             self.act_i_buf[ptr] = chunk["act_i"]
             self.act_j_buf[ptr] = chunk["act_j"]
             self.rewards_buf[ptr] = chunk["rewards"]
+            self.dones_buf[ptr] = chunk["dones"]
             self.mask_buf[ptr] = chunk["mask"]
             self.prev_a_buf[ptr] = chunk["prev_act_i"]
 
@@ -381,6 +392,7 @@ class PrioritizedSequenceBuffer:
             "act_i": self.act_i_buf[ptr_tensor],
             "act_j": self.act_j_buf[ptr_tensor],
             "rewards": self.rewards_buf[ptr_tensor],
+            "dones": self.dones_buf[ptr_tensor],
             "mask": self.mask_buf[ptr_tensor],
             "prev_act_i": self.prev_a_buf[ptr_tensor]
         }
