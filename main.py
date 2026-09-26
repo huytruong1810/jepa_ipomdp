@@ -9,18 +9,24 @@
 #      reward_head, opponent_head) while keeping dynamic MCTS search in eager Python.
 #    - Issues torch.compiler.cudagraph_mark_step_begin() prior to trainer updates for CUDA Graph safety.
 #
-# 2. Strict Information Filtering Causality & Memory Storage:
-#    - Advances recurrent belief state b_t = Filter(b_{t-1}, a_{t-1}, o_t) prior to
-#      MCTS search tree action selection a_t ~ pi(a | b_t).
-#    - When an environment channel truncates or terminates, retrieves the true terminal
-#      observation o_T from infos["agent_0"]["terminal_obs"] to push to buffer.end_episode(),
-#      preventing reset observation o_0 from corrupting terminal transition pairs.
+# 2. Canonical Interaction Timing and Memory Storage:
+#    - The domain (src/ipomdp/domain) emits no observation at reset. Each episode starts
+#      with the all-zero "empty history" observation (see src/ipomdp/agents/jepa_agent.py);
+#      then, every step: agent.observe(o_t) -> a_t = agent.act() -> (o_{t+1}, r_t) = env.step(a_t).
+#    - The buffer stores (o_t, a_t, r_t) per step; when a row truncates, the true final
+#      observation o_T is passed to buffer.end_episode() BEFORE the row is reset, so the
+#      terminal transition pair is never corrupted by the next episode's start.
 #
-# 3. Channel Isolation on Truncation/Reset:
-#    - Zeroes prev_actions and invokes agent.reset_index(i) on terminated channels,
-#      maintaining strict information isolation across asynchronous vector environments.
+# 3. Row Isolation on Truncation:
+#    - Truncated rows are reset in the simulator, the agent's recurrent state, and the
+#      pending observation, without touching the other rows.
 #
-# 4. Graceful Shutdown & Checkpoint Integrity:
+# 4. Single Source of Truth for the Domain:
+#    - |A|, |O|, action names and the discount gamma are read from the FinitePOMDP; gamma
+#      is passed explicitly to both the planner and the trainer so they cannot disagree
+#      with the benchmark solver.
+#
+# 5. Graceful Shutdown & Checkpoint Integrity:
 #    - Intercepts SIGINT / KeyboardInterrupt, saving an emergency interrupt_checkpoint.pt
 #      before cleanly closing the TensorBoard SummaryWriter.
 # ==============================================================================
@@ -52,21 +58,13 @@ from ipomdp.telemetry import (
     MCTSGraphVisualizer,
     LatentSpaceVisualizer,
     RewardTrajectoryVisualizer,
-    register_env,
-    make_env,
-    register_extractor,
-    make_extractor,
     SystemTelemetryMonitor,
     PipelineProfiler,
     ExecutionGuardrail,
 )
-
-import ipomdp.telemetry.registry as registry
-
-import ipomdp.envs
-from ipomdp.envs import SyncVectorEnv
-
+from ipomdp.domain import BatchedPOMDPEnv, FinitePOMDP, build_tiger_pomdp
 from ipomdp.models import (
+    MLPFeatureExtractor,
     RecurrentContextEncoder,
     CausalRelationalPredictor,
     RecurrentJEPABase,
@@ -76,8 +74,15 @@ from ipomdp.models import (
 )
 from ipomdp.planning import DiscreteLatentOpenLoopSearch
 from ipomdp.training import PrioritizedSequenceBuffer, DiscreteRecurrentIPOMDPTrainer
-from ipomdp.agents import DiscreteJEPAAgent, StatelessAgent
-from ipomdp.types import Action, State
+from ipomdp.agents import DiscreteJEPAAgent
+
+# Domains selectable through conf/env/<name>.yaml. Each builder returns the exact model.
+DOMAIN_BUILDERS = {"tiger": build_tiger_pomdp}
+
+# The canonical single-agent POMDP has no opponent. Until the opponent machinery of the
+# world model and planner is reviewed (Phases 3-4), it is fed a singleton opponent action
+# space {0}: the opponent head then predicts a constant and contributes no information.
+OPPONENT_ACTION_DIM = 1
 
 torch.set_float32_matmul_precision('high')
 torch.backends.cudnn.benchmark = True
@@ -87,15 +92,17 @@ torch.backends.cudnn.benchmark = True
 def main(cfg: DictConfig):
     logger = setup_logger("IPOMDP_Experiment")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Compute Device: {device} | Vector Batch Size: {cfg.training.env_batch_size}")
+    torch.manual_seed(cfg.seed)
+    logger.info(f"Compute Device: {device} | Vector Batch Size: {cfg.training.env_batch_size} | Seed: {cfg.seed}")
 
-    env_fn = lambda: registry.make_env(cfg.env.name, **dict(cfg.env.get("env_kwargs", {})))
-    vec_env = SyncVectorEnv(env_fn, cfg.training.env_batch_size)
-    action_map = {int(k): v for k, v in cfg.env.action_map.items()}
+    pomdp: FinitePOMDP = DOMAIN_BUILDERS[cfg.env.name]()
+    num_obs, num_actions = pomdp.num_observations, pomdp.num_actions
+    action_map = dict(enumerate(pomdp.action_names))
+    batch_size = cfg.training.env_batch_size
+    env = BatchedPOMDPEnv(pomdp, batch_size, max_steps=cfg.env.max_steps, seed=cfg.seed, device=device)
 
-    extractor = registry.make_extractor(
-        cfg.env.extractor_name,
-        obs_dim=cfg.env.obs_dim,
+    extractor = MLPFeatureExtractor(
+        obs_dim=num_obs,
         hidden_dim=cfg.model.latent_dim,
         num_objects=cfg.model.num_objects,
         num_blocks=cfg.model.num_blocks
@@ -103,7 +110,7 @@ def main(cfg: DictConfig):
 
     encoder = RecurrentContextEncoder(
         extractor,
-        action_dim=cfg.env.action_dim_i,
+        action_dim=num_actions,
         latent_dim=cfg.model.latent_dim,
         hidden_dim=cfg.model.hidden_dim,
         num_blocks=cfg.model.num_blocks
@@ -112,8 +119,8 @@ def main(cfg: DictConfig):
     predictor = CausalRelationalPredictor(
         num_objects=cfg.model.num_objects,
         latent_dim=cfg.model.latent_dim,
-        action_dim_i=cfg.env.action_dim_i,
-        action_dim_j=cfg.env.action_dim_j,
+        action_dim_i=num_actions,
+        action_dim_j=OPPONENT_ACTION_DIM,
         hidden_dim=cfg.model.hidden_dim,
         num_blocks=cfg.model.num_blocks
     )
@@ -128,92 +135,65 @@ def main(cfg: DictConfig):
 
     reward_head = RewardHead(
         latent_dim=cfg.model.latent_dim,
-        action_dim_i=cfg.env.action_dim_i,
-        action_dim_j=cfg.env.action_dim_j,
+        action_dim_i=num_actions,
+        action_dim_j=OPPONENT_ACTION_DIM,
         hidden_dim=cfg.model.hidden_dim,
         num_blocks=cfg.model.num_blocks
     ).to(device)
 
     opponent_head = DiscretePolicyHead(
         latent_dim=cfg.model.latent_dim,
-        action_dim=cfg.env.action_dim_j,
+        action_dim=OPPONENT_ACTION_DIM,
         num_opponents=1,
         hidden_dim=cfg.model.hidden_dim,
         num_blocks=cfg.model.num_blocks
     ).to(device)
 
-    # Optional PyTorch Compilation (Eager mode is default for minimal memory footprint)
-    use_compile = getattr(cfg.training, "compile", False) and hasattr(torch, "compile") and device.type == "cuda"
+    # Selective compilation of the fixed-shape networks; MCTS control flow stays eager.
+    use_compile = cfg.training.compile and device.type == "cuda"
+    networks = (jepa_model, value_head, reward_head, opponent_head)
     if use_compile:
         logger.info("Selective PyTorch compilation enabled...")
-        compiled_jepa = torch.compile(jepa_model)
-        compiled_value = torch.compile(value_head)
-        compiled_reward = torch.compile(reward_head)
-        compiled_opp = torch.compile(opponent_head)
+        networks = tuple(torch.compile(net) for net in networks)
+    run_jepa, run_value, run_reward, run_opponent = networks
 
-        planner = DiscreteLatentOpenLoopSearch(
-            jepa_model=compiled_jepa,
-            value_head=compiled_value,
-            reward_head=compiled_reward,
-            opponent_head=compiled_opp,
-            action_dim_i=cfg.env.action_dim_i,
-            action_dim_j=cfg.env.action_dim_j,
-            num_simulations=cfg.mcts.num_simulations,
-            num_latent_obs=cfg.mcts.num_latent_obs
-        )
-        trainer = DiscreteRecurrentIPOMDPTrainer(
-            jepa_model=compiled_jepa,
-            value_head=compiled_value,
-            reward_head=compiled_reward,
-            opponent_head=compiled_opp,
-            logger=logger,
-            device=device,
-            latent_dim=cfg.model.latent_dim,
-            action_dim_i=cfg.env.action_dim_i,
-            action_dim_j=cfg.env.action_dim_j,
-            num_objects=cfg.model.num_objects,
-            detach_belief_for_rl=False
-        )
-    else:
-        planner = DiscreteLatentOpenLoopSearch(
-            jepa_model=jepa_model,
-            value_head=value_head,
-            reward_head=reward_head,
-            opponent_head=opponent_head,
-            action_dim_i=cfg.env.action_dim_i,
-            action_dim_j=cfg.env.action_dim_j,
-            num_simulations=cfg.mcts.num_simulations,
-            num_latent_obs=cfg.mcts.num_latent_obs
-        )
-        trainer = DiscreteRecurrentIPOMDPTrainer(
-            jepa_model=jepa_model,
-            value_head=value_head,
-            reward_head=reward_head,
-            opponent_head=opponent_head,
-            logger=logger,
-            device=device,
-            latent_dim=cfg.model.latent_dim,
-            action_dim_i=cfg.env.action_dim_i,
-            action_dim_j=cfg.env.action_dim_j,
-            num_objects=cfg.model.num_objects,
-            detach_belief_for_rl=False
-        )
+    planner = DiscreteLatentOpenLoopSearch(
+        jepa_model=run_jepa,
+        value_head=run_value,
+        reward_head=run_reward,
+        opponent_head=run_opponent,
+        action_dim_i=num_actions,
+        action_dim_j=OPPONENT_ACTION_DIM,
+        num_simulations=cfg.mcts.num_simulations,
+        num_latent_obs=cfg.mcts.num_latent_obs,
+        discount=pomdp.discount
+    )
+    trainer = DiscreteRecurrentIPOMDPTrainer(
+        jepa_model=run_jepa,
+        value_head=run_value,
+        reward_head=run_reward,
+        opponent_head=run_opponent,
+        logger=logger,
+        device=device,
+        latent_dim=cfg.model.latent_dim,
+        action_dim_i=num_actions,
+        action_dim_j=OPPONENT_ACTION_DIM,
+        num_objects=cfg.model.num_objects,
+        gamma=pomdp.discount,
+        detach_belief_for_rl=False
+    )
 
-    agents = {
-        "agent_0": DiscreteJEPAAgent(
-            agent_id="agent_0",
-            planner=planner,
-            latent_dim=cfg.model.latent_dim,
-            action_dim=cfg.env.action_dim_i,
-            device=device,
-            num_objects=cfg.model.num_objects
-        ),
-        "agent_1": StatelessAgent(
-            agent_id="agent_1",
-            action_dim=cfg.env.action_dim_j,
-            action_idx=0
-        )
-    }
+    agent = DiscreteJEPAAgent(
+        planner=planner,
+        batch_size=batch_size,
+        num_actions=num_actions,
+        num_objects=cfg.model.num_objects,
+        latent_dim=cfg.model.latent_dim,
+        device=device,
+        temperature=cfg.agent.temperature,
+        temperature_min=cfg.agent.temperature_min,
+        temperature_decay=cfg.agent.temperature_decay
+    )
 
     buffer = PrioritizedSequenceBuffer(
         capacity=2048,
@@ -253,38 +233,23 @@ def main(cfg: DictConfig):
 
 
     start_step = 0
-    try:
-        start_step = checkpointer.load(
-            f"{cfg.env.name}_checkpoints/latest_checkpoint.pt",
-            models_dict,
-            trainer.optimizer,
-            device
-        )
-    except Exception as e:
-        logger.warning(f"Starting from step 0 (no checkpoint loaded): {e}")
+    latest_path = Path(f"{cfg.env.name}_checkpoints/latest_checkpoint.pt")
+    if latest_path.exists():
+        start_step = checkpointer.load(str(latest_path), models_dict, trainer.optimizer, device)
 
-    observations, infos = vec_env.reset()
-    for agent in agents.values():
-        agent.reset(batch_size=cfg.training.env_batch_size)
+    # o_t fed to the filter: the all-zero "empty history" at the start of every episode.
+    observation = torch.zeros(batch_size, num_obs, device=device)
+    no_opponent_action = torch.zeros(1, dtype=torch.int64)
 
-    prev_actions = {
-        aid: Action(data=torch.zeros(
-            cfg.training.env_batch_size,
-            cfg.env.action_dim_i if aid == "agent_0" else cfg.env.action_dim_j,
-            device=device
-        ))
-        for aid in agents
-    }
-
-    ep_returns = np.zeros(cfg.training.env_batch_size, dtype=np.float32)
+    ep_returns = np.zeros(batch_size, dtype=np.float32)
     recent_ep_returns = deque(maxlen=100)
-    ep_lengths = np.zeros(cfg.training.env_batch_size, dtype=np.int32)
+    ep_lengths = np.zeros(batch_size, dtype=np.int32)
     recent_ep_lengths = deque(maxlen=100)
 
     # Within-episode cumulative trajectory tracking
     active_trajectories = [
         {"cum_rewards": [0.0], "actions": [], "rewards": []}
-        for _ in range(cfg.training.env_batch_size)
+        for _ in range(batch_size)
     ]
     completed_trajectories = deque(maxlen=64)
 
@@ -294,50 +259,40 @@ def main(cfg: DictConfig):
     do_viz = False
     viz_beliefs, viz_true_states, viz_actions = [], [], []
 
-    warmup_episodes = getattr(cfg.training, "warmup_episodes", 0)
     try:
         pbar = tqdm(range(start_step, cfg.training.total_steps), desc="Steps", initial=start_step, total=cfg.training.total_steps)
         for step in pbar:
             current_step_holder[0] = step
 
             with profiler.profile("update_belief"):
-                agents["agent_0"].update_belief(observations["agent_0"], prev_actions["agent_0"])
-                agents["agent_1"].update_belief(observations["agent_1"], prev_actions["agent_1"])
+                agent.observe(observation)
 
             if do_viz:
-                viz_beliefs.append(agents["agent_0"].belief[0].clone().detach().unsqueeze(0))
-                ts = infos["agent_0"]["true_state"]
-                ts_val = ts[0].data if isinstance(ts[0], State) else (ts.data[0] if isinstance(ts, State) else ts[0])
-                viz_true_states.append(ts_val.clone().detach())
+                viz_beliefs.append(agent.belief[0].clone().detach().unsqueeze(0))
+                viz_true_states.append(env.state[0:1])
 
             with profiler.profile("mcts_search"):
-                if episodes_completed < warmup_episodes:
-                    # Fast uniform exploration during buffer warmup
-                    rand_act = torch.randint(0, cfg.env.action_dim_i, (cfg.training.env_batch_size, 1), device=device).float()
-                    actions = {
-                        "agent_0": Action(data=rand_act),
-                        "agent_1": agents["agent_1"].act(observations["agent_1"])
-                    }
-                    agents["agent_0"].prev_action = F.one_hot(rand_act.squeeze(-1).long(), num_classes=cfg.env.action_dim_i).float()
+                if episodes_completed < cfg.training.warmup_episodes:
+                    action = agent.act_uniformly()
                 else:
-                    actions = {aid: agent.act(observations[aid]) for aid, agent in agents.items()}
+                    action = agent.act()
 
             if do_viz:
-                viz_actions.append(int(actions["agent_0"].data[0].item()))
-                if len(viz_actions) == 1 and hasattr(planner, 'root') and planner.root is not None:
-                    try:
-                        tree_viz.visualize(planner.root, filename=f"mcts_tree_ep{episodes_completed}")
-                    except Exception as e:
-                        logger.warning(f"MCTS tree visualization skipped: {e}")
+                viz_actions.append(int(action[0].item()))
+                if len(viz_actions) == 1 and planner.root is not None:
+                    tree_viz.visualize(planner.root, filename=f"mcts_tree_ep{episodes_completed}")
 
             with profiler.profile("env_step"):
-                next_obs, rews, terms, truncs, infos = vec_env.step(actions)
+                out = env.step(action)
 
-            for i in range(cfg.training.env_batch_size):
+            next_observation = F.one_hot(out.observation, num_classes=num_obs).float()
+            rewards = out.reward.tolist()
+            actions_taken = action.tolist()
+            truncated = out.truncated.tolist()
 
-
-                step_reward = float(rews["agent_0"][i].item())
-                act_taken = int(actions["agent_0"].data[i].item())
+            for i in range(batch_size):
+                step_reward = rewards[i]
+                act_taken = actions_taken[i]
                 ep_returns[i] += step_reward
                 ep_lengths[i] += 1
 
@@ -347,13 +302,13 @@ def main(cfg: DictConfig):
 
                 buffer.push(
                     env_idx=i,
-                    obs=observations["agent_0"].data[i],
-                    act_i=actions["agent_0"].data[i],
-                    act_j=actions["agent_1"].data[i],
+                    obs=observation[i],
+                    act_i=action[i].view(1),
+                    act_j=no_opponent_action,
                     reward=step_reward
                 )
 
-                if terms["agent_0"][i].item() or truncs["agent_0"][i].item():
+                if truncated[i]:
                     recent_ep_returns.append(ep_returns[i])
                     recent_ep_lengths.append(ep_lengths[i])
                     ep_returns[i] = 0.0
@@ -366,53 +321,44 @@ def main(cfg: DictConfig):
                     })
                     active_trajectories[i] = {"cum_rewards": [0.0], "actions": [], "rewards": []}
 
-                    term_obs = infos["agent_0"]["terminal_obs"][i]
-                    is_term = bool(terms["agent_0"][i].item())
-                    buffer.end_episode(env_idx=i, final_obs=term_obs, terminated=is_term)
-
-                    prev_actions["agent_0"].data[i].zero_()
-                    prev_actions["agent_1"].data[i].zero_()
-
-                    agents["agent_0"].reset_index(i)
-                    agents["agent_1"].reset_index(i)
+                    # Truncation is not termination: the transition bootstraps through o_T.
+                    buffer.end_episode(env_idx=i, final_obs=next_observation[i], terminated=False)
 
                     if i == 0:
                         if do_viz and len(viz_beliefs) > 1:
-                            try:
-                                latent_viz.plot_trajectory(
-                                    beliefs=viz_beliefs,
-                                    true_states=viz_true_states,
-                                    actions=viz_actions,
-                                    filename=f"trajectory_ep{episodes_completed}",
-                                    value_head=value_head,
-                                    action_map=action_map
-                                )
-                            except Exception as e:
-                                logger.error(f"Latent trajectory visualization failed: {e}")
+                            latent_viz.plot_trajectory(
+                                beliefs=viz_beliefs,
+                                true_states=viz_true_states,
+                                actions=viz_actions,
+                                filename=f"trajectory_ep{episodes_completed}",
+                                value_head=value_head,
+                                action_map=action_map
+                            )
 
                         if do_viz and completed_trajectories:
-                            try:
-                                recent_trajs = list(completed_trajectories)[-min(16, len(completed_trajectories)):]
-                                fig = reward_viz.plot_cumulative_rewards(
-                                    trajectories=recent_trajs,
-                                    filename="canonical_episode_cumulative_rewards",
-                                    title_suffix=f"Step {step:,}, Ep {episodes_completed}",
-                                    action_map=action_map
-                                )
-                                metrics_logger.log_figure("Visuals/within_episode_cumulative_reward", fig, step)
-                                plt.close(fig)
-                            except Exception as e:
-                                logger.error(f"Reward trajectory visualization failed: {e}")
+                            recent_trajs = list(completed_trajectories)[-min(16, len(completed_trajectories)):]
+                            fig = reward_viz.plot_cumulative_rewards(
+                                trajectories=recent_trajs,
+                                filename="canonical_episode_cumulative_rewards",
+                                title_suffix=f"Step {step:,}, Ep {episodes_completed}",
+                                action_map=action_map
+                            )
+                            metrics_logger.log_figure("Visuals/within_episode_cumulative_reward", fig, step)
+                            plt.close(fig)
 
                         episodes_completed += 1
-                        agents["agent_0"].anneal_temperature()
+                        agent.anneal_temperature()
                         do_viz = (episodes_completed % cfg.training.viz_freq == 0) and (episodes_completed > 0)
                         viz_beliefs.clear()
                         viz_true_states.clear()
                         viz_actions.clear()
 
-            observations = next_obs
-            prev_actions = actions
+            # Start new episodes in truncated rows: simulator, recurrent state, empty history.
+            truncated_mask = out.truncated
+            env.reset_rows(truncated_mask)
+            agent.reset_rows(truncated_mask)
+            next_observation[truncated_mask] = 0.0
+            observation = next_observation
 
             performed_train = False
             if buffer.tree.size >= cfg.training.batch_size and step % cfg.training.update_freq == 0:
@@ -444,11 +390,11 @@ def main(cfg: DictConfig):
                         metrics["treasure_accuracy_pct"] = float(treasures / door_openings * 100.0)
                         metrics["tiger_penalty_pct"] = float(tigers / door_openings * 100.0)
 
-                metrics["step_reward_mean"] = float(rews["agent_0"].mean().item())
+                metrics["step_reward_mean"] = float(out.reward.mean().item())
                 metrics["episodes_completed"] = episodes_completed
-                metrics["agent_temperature"] = float(agents["agent_0"].temperature)
+                metrics["agent_temperature"] = float(agent.temperature)
 
-                act_data = actions["agent_0"].data.view(-1)
+                act_data = action
                 for a_idx, a_name in action_map.items():
                     act_key = f"action_pct_{a_name.lower().replace(' ', '_')}"
                     metrics[act_key] = float((act_data == a_idx).float().mean().item())
@@ -465,7 +411,7 @@ def main(cfg: DictConfig):
                 metrics_logger.log_metrics(profiler.get_all_metrics(), step, prefix="Profiler")
                 metrics_logger.log_metrics(guardrail.get_incident_metrics(), step, prefix="Guardrail")
 
-            profiler.record_step(transitions=cfg.training.env_batch_size, train_steps=1 if performed_train else 0)
+            profiler.record_step(transitions=batch_size, train_steps=1 if performed_train else 0)
 
             # Autonomous Execution Guardrail Supervision
             if step % 25 == 0 and step > 0:
@@ -474,8 +420,7 @@ def main(cfg: DictConfig):
                     logger.critical("[!] ExecutionGuardrail triggered emergency abort. Halting training.")
                     break
                 guardrail.check_step_latency(step, "mcts_search")
-                last_val = getattr(agents["agent_0"], "last_value", 0.0)
-                guardrail.check_value_bounds(step, last_val)
+                guardrail.check_value_bounds(step, agent.last_root_value)
 
             if step % 10 == 0:
                 pbar_dict = {}

@@ -10,8 +10,7 @@ from ipomdp.models.extractors import MLPFeatureExtractor
 from ipomdp.models.heads import ValueHead, RewardHead, DiscretePolicyHead
 from ipomdp.models.world_model import RecurrentContextEncoder, CausalRelationalPredictor, RecurrentJEPABase
 from ipomdp.planning.mcts import DiscreteLatentOpenLoopSearch, MinMaxStats, LatentSearchNode
-from ipomdp.agents.jepa_agent import DiscreteJEPAAgent, StatelessAgent
-from ipomdp.types import Action, Observation
+from ipomdp.agents.jepa_agent import DiscreteJEPAAgent
 from ipomdp.training.trainer import DiscreteRecurrentIPOMDPTrainer
 
 
@@ -81,41 +80,43 @@ class TestAgentAndPlanner:
     """Rigorous tests for DiscreteJEPAAgent and Latent MCTS planner."""
 
     def test_discrete_jepa_agent_lifecycle(self, test_setup):
-        agent = DiscreteJEPAAgent(
-            agent_id="agent_0",
-            planner=test_setup["planner"],
-            latent_dim=test_setup["latent_dim"],
-            action_dim=test_setup["action_dim_i"],
-            device=test_setup["device"],
-            num_objects=test_setup["num_objects"]
-        )
-
         b_batch = 2
-        agent.reset(batch_size=b_batch)
+        agent = DiscreteJEPAAgent(
+            planner=test_setup["planner"],
+            batch_size=b_batch,
+            num_actions=test_setup["action_dim_i"],
+            num_objects=test_setup["num_objects"],
+            latent_dim=test_setup["latent_dim"],
+            device=test_setup["device"],
+            temperature=1.0,
+            temperature_min=0.1,
+            temperature_decay=0.5,
+        )
         assert agent.belief.shape == torch.Size([b_batch, 2, 32])
         assert agent.prev_action.shape == torch.Size([b_batch, 3])
 
-        # Test single-channel reset isolation
+        # Row-wise reset isolation
         agent.belief[0].fill_(1.0)
         agent.belief[1].fill_(2.0)
-        agent.reset_index(0)
+        agent.reset_rows(torch.tensor([True, False]))
         assert (agent.belief[0] == 0.0).all()
         assert (agent.belief[1] == 2.0).all()
 
-        # Update belief
-        obs = Observation(torch.randn(b_batch, 2))
-        prev_a = Action(torch.zeros(b_batch, 1))
-        agent.update_belief(obs, prev_a)
+        # Episode start: the empty-history observation is all zeros
+        agent.observe(torch.zeros(b_batch, 2))
         assert agent.belief.shape == torch.Size([b_batch, 2, 32])
 
-        # Select action
-        action = agent.act(obs)
-        assert action.data.shape == torch.Size([b_batch, 1])
+        action = agent.act()
+        assert action.shape == torch.Size([b_batch]) and action.dtype == torch.int64
+        assert torch.equal(agent.prev_action, F.one_hot(action, 3).float())
 
-        # Temperature decay
-        t_init = agent.temperature
-        t_decay = agent.anneal_temperature()
-        assert t_decay <= t_init
+        uniform = agent.act_uniformly()
+        assert torch.equal(agent.prev_action, F.one_hot(uniform, 3).float())
+
+        assert agent.anneal_temperature() == 0.5
+        for _ in range(10):
+            agent.anneal_temperature()
+        assert agent.temperature == 0.1
 
     def test_latent_mcts_search(self, test_setup):
         planner = test_setup["planner"]

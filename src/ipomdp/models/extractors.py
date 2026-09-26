@@ -35,7 +35,6 @@ import torch
 import torch.nn as nn
 
 from .layers import build_residual_stack, RMSNorm, LearnedPositionalEncoding2D
-from ..telemetry.registry import register_extractor
 
 
 class FeatureExtractor(nn.Module, ABC):
@@ -157,7 +156,6 @@ class SlotAttention(nn.Module):
         return slots
 
 
-@register_extractor("mlp")
 class MLPFeatureExtractor(FeatureExtractor):
     """
     Object slot extractor for flat vector observations (e.g., Multi-Agent Tiger).
@@ -218,7 +216,6 @@ class MLPFeatureExtractor(FeatureExtractor):
         return slots + pos_embed
 
 
-@register_extractor("cnn")
 class CNNFeatureExtractor(FeatureExtractor):
     """Extracts permutation-invariant visual object slots from spatial image frames."""
 

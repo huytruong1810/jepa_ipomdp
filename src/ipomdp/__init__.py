@@ -1,118 +1,13 @@
-# ABSOLUTE PATH: src/ipomdp/__init__.py
-"""JEPA-IPOMDP: Recurrent Joint-Embedding Predictive Architecture for Interactive POMDPs."""
+"""
+JEPA-IPOMDP: a recurrent Joint-Embedding Predictive Architecture belief filter with latent
+MCTS planning for (Interactive) POMDPs.
 
-from .types import AgentID, State, Observation, Action, StepResult
-from .interfaces import IPOMDPEnv, IPOMDPAgent, AbstractPlanner
-
-from .models import (
-    RMSNorm,
-    SwiGLUResidualBlock,
-    build_residual_stack,
-    LearnedPositionalEncoding2D,
-    AttentionPooler,
-    SwarmActionEncoder,
-    TwoHotSymlog,
-    symlog,
-    symexp,
-    FeatureExtractor,
-    SlotAttention,
-    MLPFeatureExtractor,
-    CNNFeatureExtractor,
-    ValueHead,
-    RewardHead,
-    DiscretePolicyHead,
-    ObservationProbeHead,
-    RecurrentContextEncoder,
-    CausalRelationalPredictor,
-    RecurrentJEPABase,
-)
-
-from .planning import MinMaxStats, LatentSearchNode, DiscreteLatentOpenLoopSearch
-from .agents import StatelessAgent, DiscreteJEPAAgent
-from .training import SumTree, PrioritizedSequenceBuffer, DiscreteRecurrentIPOMDPTrainer
-from .envs import MultiAgentTigerEnv, TigerBayesianOracle, SyncVectorEnv, UAVEnv, MultiAgentWumpusEnv
-from .telemetry import (
-    JSONFormatter,
-    setup_logger,
-    log_telemetry,
-    MetricsLogger,
-    compute_distribution_kl_divergence,
-    compute_observation_accuracy_metrics,
-    LatentSpaceVisualizer,
-    MCTSGraphVisualizer,
-    JEPASemanticsProbe,
-    ModelCheckpointer,
-    register_env,
-    make_env,
-    register_extractor,
-    make_extractor,
-    SystemTelemetryMonitor,
-    PipelineProfiler,
-    ExecutionGuardrail,
-)
-
-
-__version__ = "0.1.0"
-
-__all__ = [
-    "AgentID",
-    "State",
-    "Observation",
-    "Action",
-    "StepResult",
-    "IPOMDPEnv",
-    "IPOMDPAgent",
-    "AbstractPlanner",
-    "RMSNorm",
-    "SwiGLUResidualBlock",
-    "build_residual_stack",
-    "LearnedPositionalEncoding2D",
-    "AttentionPooler",
-    "SwarmActionEncoder",
-    "TwoHotSymlog",
-    "symlog",
-    "symexp",
-    "FeatureExtractor",
-    "SlotAttention",
-    "MLPFeatureExtractor",
-    "CNNFeatureExtractor",
-    "ValueHead",
-    "RewardHead",
-    "DiscretePolicyHead",
-    "ObservationProbeHead",
-    "RecurrentContextEncoder",
-    "CausalRelationalPredictor",
-    "RecurrentJEPABase",
-    "MinMaxStats",
-    "LatentSearchNode",
-    "DiscreteLatentOpenLoopSearch",
-    "StatelessAgent",
-    "DiscreteJEPAAgent",
-    "SumTree",
-    "PrioritizedSequenceBuffer",
-    "DiscreteRecurrentIPOMDPTrainer",
-    "MultiAgentTigerEnv",
-    "TigerBayesianOracle",
-    "SyncVectorEnv",
-    "UAVEnv",
-    "MultiAgentWumpusEnv",
-    "JSONFormatter",
-    "setup_logger",
-    "log_telemetry",
-    "MetricsLogger",
-    "compute_distribution_kl_divergence",
-    "compute_observation_accuracy_metrics",
-    "LatentSpaceVisualizer",
-    "MCTSGraphVisualizer",
-    "JEPASemanticsProbe",
-    "ModelCheckpointer",
-    "register_env",
-    "make_env",
-    "register_extractor",
-    "make_extractor",
-    "SystemTelemetryMonitor",
-    "PipelineProfiler",
-    "ExecutionGuardrail",
-]
-
-
+Subpackages (import from them directly; this top-level module re-exports nothing so that
+importing one layer never drags in the others):
+    domain     exact POMDP specifications, Bayes filter, exact solver, batched simulator
+    models     JEPA world model, distributional heads, network building blocks
+    planning   latent-space MCTS
+    agents     batched belief-filtering agent
+    training   sequence replay buffer and trainer
+    telemetry  logging, metrics, visualisation, checkpointing, system monitoring
+"""

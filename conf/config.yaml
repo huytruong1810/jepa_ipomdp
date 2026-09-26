@@ -11,11 +11,11 @@
 #      two-hot symlog return/reward regression, and multi-step hallucination
 #      consistency losses are backpropagated.
 #    - Total contiguous sequence chunk: chunk_len = burn_in + train_seq_len = 15 steps.
-#    - max_steps: 20 steps. Guaranteed horizon headroom ensuring episodes provide
-#      valid sequence chunks without excessive absorbing-state padding.
+#    - Episode length is env.max_steps (conf/env/<name>.yaml); it must be >= chunk_len
+#      so every episode yields at least one full sequence chunk.
 #
 # 2. Vectorized Hardware Orchestration:
-#    - env_batch_size: 16 parallel synchronous environment channels (SyncVectorEnv).
+#    - env_batch_size: 16 parallel episodes stepped in lock-step by BatchedPOMDPEnv.
 #    - batch_size: 16 sequence chunks sampled per gradient optimization step.
 #    - update_freq: 8 environment steps between gradient updates. With 16 parallel
 #      channels, exactly 128 environment transitions are pushed to the Prioritized
@@ -37,19 +37,24 @@ defaults:
   - env: tiger
   - _self_
 
+seed: 0                       # Seeds torch (networks, MCTS sampling) and the simulator generator
+
 training:
-  inference_mode: false
-  env_batch_size: 16          # Number of parallel SyncVectorEnv execution streams
+  env_batch_size: 16          # Number of parallel episodes simulated by BatchedPOMDPEnv
   batch_size: 16              # Number of sequence chunks sampled from Seq-PER per update
   burn_in: 5                  # Recurrent context GRU filter warmup steps (loss masked out)
   train_seq_len: 10           # Active training horizon (chunk_len = burn_in + train_seq_len = 15)
-  max_steps: 20               # Episode truncation horizon limit per environment channel
   total_steps: 1000000        # Total training environment steps (1 Million)
   warmup_episodes: 100        # Random exploration episodes before neural policy engagement
   update_freq: 8              # Frequency of gradient descent steps relative to env steps
   save_freq: 500              # Frequency of model checkpoint serialization
   viz_freq: 100               # Frequency of latent PCA and MCTS tree visualizations
   compile: false              # Whether to use torch.compile on neural networks (disabled by default for low memory footprint)
+
+agent:
+  temperature: 1.0            # Initial MCTS visit-count sampling temperature
+  temperature_min: 0.1        # Floor of the annealed temperature
+  temperature_decay: 0.999    # Multiplicative decay per completed episode (env row 0)
 
 model:
   latent_dim: 32              # Latent representation dimension per object slot (D_latent)

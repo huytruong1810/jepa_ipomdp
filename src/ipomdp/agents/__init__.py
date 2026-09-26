@@ -1,9 +1,5 @@
-# ABSOLUTE PATH: src/ipomdp/agents/__init__.py
-"""Multi-agent policy models and belief-tracking state managers for JEPA-IPOMDP."""
+"""Batched agent that filters latent beliefs with the JEPA encoder and acts by latent MCTS."""
 
-from .jepa_agent import StatelessAgent, DiscreteJEPAAgent
+from .jepa_agent import DiscreteJEPAAgent
 
-__all__ = [
-    "StatelessAgent",
-    "DiscreteJEPAAgent",
-]
+__all__ = ["DiscreteJEPAAgent"]

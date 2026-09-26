@@ -1,72 +1,25 @@
 # ABSOLUTE PATH: src/ipomdp/types.py
 # ==============================================================================
-# IMMUTABLE TENSOR DATA STRUCTURES & BATCH CONTRACT VALIDATORS
+# ACTION TENSOR CONTAINER AND RANK-SAFE ONE-HOT ENCODING
 # ==============================================================================
 #
 # DESIGN DECISIONS & THEORETICAL FOUNDATIONS:
-# 1. Structural Tensor Invariant Contracts:
-#    - All domain dataclasses (State, Observation, Action, StepResult) are strictly
-#      immutable (frozen=True) and validate leading batch dimension presence (B >= 1)
-#      in __post_init__ to catch unbatched tensors before neural propagation.
+# 1. Scope:
+#    - Environment-side containers (State, Observation, StepResult) were removed with the
+#      move to the tensor-based domain layer (src/ipomdp/domain). Action remains only for
+#      its one-hot encoder, which the world model and heads use; it is reviewed with those
+#      networks in Phase 2/3.
 #
-# 2. Non-Blocking Device Migration:
-#    - Provides unified, recursive .to(device, non_blocking=True) methods to streamline
-#      asynchronous PCIe memory transfers between host pinned RAM and GPU VRAM.
-#
-# 3. Universal Rank-Safe One-Hot Encoding:
+# 2. Universal Rank-Safe One-Hot Encoding:
 #    - Action.to_one_hot handles integer scalars, 1D batches (B,), 2D singletons (B, 1),
 #      and 3D temporal sequences (B, T, 1) without dynamic shape failures or rank loss
 #      when B = 1.
-#
-# 4. Complete Recursive StepResult Device Migration:
-#    - StepResult.to recursively transfers all enclosed dictionary fields including
-#      observations, rewards, terminations, truncations, and tensor metadata in infos
-#      (e.g., terminal_obs, terminal_state, true_state) to prevent host-device PCIe drops.
 # ==============================================================================
 
 from dataclasses import dataclass, replace
-from typing import Dict, TypeAlias, Optional, Any
+from typing import Optional
+
 import torch
-
-AgentID: TypeAlias = str
-
-
-@dataclass(frozen=True)
-class State:
-    """
-    Encapsulates the true, hidden global environment state (S).
-
-    Shape Contract:
-        data: (B, *state_shape) where B >= 1 is the number of parallel environment channels.
-    """
-    data: torch.Tensor
-
-    def __post_init__(self):
-        assert isinstance(self.data, torch.Tensor), f"State data must be torch.Tensor, got {type(self.data)}"
-        assert self.data.dim() >= 1, f"State tensor must possess a leading batch dimension, got shape: {self.data.shape}"
-
-    def to(self, device: torch.device, non_blocking: bool = True) -> 'State':
-        """Transfers state tensor to target hardware device."""
-        return replace(self, data=self.data.to(device, non_blocking=non_blocking))
-
-
-@dataclass(frozen=True)
-class Observation:
-    """
-    Encapsulates a masked local observation available to an agent (O_i).
-
-    Shape Contract:
-        data: (B, *obs_shape) where B >= 1 is the number of parallel environment channels.
-    """
-    data: torch.Tensor
-
-    def __post_init__(self):
-        assert isinstance(self.data, torch.Tensor), f"Observation data must be torch.Tensor, got {type(self.data)}"
-        assert self.data.dim() >= 1, f"Observation tensor must possess a leading batch dimension, got shape: {self.data.shape}"
-
-    def to(self, device: torch.device, non_blocking: bool = True) -> 'Observation':
-        """Transfers observation tensor to target hardware device."""
-        return replace(self, data=self.data.to(device, non_blocking=non_blocking))
 
 
 @dataclass(frozen=True)
@@ -139,70 +92,3 @@ class Action:
             one_hot = one_hot.unsqueeze(0)
 
         return one_hot
-
-
-@dataclass(frozen=True)
-class StepResult:
-    """
-    Standardized result container returned by environment step operations.
-    All enclosed tensors adhere to the (B, ...) leading batch contract.
-    """
-    observations: Dict[AgentID, Observation]
-    rewards: Dict[AgentID, torch.Tensor]
-    terminations: Dict[AgentID, torch.Tensor]
-    truncations: Dict[AgentID, torch.Tensor]
-    infos: Dict[AgentID, dict]
-
-    def __iter__(self):
-        yield self.observations
-        yield self.rewards
-        yield self.terminations
-        yield self.truncations
-        yield self.infos
-
-    def to(self, device: torch.device, non_blocking: bool = True) -> 'StepResult':
-        """
-        Recursively transfers all enclosed observation, reward, termination, truncation,
-        and info metadata tensors to target hardware device in a single operation.
-        """
-        def _migrate(val: Any) -> Any:
-            if isinstance(val, (torch.Tensor, State, Observation, Action)):
-                return val.to(device, non_blocking=non_blocking)
-            if isinstance(val, dict):
-                return {k: _migrate(v) for k, v in val.items()}
-            if isinstance(val, list):
-                return [_migrate(v) for v in val]
-            if isinstance(val, tuple):
-                return tuple(_migrate(v) for v in val)
-            return val
-
-        new_obs = {
-            agent_id: obs.to(device, non_blocking=non_blocking)
-            for agent_id, obs in self.observations.items()
-        }
-        new_rews = {
-            agent_id: rew.to(device, non_blocking=non_blocking)
-            for agent_id, rew in self.rewards.items()
-        }
-        new_terms = {
-            agent_id: term.to(device, non_blocking=non_blocking)
-            for agent_id, term in self.terminations.items()
-        }
-        new_truncs = {
-            agent_id: trunc.to(device, non_blocking=non_blocking)
-            for agent_id, trunc in self.truncations.items()
-        }
-        new_infos = {
-            agent_id: _migrate(info_dict)
-            for agent_id, info_dict in self.infos.items()
-        }
-
-        return replace(
-            self,
-            observations=new_obs,
-            rewards=new_rews,
-            terminations=new_terms,
-            truncations=new_truncs,
-            infos=new_infos
-        )
-

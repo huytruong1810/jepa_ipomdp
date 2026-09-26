@@ -9,7 +9,7 @@ import tempfile
 import logging
 from pathlib import Path
 
-from ipomdp.types import Action, Observation, State, StepResult
+from ipomdp.types import Action
 from ipomdp.training.replay_buffer import SumTree, PrioritizedSequenceBuffer
 from ipomdp.models.distributions import symlog, symexp, TwoHotSymlog
 from ipomdp.models.layers import RMSNorm, SwiGLUResidualBlock, build_residual_stack
@@ -19,7 +19,7 @@ from ipomdp.telemetry.checkpointer import ModelCheckpointer
 
 
 class TestDataTypes:
-    """Rigorous tests for core immutable tensor containers."""
+    """Rank-safe one-hot action encoding."""
 
     def test_action_to_one_hot_ranks(self):
         # 1. Scalar int
@@ -46,33 +46,6 @@ class TestDataTypes:
         t_3d = torch.randint(0, 3, (2, 5, 1))
         oh_3d = Action.to_one_hot(t_3d, num_classes=3)
         assert oh_3d.shape == torch.Size([2, 5, 3])
-
-    def test_dataclass_invariants_and_device_migration(self):
-        state = State(torch.zeros(2, 4))
-        assert state.data.shape == torch.Size([2, 4])
-
-        with pytest.raises(AssertionError):
-            # Unbatched scalar float (0-dim) must fail invariant
-            State(torch.tensor(1.0))
-
-        obs = Observation(torch.randn(2, 2))
-        act = Action(torch.tensor([[0], [1]]))
-        rew = {"agent_0": torch.tensor([[1.0], [-1.0]])}
-        term = {"agent_0": torch.tensor([[False], [True]])}
-        trunc = {"agent_0": torch.tensor([[False], [False]])}
-        infos = {"agent_0": {"terminal_obs": torch.randn(2, 2)}}
-
-        step_res = StepResult(
-            observations={"agent_0": obs},
-            rewards=rew,
-            terminations=term,
-            truncations=trunc,
-            infos=infos
-        )
-
-        migrated = step_res.to(torch.device("cpu"))
-        assert isinstance(migrated.observations["agent_0"], Observation)
-        assert isinstance(migrated.infos["agent_0"]["terminal_obs"], torch.Tensor)
 
 
 class TestSumTree:
