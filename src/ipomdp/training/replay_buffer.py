@@ -32,6 +32,14 @@
 #    - Chunks are sliced as (burn_in + seq_len). The mask tensor assigns 0.0 to the first
 #      burn_in steps and 1.0 to the subsequent seq_len training steps, isolating loss
 #      backpropagation strictly to post-warmup recurrent states.
+#
+# DEVICE-TO-HOST COPIES ARE SYNCHRONOUS (DO NOT ADD non_blocking=True):
+#    - Transitions arrive as CUDA tensors and are stored in CPU memory. A non-blocking
+#      device-to-host copy returns before the data has landed, so reading or storing the
+#      result without a stream synchronisation yields stale memory. This silently corrupted
+#      stored observations/actions in every earlier GPU run and surfaced as intermittent
+#      "index out of bounds" device asserts when a stale action index reached F.one_hot.
+#      tests/test_core_utils.py::TestPrioritizedSequenceBuffer guards against regressions.
 # ==============================================================================
 
 from typing import Dict, Union, Tuple, List, Optional
@@ -255,18 +263,18 @@ class PrioritizedSequenceBuffer:
         self._ensure_env(env_idx)
 
         # Rank normalization: Strip leading singleton batch dimensions
-        obs_clean = obs.clone().detach().to(device="cpu", non_blocking=True)
+        obs_clean = obs.detach().cpu()
         if obs_clean.dim() > 1 and obs_clean.size(0) == 1:
             obs_clean = obs_clean.squeeze(0)
 
-        act_i_clean = act_i.clone().detach().to(device="cpu", non_blocking=True)
+        act_i_clean = act_i.detach().cpu()
         if act_i_clean.dim() > 1 and act_i_clean.size(0) == 1:
             act_i_clean = act_i_clean.squeeze(0)
 
         if isinstance(act_j, (int, float)):
             act_j_clean = torch.tensor([int(act_j)], dtype=torch.long)
         else:
-            act_j_clean = act_j.clone().detach().to(device="cpu", non_blocking=True).view(-1).long()
+            act_j_clean = act_j.detach().cpu().view(-1).long()
 
         self._current_obs[env_idx].append(obs_clean)
         self._current_act_i[env_idx].append(act_i_clean)
@@ -281,7 +289,7 @@ class PrioritizedSequenceBuffer:
         Slices and pushes sequence chunks from completed episode trajectory into main storage.
         """
         self._ensure_env(env_idx)
-        final_obs_clean = final_obs.clone().detach().to(device="cpu", non_blocking=True)
+        final_obs_clean = final_obs.detach().cpu()
         if final_obs_clean.dim() > 1 and final_obs_clean.size(0) == 1:
             final_obs_clean = final_obs_clean.squeeze(0)
 

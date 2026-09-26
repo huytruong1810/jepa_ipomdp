@@ -180,6 +180,25 @@ class TestPrioritizedSequenceBuffer:
         dummy_td_errors = torch.tensor([0.5, 1.2, 0.1, 0.8])
         buffer.update_priorities(tree_indices, dummy_td_errors)
 
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    def test_cuda_transitions_are_stored_exactly(self):
+        # Regression: non-blocking device-to-host copies stored stale memory while the GPU
+        # was busy, corrupting observations/actions and crashing F.one_hot downstream.
+        buffer = PrioritizedSequenceBuffer(capacity=16, burn_in=0, seq_len=4)
+        device = torch.device("cuda")
+        expected_actions = [7 + t % 3 for t in range(4)]
+        for t, a in enumerate(expected_actions):
+            busy = torch.ones(2048, 2048, device=device)
+            busy = busy @ busy  # keep the stream busy so an async copy would still be in flight
+            buffer.push(env_idx=0, obs=torch.full((2,), float(t), device=device),
+                        act_i=torch.tensor([a], device=device), act_j=torch.zeros(1, dtype=torch.long, device=device),
+                        reward=float(t))
+        buffer.end_episode(env_idx=0, final_obs=torch.full((2,), 4.0, device=device))
+
+        first_chunk_actions = buffer.act_i_buf[0].view(-1).tolist()
+        assert first_chunk_actions == expected_actions
+        assert buffer.obs_buf[0][:, 0].tolist() == [0.0, 1.0, 2.0, 3.0, 4.0]
+
 
 class TestMetricsAndCheckpointer:
     """Tests for KL metrics, accuracy metrics, and checkpointer serialization."""
