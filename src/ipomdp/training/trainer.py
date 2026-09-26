@@ -335,6 +335,16 @@ class DiscreteRecurrentIPOMDPTrainer:
 
             combined_loss = total_loss_jepa + total_loss_vicreg + total_loss_rl + total_loss_consistency
 
+        if not torch.isfinite(combined_loss):
+            self.logger.warning(
+                f"[!] Non-finite combined_loss detected at gradient update: "
+                f"JEPA={total_loss_jepa.item()}, VICReg={total_loss_vicreg.item()}, "
+                f"RL={total_loss_rl.item()}, Consistency={total_loss_consistency.item()}. "
+                f"Skipping backward step to prevent CUDA state corruption."
+            )
+            self.optimizer.zero_grad(set_to_none=True)
+            return {}, torch.zeros(b_curr, device=self.device)
+
         combined_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.trainable_params, max_norm=1.0)
         self.optimizer.step()

@@ -142,6 +142,7 @@ class TwoHotSymlog(nn.Module):
         else:
             targets_symlog = targets_f32
 
+        targets_symlog = torch.nan_to_num(targets_symlog, nan=0.0, posinf=self.max_val, neginf=self.min_val)
         targets_clamped = torch.clamp(targets_symlog, self.min_val, self.max_val)
 
         below = torch.floor((targets_clamped - self.min_val) / self.step_size).long()

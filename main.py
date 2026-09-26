@@ -416,7 +416,7 @@ def main(cfg: DictConfig):
 
             performed_train = False
             if buffer.tree.size >= cfg.training.batch_size and step % cfg.training.update_freq == 0:
-                if device.type == "cuda":
+                if use_compile and device.type == "cuda":
                     torch.compiler.cudagraph_mark_step_begin()
 
                 with profiler.profile("train_sequence"):

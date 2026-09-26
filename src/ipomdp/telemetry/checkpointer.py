@@ -29,6 +29,17 @@ class ModelCheckpointer:
         self.logger = logger
         self.best_loss = float('inf')
 
+        # Guard: Restore existing best_loss from best_model.pt if present on disk
+        best_path = self.save_dir / "best_model.pt"
+        if best_path.exists():
+            try:
+                best_ckpt = torch.load(best_path, map_location='cpu', weights_only=False)
+                if 'loss' in best_ckpt and not torch.isinf(torch.tensor(best_ckpt['loss'])):
+                    self.best_loss = float(best_ckpt['loss'])
+                    self.logger.info(f"Initialized best_loss to {self.best_loss:.4f} from existing best_model.pt")
+            except Exception as e:
+                self.logger.warning(f"Failed to read existing best_loss from {best_path}: {e}")
+
     def save(
         self,
         epoch: Optional[int] = None,
