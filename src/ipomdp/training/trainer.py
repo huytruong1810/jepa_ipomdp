@@ -10,11 +10,16 @@
 #      no mask, and no zero-initialised mid-episode state.
 #
 # 2. Loss Terms (all averaged over the B x T transitions of the batch):
-#      JEPA        SmoothL1( g(z_t, a_t, a^j_t, z~q), sg(z-bar_{t+1}) ) + kl_scale * max(KL, free_nats)
-#                  z-bar is the EMA target filter's latent; q is the posterior over the
-#                  discrete latent z; KL is the balanced prior/posterior KL (world_model.py).
+#      JEPA        SmoothL1( g(z_t, a_t, a^j_t, z~q), sg(z-bar_{t+1}) )
+#                  + kl_dynamics_scale * KL(sg(q) || p)
+#                  + kl_representation_scale * max(KL(q || sg(p)), kl_free_nats)
+#                  z-bar is the EMA target filter's latent; q/p are the posterior/prior over
+#                  the discrete latent z. Free nats apply ONLY to the representation term, so
+#                  the prior used for imagination always learns (world_model.py, section 5).
 #      Reward      TwoHot( R(z_t, a_t, a^j_t), r_t )
 #      Value       TwoHot( V(z_t), G^lambda_t )
+#                  Two-hot means are unbiased (models/distributions.py), so V and R decode to
+#                  expected returns/rewards even for multimodal targets such as -100/+10.
 #      Opponent    CE( pi_j(z_t), a^j_t )
 #      Imagination consistency_scale * TwoHot( V(d_k), sg(G^imag_k) ), see section 4.
 #    - Reward and value are the grounding that makes z_t a belief; JEPA self-prediction
@@ -65,8 +70,9 @@ class TrainerConfig:
     weight_decay: float
     grad_clip_norm: float
     lambda_return: float
+    kl_dynamics_scale: float
+    kl_representation_scale: float
     kl_free_nats: float
-    kl_scale: float
     imagination_horizon: int
     consistency_scale: float
 
@@ -80,6 +86,7 @@ class WorldModelTrainer:
         value_head: ValueHead,
         reward_head: RewardHead,
         opponent_head: OpponentPolicyHead,
+        codec: TwoHotSymlog,
         num_actions: int,
         num_observations: int,
         num_opponent_actions: int,
@@ -97,7 +104,7 @@ class WorldModelTrainer:
         self.discount = discount
         self.config = config
         self.device = device
-        self.twohot = TwoHotSymlog().to(device)
+        self.twohot = codec
         self.parameters = [
             *world_model.belief_filter.parameters(),
             *world_model.transition.parameters(),
@@ -153,8 +160,7 @@ class WorldModelTrainer:
         for h in range(horizon):
             action, opponent_action = shifted(actions, h), shifted(opponent_actions, h)
             with torch.no_grad():
-                imagined_rewards.append(self.twohot.decode(
-                    self.reward_head(imagined[-1], action, opponent_action).float(), real_scale=True).squeeze(-1))
+                imagined_rewards.append(self.twohot.mean(self.reward_head(imagined[-1], action, opponent_action)))
             imagined.append(self.world_model.predict_next_belief(imagined[-1], action, opponent_action))
 
         # Backward recursion over h = H..1. Entries with h > L_t are never read: every d_h
@@ -163,12 +169,12 @@ class WorldModelTrainer:
         target = torch.zeros(batch * steps, device=self.device)
         for h in range(horizon, 0, -1):
             with torch.no_grad():
-                bootstrap = self.twohot.decode(self.value_head(imagined[h]).float(), real_scale=True).squeeze(-1)
+                bootstrap = self.twohot.mean(self.value_head(imagined[h]))
                 recursion = imagined_rewards[h] + self.discount * target if h < horizon else bootstrap
                 target = torch.where(rollout_length == h, bootstrap, recursion)
             trained = h < rollout_length  # d_h with h < L_t has a genuine multi-step target
             if trained.any():
-                loss = self.twohot(self.value_head(imagined[h][trained]), target[trained]).float()
+                loss = self.twohot.loss(self.value_head(imagined[h][trained]), target[trained])
                 losses.append(loss.sum())
                 counts.append(int(trained.sum()))
         if not losses:
@@ -198,20 +204,20 @@ class WorldModelTrainer:
             current = flat(latents[:, :-1])
             action_flat, opponent_flat = flat(actions), flat(opponent_actions)
 
-            predicted, kl = self.world_model.transition.predict_train(
+            predicted, kl_dynamics, kl_representation = self.world_model.transition.predict_train(
                 current, action_flat, opponent_flat, flat(targets[:, 1:]))
             loss_prediction = F.smooth_l1_loss(predicted.float(), flat(targets[:, 1:]).float())
-            loss_kl = cfg.kl_scale * kl.clamp(min=cfg.kl_free_nats).mean()
+            loss_kl = (cfg.kl_dynamics_scale * kl_dynamics.mean()
+                       + cfg.kl_representation_scale * kl_representation.clamp(min=cfg.kl_free_nats).mean())
 
-            loss_reward = self.twohot(self.reward_head(current, action_flat, opponent_flat),
-                                      episodes.rewards.reshape(-1)).float().mean()
+            loss_reward = self.twohot.loss(self.reward_head(current, action_flat, opponent_flat),
+                                           episodes.rewards.reshape(-1)).mean()
 
             with torch.no_grad():
-                values = self.twohot.decode(
-                    self.value_head(latents.reshape(batch * (steps + 1), -1)).float(), real_scale=True)
+                values = self.twohot.mean(self.value_head(latents.reshape(batch * (steps + 1), -1)))
                 returns = self.lambda_returns(episodes.rewards, values.view(batch, steps + 1))
             value_logits = self.value_head(current)
-            loss_value = self.twohot(value_logits, returns.reshape(-1)).float().mean()
+            loss_value = self.twohot.loss(value_logits, returns.reshape(-1)).mean()
 
             loss_opponent = F.cross_entropy(self.opponent_head(current).float(), episodes.opponent_actions.reshape(-1))
 
@@ -233,7 +239,7 @@ class WorldModelTrainer:
         self.world_model.update_target()
 
         with torch.no_grad():
-            predicted_values = self.twohot.decode(value_logits.float(), real_scale=True).squeeze(-1)
+            predicted_values = self.twohot.mean(value_logits)
             target_values = returns.reshape(-1)
             explained_variance = 1.0 - (target_values - predicted_values).var() / target_values.var().clamp(min=1e-8)
 
@@ -241,6 +247,8 @@ class WorldModelTrainer:
             "loss_total": total.item(),
             "loss_prediction": loss_prediction.item(),
             "loss_kl": loss_kl.item(),
+            "kl_dynamics": kl_dynamics.mean().item(),
+            "kl_representation": kl_representation.mean().item(),
             "loss_reward": loss_reward.item(),
             "loss_value": loss_value.item(),
             "loss_opponent": loss_opponent.item(),

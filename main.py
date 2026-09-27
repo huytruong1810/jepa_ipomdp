@@ -51,6 +51,7 @@ from ipomdp.agents import DiscreteJEPAAgent
 from ipomdp.domain import BatchedPOMDPEnv, FinitePOMDP, build_tiger_pomdp
 from ipomdp.models import (
     BeliefFilter,
+    TwoHotSymlog,
     LatentTransition,
     OpponentPolicyHead,
     RecurrentJEPA,
@@ -99,13 +100,14 @@ def main(cfg: DictConfig):
     world_model = RecurrentJEPA(
         BeliefFilter(num_actions, num_obs, m.latent_dim, m.hidden_dim, m.num_blocks),
         LatentTransition(m.latent_dim, num_actions, OPPONENT_ACTION_DIM, m.hidden_dim, m.num_blocks,
-                         m.num_categoricals, m.num_classes, m.kl_balance),
+                         m.num_categoricals, m.num_classes, m.unimix),
         ema_momentum=m.ema_momentum,
     ).to(device)
     value_head = ValueHead(m.latent_dim, m.hidden_dim, m.num_blocks, m.num_bins).to(device)
     reward_head = RewardHead(m.latent_dim, num_actions, OPPONENT_ACTION_DIM, m.hidden_dim, m.num_blocks,
                              m.num_bins).to(device)
     opponent_head = OpponentPolicyHead(m.latent_dim, OPPONENT_ACTION_DIM, m.hidden_dim, m.num_blocks).to(device)
+    codec = TwoHotSymlog(m.num_bins, pomdp.value_bound).to(device)  # shared by planner and trainer
 
     use_compile = cfg.training.compile and device.type == "cuda"
     networks = (world_model, value_head, reward_head, opponent_head)
@@ -119,6 +121,7 @@ def main(cfg: DictConfig):
         value_head=run_value,
         reward_head=run_reward,
         opponent_head=run_opponent,
+        codec=codec,
         action_dim_i=num_actions,
         action_dim_j=OPPONENT_ACTION_DIM,
         num_simulations=cfg.mcts.num_simulations,
@@ -130,6 +133,7 @@ def main(cfg: DictConfig):
         value_head=value_head,
         reward_head=reward_head,
         opponent_head=opponent_head,
+        codec=codec,
         num_actions=num_actions,
         num_observations=num_obs,
         num_opponent_actions=OPPONENT_ACTION_DIM,

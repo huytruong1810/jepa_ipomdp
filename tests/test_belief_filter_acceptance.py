@@ -20,7 +20,8 @@ import torch
 
 from ipomdp.domain import BatchedPOMDPEnv, build_tiger_pomdp
 from ipomdp.interpretability import collect_probe_dataset, linear_probe, mlp_probe, uniform_random_policy
-from ipomdp.models import BeliefFilter, LatentTransition, OpponentPolicyHead, RecurrentJEPA, RewardHead, ValueHead
+from ipomdp.models import (BeliefFilter, LatentTransition, OpponentPolicyHead, RecurrentJEPA, RewardHead, TwoHotSymlog,
+                           ValueHead)
 from ipomdp.training import EpisodeBatch, TrainerConfig, WorldModelTrainer
 
 UPDATES, BATCH, LENGTH = 1000, 256, 20
@@ -34,12 +35,13 @@ def test_trained_filter_encodes_exact_posterior():
     pomdp = build_tiger_pomdp()
     num_a, num_o, dim, hidden = pomdp.num_actions, pomdp.num_observations, 32, 64
     world_model = RecurrentJEPA(BeliefFilter(num_a, num_o, dim, hidden, 1),
-                                LatentTransition(dim, num_a, 1, hidden, 1, 4, 4, 0.8), 0.99).to(device)
+                                LatentTransition(dim, num_a, 1, hidden, 1, 4, 4, 0.01), 0.99).to(device)
     trainer = WorldModelTrainer(
         world_model, ValueHead(dim, hidden, 1, 255).to(device), RewardHead(dim, num_a, 1, hidden, 1, 255).to(device),
-        OpponentPolicyHead(dim, 1, hidden, 1).to(device), num_a, num_o, 1, pomdp.discount,
+        OpponentPolicyHead(dim, 1, hidden, 1).to(device), TwoHotSymlog(255, 2000.0).to(device), num_a, num_o, 1, pomdp.discount,
         TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0, lambda_return=0.95,
-                      kl_free_nats=1.0, kl_scale=0.1, imagination_horizon=3, consistency_scale=0.5),
+                      kl_dynamics_scale=0.5, kl_representation_scale=0.1, kl_free_nats=1.0,
+                      imagination_horizon=3, consistency_scale=0.5),
         device)
 
     def probe_data():

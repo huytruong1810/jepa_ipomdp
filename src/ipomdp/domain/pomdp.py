@@ -133,6 +133,15 @@ class FinitePOMDP:
         return len(self.observation_names)
 
     @property
+    def value_bound(self) -> float:
+        """
+        Bound on |r| and on |V^pi(b)| for every policy and belief: max|R| / (1 - gamma).
+
+        Used to size the two-hot value/reward bins (src/ipomdp/models/distributions.py).
+        """
+        return float(self.reward.abs().max()) / (1.0 - self.discount)
+
+    @property
     def reward_range(self) -> tuple[float, float]:
         """(min, max) immediate reward over all (s, a); used by value-error bounds."""
         return float(self.reward.min()), float(self.reward.max())

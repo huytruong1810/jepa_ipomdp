@@ -388,6 +388,7 @@ class JEPASemanticsProbe:
         self,
         jepa_model: torch.nn.Module,
         reward_head: torch.nn.Module,
+        codec: TwoHotSymlog,
         ep_beliefs: List[torch.Tensor],
         ep_actions: List[int],
         action_dim_i: int,
@@ -401,7 +402,7 @@ class JEPASemanticsProbe:
             return
 
         device = next(jepa_model.parameters()).device
-        twohot = TwoHotSymlog().to(device)
+        twohot = codec
 
         b_seq = torch.cat(ep_beliefs, dim=0).to(device)
         t_steps, latent_dim = b_seq.shape
@@ -435,7 +436,7 @@ class JEPASemanticsProbe:
             all_aj = F.one_hot(torch.arange(action_dim_j, device=device), num_classes=action_dim_j).float()
 
             r_logits = reward_head(rep_b_reward, rep_ai_reward, all_aj)
-            r_vals = twohot.decode(r_logits, real_scale=True).squeeze(-1).tolist()
+            r_vals = twohot.mean(r_logits).tolist()
             marginal_reward = sum(r_vals) / action_dim_j
             expected_rewards.append(float(marginal_reward))
 

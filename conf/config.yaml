@@ -23,7 +23,8 @@
 # 4. World Model (see src/ipomdp/models/world_model.py and src/ipomdp/training/trainer.py):
 #    - A single belief latent of latent_dim features (no object slots).
 #    - JEPA self-prediction against an EMA target filter (ema_momentum), with a stochastic
-#      discrete latent of num_categoricals x num_classes and KL balancing (kl_balance).
+#      discrete latent of num_categoricals x num_classes; the prior is trained by an
+#      unclamped dynamics KL, the posterior regularised by a free-nats representation KL.
 #    - Grounding by two-hot reward and TD(lambda) value regression (num_bins bins).
 # ==============================================================================
 
@@ -49,8 +50,9 @@ trainer:
   weight_decay: 1.0e-4
   grad_clip_norm: 1.0
   lambda_return: 0.95         # TD(lambda) mixing for value targets
-  kl_free_nats: 1.0           # KL below this many nats is not penalised
-  kl_scale: 0.1               # Weight of the (free-nats clamped) balanced KL
+  kl_dynamics_scale: 0.5      # Weight of KL(sg(q) || p): trains the prior, never clamped
+  kl_representation_scale: 0.1  # Weight of max(KL(q || sg(p)), kl_free_nats): regularises the posterior
+  kl_free_nats: 1.0           # Free nats of the representation KL only
   imagination_horizon: 3      # Prior-imagination steps for the value consistency loss
   consistency_scale: 0.5      # Weight of the value consistency loss
 
@@ -65,7 +67,7 @@ model:
   num_blocks: 1               # SwiGLU residual blocks per MLP
   num_categoricals: 4         # Discrete latent: number of categorical variables
   num_classes: 4              # Discrete latent: classes per categorical
-  kl_balance: 0.8             # DreamerV3 KL balancing weight on KL(sg(q) || p)
+  unimix: 0.01                # Uniform mixture weight in prior/posterior categorical probabilities
   ema_momentum: 0.99          # Target filter EMA momentum
   num_bins: 255               # Two-hot bins for value and reward
 

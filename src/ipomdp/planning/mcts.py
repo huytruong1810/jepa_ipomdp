@@ -110,6 +110,7 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
         value_head: ValueHead,
         reward_head: RewardHead,
         opponent_head: OpponentPolicyHead,
+        codec: TwoHotSymlog,
         action_dim_i: int,
         action_dim_j: int,
         num_simulations: int = 50,
@@ -127,6 +128,7 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
             value_head: Value distribution projection head.
             reward_head: Immediate reward distribution projection head.
             opponent_head: Opponent policy prediction head.
+            codec: Two-hot codec shared with the trainer (decodes value/reward means).
             action_dim_i: Ego action dimensionality.
             action_dim_j: Opponent action dimensionality.
             num_simulations: Number of search rollouts per decision step.
@@ -151,7 +153,7 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
         self.dirichlet_epsilon = float(dirichlet_epsilon)
 
         self.device = next(self.value_head.parameters()).device
-        self.twohot = TwoHotSymlog().to(self.device)
+        self.twohot = codec
 
         # Multi-root references across parallel environment channels
         self.roots: List[LatentSearchNode] = []
@@ -281,8 +283,8 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
             rewards_logits = self.reward_head(rep_beliefs, rep_ego_a, rep_opp_a).clone()
             v_logits = self.value_head(next_beliefs).clone()
 
-        rewards = self.twohot.decode(rewards_logits.float(), real_scale=True).squeeze(-1).tolist()
-        next_values = self.twohot.decode(v_logits.float(), real_scale=True).squeeze(-1).tolist()
+        rewards = self.twohot.mean(rewards_logits).tolist()
+        next_values = self.twohot.mean(v_logits).tolist()
 
         base_prior = 1.0 / self.action_dim_i
         for b_idx, node in enumerate(nodes):

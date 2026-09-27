@@ -1,202 +1,121 @@
 # ABSOLUTE PATH: src/ipomdp/models/distributions.py
 # ==============================================================================
-# DISTRIBUTIONAL TWO-HOT SYMLOG REGRESSION MODULE (DREAMERV3 STANDARD)
+# TWO-HOT DISTRIBUTIONAL REGRESSION ON SYMLOG-SPACED BINS
 # ==============================================================================
 #
 # DESIGN DECISIONS & THEORETICAL FOUNDATIONS:
-# 1. Float32 Internal Numerical Safeguards:
-#    - All logarithmic, exponential, and normalization operations execute strictly
-#      in torch.float32 before casting back to input dtypes. This eliminates NaN
-#      instability and mantissa underflow under CUDA bfloat16/float16 execution.
+# 1. Purpose:
+#    - Value and reward heads predict a categorical distribution over K fixed bins; the
+#      prediction used by the planner and the TD targets is the distribution's MEAN. The
+#      categorical cross-entropy is scale-free, so rewards of -100 and -1 train equally
+#      well without return normalisation (DreamerV3, Hafner et al. 2023).
 #
-# 2. Asymmetric Dynamic Range Clamping (symexp):
-#    - Clamps input magnitudes to max_val = 11.0 for fp16/bf16 (exp(11) ≈ 5.98e4, safely
-#      below fp16 overflow 6.55e4) and max_val = 88.0 for fp32 (exp(88) ≈ 1.65e38, safely
-#      below fp32 overflow 3.4e38).
+# 2. Bins Are Symlog-Spaced, Live in Real Space, and Are Bounded by the Domain:
+#      B = symexp(linspace(-R, +R, K)),   R = symlog(max_abs_value),  K = num_bins (odd)
+#    - Resolution is fine near zero and coarse for large magnitudes, as in DreamerV3. The
+#      bins are built as an exactly antisymmetric float64 grid with an exact 0 bin.
+#    - max_abs_value must bound every target. For a FinitePOMDP it is exact:
+#      |r| <= max|R| and |V| <= max|R| / (1 - gamma) (2000 for canonical Tiger).
+#    - Why bounded: DreamerV3's fixed R = 20 puts bins at +-4.85e8. In real space the mean
+#      is then dominated by the residual softmax mass on those bins (1e-7 of probability on
+#      4.85e8 shifts the mean by 48), measured as a -3.8 bias on the -100/+10 test below and
+#      a 0.5 offset for uniform logits in float32. Bounding the grid by the domain's value
+#      bound removes both effects without introducing any tunable range.
 #
-# 3. Exact Two-Hot Categorical Mapping:
-#    - Discretizes continuous target y into K=255 bins spanning [min_val, max_val] in
-#      symlog space. Continuous values are linearly interpolated between two adjacent bins:
-#         below = floor((y - min_val) / step)
-#         above = below + 1
-#         w_above = (y - b_below) / step,  w_below = 1 - w_above
-#    - Computing loss via F.cross_entropy(logits, target_probs) strictly implements
-#      the DreamerV3 distributional cross-entropy objective.
+# 3. Encoding and Decoding Are Both Linear in Real Space (the unbiased form):
+#      twohot(y): weight (B_{k+1} - y) / (B_{k+1} - B_k) on bin k and the rest on bin k+1,
+#                 where B_k <= y < B_{k+1}. Its mean  sum_i twohot(y)_i B_i  equals y exactly.
+#      mean(logits) = softmax(logits) . B
+#    - The cross-entropy minimiser for a random target Y is p = E[twohot(Y)], whose mean is
+#      E[Y] by linearity: the decoded prediction is an unbiased estimate of the expected
+#      reward/return even when Y is multimodal.
+#    - An earlier iteration interpolated in symlog space and decoded symexp(E[symlog Y]).
+#      That is Jensen-biased toward the median in symlog space: fitted to Tiger's
+#      door-opening reward (-100 or +10 with probability 1/2, mean -45) it decoded -2.9, and
+#      on a trained model the expected reward of opening a door was off by ~39 on average.
+#      The planner therefore saw a -45 gamble as nearly free. This form removes that bias.
 #
-# 4. Rank-Safe Target Alignment:
-#    - Dynamically handles target tensors of shape (B, 1), (B,), or (B, T, 1), guaranteeing
-#      the returned loss tensor strictly preserves leading batch/sequence dimensions
-#      with a trailing singleton channel (..., 1).
+# 4. Strictness:
+#    - Non-finite targets raise FloatingPointError (searchsorted of NaN is an arbitrary index
+#      and surfaced as unrelated CUDA device asserts); so do targets outside
+#      [-max_abs_value, max_abs_value], which would violate the bound in section 2.
+#    - All arithmetic is float32 regardless of autocast.
 # ==============================================================================
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import Tensor
+
+def symlog(x: Tensor) -> Tensor:
+    """sign(x) * ln(1 + |x|), computed in float32."""
+    x = x.float()
+    return torch.sign(x) * torch.log1p(x.abs())
 
 
-def symlog(x: torch.Tensor) -> torch.Tensor:
-    """
-    Symmetric logarithmic compression: sign(x) * ln(|x| + 1).
-
-    Compresses wide-ranging continuous rewards and returns into a stable scale
-    while preserving sign symmetry around zero. Computes internally in float32.
-
-    Args:
-        x: Continuous numerical input tensor of arbitrary shape.
-
-    Returns:
-        Symlog-compressed tensor with matching dynamic range and input dtype.
-    """
-    orig_dtype = x.dtype
-    x_f32 = x.float()
-    res = torch.sign(x_f32) * torch.log1p(torch.abs(x_f32))
-    return res.to(dtype=orig_dtype)
-
-
-def symexp(x: torch.Tensor) -> torch.Tensor:
-    """
-    Symmetric exponential decompression: sign(x) * (exp(|x|) - 1).
-
-    Inverts symlog-compressed values back to their original physical scale.
-    Applies dtype-aware clamping to prevent exponent overflow.
-
-    Args:
-        x: Symlog-compressed input tensor of arbitrary shape.
-
-    Returns:
-        Decompressed continuous tensor in original physical scale and dtype.
-    """
-    orig_dtype = x.dtype
-    x_f32 = x.float()
-
-    # Dtype-aware safe threshold bounds
-    if orig_dtype in (torch.float16, torch.bfloat16):
-        max_val = 11.0
-    else:
-        max_val = 88.0
-
-    safe_x = torch.clamp(torch.abs(x_f32), max=max_val)
-    res = torch.sign(x_f32) * torch.expm1(safe_x)
-    return res.to(dtype=orig_dtype)
+def symexp(x: Tensor) -> Tensor:
+    """sign(x) * (exp(|x|) - 1), the inverse of symlog, computed in float32."""
+    x = x.float()
+    return torch.sign(x) * torch.expm1(x.abs())
 
 
 class TwoHotSymlog(nn.Module):
-    """
-    DreamerV3 Distributional Two-Hot Categorical Regression Module.
+    """Two-hot categorical codec over symlog-spaced real-valued bins (module header)."""
 
-    Maps continuous scalar targets onto a discrete grid of K bins in symlog space.
-    Eliminates target scale sensitivity without requiring dynamic return normalization.
-    """
-
-    def __init__(self, min_val: float = -20.0, max_val: float = 20.0, num_bins: int = 255):
+    def __init__(self, num_bins: int, max_abs_value: float):
         """
-        Initializes discrete bin centers in symlog space.
-
         Args:
-            min_val: Minimum representable value in symlog space (symexp(-20) ≈ -4.85e8).
-            max_val: Maximum representable value in symlog space (symexp(20) ≈ 4.85e8).
-            num_bins: Total discrete categorical bins (default: 255).
+            num_bins: Number of bins K (odd, so that 0 is exactly representable).
+            max_abs_value: Bound on |target|; the outermost bins sit at +-max_abs_value.
         """
         super().__init__()
-        self.min_val = float(min_val)
-        self.max_val = float(max_val)
-        self.num_bins = int(num_bins)
-        self.step_size = (self.max_val - self.min_val) / (self.num_bins - 1)
+        if num_bins < 3 or num_bins % 2 == 0:
+            raise ValueError(f"num_bins must be an odd number >= 3, got {num_bins}.")
+        if max_abs_value <= 0:
+            raise ValueError(f"max_abs_value must be positive, got {max_abs_value}.")
+        self.num_bins = num_bins
+        self.max_abs_value = max_abs_value
+        symlog_max = torch.log1p(torch.tensor(max_abs_value, dtype=torch.float64))
+        half = torch.expm1(torch.linspace(0.0, 1.0, (num_bins + 1) // 2, dtype=torch.float64) * symlog_max)
+        half[-1] = max_abs_value
+        self.register_buffer("bins", torch.cat([-half[1:].flip(0), half]).float())
 
-        # Register linearly spaced bin centers as persistent non-trainable buffer
-        bins = torch.linspace(self.min_val, self.max_val, self.num_bins, dtype=torch.float32)
-        self.register_buffer('bins', bins)
-
-    def forward(
-        self,
-        logits: torch.Tensor,
-        targets: torch.Tensor,
-        auto_symlog: bool = True
-    ) -> torch.Tensor:
+    def encode(self, targets: Tensor) -> Tensor:
         """
-        Calculates cross-entropy loss between predicted bin logits and two-hot target distribution.
+        Two-hot encoding with an exact mean.
 
         Args:
-            logits: Predicted distribution logits of shape (..., num_bins).
-            targets: Continuous target values (returns or rewards) of shape (..., 1) or (...).
-            auto_symlog: If True (default), compresses raw continuous targets via symlog()
-                         prior to two-hot bin projection.
+            targets: Real-valued targets of any shape (...).
 
         Returns:
-            Cross-entropy loss tensor of shape (..., 1) with matching input dtype.
+            Probabilities of shape (..., K) with sum_i p_i B_i = targets.
         """
-        orig_dtype = logits.dtype
-        logits_f32 = logits.float()
-        targets_f32 = targets.float()
-
-        # Rank safety: Normalize target to match logits batch dimensions
-        if targets_f32.dim() == logits_f32.dim() and targets_f32.size(-1) == 1:
-            targets_f32 = targets_f32.squeeze(-1)
-
-        # Ensure bins match device without redundant transfer
-        bins = self.bins if self.bins.device == logits.device else self.bins.to(device=logits.device)
-
-        # Compress targets to symlog space if requested
-        if auto_symlog:
-            targets_symlog = symlog(targets_f32)
-        else:
-            targets_symlog = targets_f32
-
-        # Non-finite targets are a bug upstream (e.g. a diverged bootstrap value). They are
-        # rejected rather than sanitised: floor(NaN) cast to long is an arbitrary bin index,
-        # which on CUDA surfaces as an unrelated device-side assert in scatter_add_.
-        if not torch.isfinite(targets_symlog).all():
+        targets = targets.float()
+        if not torch.isfinite(targets).all():
             raise FloatingPointError("TwoHotSymlog received non-finite targets.")
-        targets_clamped = torch.clamp(targets_symlog, self.min_val, self.max_val)
+        if (targets.abs() > self.max_abs_value).any():
+            raise FloatingPointError(f"TwoHotSymlog target outside +-{self.max_abs_value}: {float(targets.abs().max())}.")
+        above = torch.searchsorted(self.bins, targets.contiguous(), right=True).clamp(1, self.num_bins - 1)
+        below = above - 1
+        weight_above = (targets - self.bins[below]) / (self.bins[above] - self.bins[below])
+        probabilities = torch.zeros(*targets.shape, self.num_bins, device=targets.device)
+        probabilities.scatter_(-1, below.unsqueeze(-1), (1.0 - weight_above).unsqueeze(-1))
+        probabilities.scatter_add_(-1, above.unsqueeze(-1), weight_above.unsqueeze(-1))
+        return probabilities
 
-        below = torch.floor((targets_clamped - self.min_val) / self.step_size).long()
-        below = torch.clamp(below, 0, self.num_bins - 2)
-        above = below + 1
-
-        b_val = self.min_val + below.float() * self.step_size
-
-        # Linear probability weights
-        weight_above = (targets_clamped - b_val) / self.step_size
-        weight_below = 1.0 - weight_above
-
-        # Construct target probability tensor
-        target_probs = torch.zeros_like(logits_f32)
-        target_probs.scatter_add_(-1, below.unsqueeze(-1), weight_below.unsqueeze(-1))
-        target_probs.scatter_add_(-1, above.unsqueeze(-1), weight_above.unsqueeze(-1))
-
-        # Flatten leading dimensions for fused cross-entropy execution
-        flat_logits = logits_f32.view(-1, self.num_bins)
-        flat_targets = target_probs.view(-1, self.num_bins)
-
-        loss = F.cross_entropy(flat_logits, flat_targets, reduction='none')
-
-        # Restore original leading dimensions with trailing singleton
-        out_shape = list(logits.shape[:-1]) + [1]
-        return loss.view(*out_shape).to(dtype=orig_dtype)
-
-    def decode(self, logits: torch.Tensor, real_scale: bool = True) -> torch.Tensor:
+    def loss(self, logits: Tensor, targets: Tensor) -> Tensor:
         """
-        Decodes predicted categorical bin logits into expected continuous scalar values.
+        Cross-entropy between softmax(logits) and twohot(targets).
 
         Args:
-            logits: Predicted distribution logits of shape (..., num_bins).
-            real_scale: If True (default), inverts expected symlog values to real physical scale
-                        via symexp(). If False, returns expected value in compressed symlog space.
+            logits: Shape (..., K).
+            targets: Real-valued targets of shape (...).
 
         Returns:
-            Continuous expected scalar tensor of shape (..., 1) with matching input dtype.
+            Per-element loss of shape (...), float32.
         """
-        orig_dtype = logits.dtype
-        logits_f32 = logits.float()
-        bins = self.bins if self.bins.device == logits.device else self.bins.to(device=logits.device)
+        return -(self.encode(targets) * F.log_softmax(logits.float(), dim=-1)).sum(dim=-1)
 
-        probs = F.softmax(logits_f32, dim=-1)
-        symlog_expectation = torch.sum(probs * bins, dim=-1, keepdim=True)
-
-        if real_scale:
-            decoded = symexp(symlog_expectation)
-        else:
-            decoded = symlog_expectation
-
-        return decoded.to(dtype=orig_dtype)
-
+    def mean(self, logits: Tensor) -> Tensor:
+        """Mean of the predicted distribution, softmax(logits) . B; shape (...), float32."""
+        return F.softmax(logits.float(), dim=-1) @ self.bins

@@ -5,13 +5,14 @@ import pytest
 import torch
 
 from ipomdp.domain import BatchedPOMDPEnv, build_tiger_pomdp
-from ipomdp.models import BeliefFilter, LatentTransition, OpponentPolicyHead, RecurrentJEPA, RewardHead, ValueHead
+from ipomdp.models import (BeliefFilter, LatentTransition, OpponentPolicyHead, RecurrentJEPA, RewardHead, TwoHotSymlog,
+                           ValueHead)
 from ipomdp.training import EpisodeBatch, EpisodeBuffer, TrainerConfig, WorldModelTrainer
 
 CPU = torch.device("cpu")
 A, O, AJ, D, H, T = 3, 2, 1, 16, 32, 6
 CONFIG = TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0, lambda_return=0.95,
-                       kl_free_nats=1.0, kl_scale=0.1, imagination_horizon=3, consistency_scale=0.5)
+                       kl_dynamics_scale=0.5, kl_representation_scale=0.1, kl_free_nats=1.0, imagination_horizon=3, consistency_scale=0.5)
 
 
 def _episodes(batch: int, seed: int, device: torch.device = CPU) -> EpisodeBatch:
@@ -31,10 +32,10 @@ def _episodes(batch: int, seed: int, device: torch.device = CPU) -> EpisodeBatch
 
 def _trainer(device: torch.device = CPU) -> WorldModelTrainer:
     torch.manual_seed(0)
-    world_model = RecurrentJEPA(BeliefFilter(A, O, D, H, 1), LatentTransition(D, A, AJ, H, 1, 4, 4, 0.8), 0.99)
+    world_model = RecurrentJEPA(BeliefFilter(A, O, D, H, 1), LatentTransition(D, A, AJ, H, 1, 4, 4, 0.01), 0.99)
     return WorldModelTrainer(world_model.to(device), ValueHead(D, H, 1, 255).to(device),
                              RewardHead(D, A, AJ, H, 1, 255).to(device), OpponentPolicyHead(D, AJ, H, 1).to(device),
-                             A, O, AJ, discount=0.95, config=CONFIG, device=device)
+                             TwoHotSymlog(255, 2000.0).to(device), A, O, AJ, discount=0.95, config=CONFIG, device=device)
 
 
 class TestEpisodeBuffer:
