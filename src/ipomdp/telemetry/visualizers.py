@@ -404,7 +404,7 @@ class JEPASemanticsProbe:
         twohot = TwoHotSymlog().to(device)
 
         b_seq = torch.cat(ep_beliefs, dim=0).to(device)
-        t_steps, num_objects, latent_dim = b_seq.shape
+        t_steps, latent_dim = b_seq.shape
 
         uncertainties = []
         expected_rewards = []
@@ -416,23 +416,23 @@ class JEPASemanticsProbe:
             num_samples = 50
             total_batch = num_samples * action_dim_j
 
-            rep_b = b_t.repeat(total_batch, 1, 1)
+            rep_b = b_t.repeat(total_batch, 1)
             rep_ai = a_i.repeat(total_batch, 1)
 
             opp_indices = torch.arange(action_dim_j, device=device).repeat_interleave(num_samples)
-            rep_aj = F.one_hot(opp_indices, num_classes=action_dim_j).float().unsqueeze(1)
+            rep_aj = F.one_hot(opp_indices, num_classes=action_dim_j).float()
 
             batched_next_b = jepa_model.predict_next_belief(rep_b, rep_ai, rep_aj)
 
             # Memory Stride Alignment: Outer dim matches action_dim_j, inner dim matches num_samples
-            sample_b = batched_next_b.view(action_dim_j, num_samples, num_objects, latent_dim)
+            sample_b = batched_next_b.view(action_dim_j, num_samples, latent_dim)
             marginal_b = sample_b.mean(dim=0)  # Mean across opponent action choices
             variance = torch.var(marginal_b, dim=0).sum().item()
             uncertainties.append(float(variance))
 
-            rep_b_reward = b_t.repeat(action_dim_j, 1, 1)
+            rep_b_reward = b_t.repeat(action_dim_j, 1)
             rep_ai_reward = a_i.repeat(action_dim_j, 1)
-            all_aj = F.one_hot(torch.arange(action_dim_j, device=device), num_classes=action_dim_j).float().unsqueeze(1)
+            all_aj = F.one_hot(torch.arange(action_dim_j, device=device), num_classes=action_dim_j).float()
 
             r_logits = reward_head(rep_b_reward, rep_ai_reward, all_aj)
             r_vals = twohot.decode(r_logits, real_scale=True).squeeze(-1).tolist()

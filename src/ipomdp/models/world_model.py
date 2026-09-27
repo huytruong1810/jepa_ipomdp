@@ -1,397 +1,216 @@
 # ABSOLUTE PATH: src/ipomdp/models/world_model.py
 # ==============================================================================
-# RECURRENT JEPA WORLD MODEL, CONTEXT FILTER & CAUSAL PREDICTOR
+# RECURRENT JEPA WORLD MODEL: BELIEF FILTER, EMA TARGET, STOCHASTIC LATENT TRANSITION
 # ==============================================================================
 #
 # DESIGN DECISIONS & THEORETICAL FOUNDATIONS:
-# 1. Recurrent Context Encoder (Belief Filter):
-#    - Implements the learned Bayesian belief filter b_t = Filter(b_{t-1}, a_{t-1}, o_t)
-#      in R^(B x N_obj x D_latent).
-#    - Injects learnable slot positional encodings before inter-slot self-attention /
-#      spatial cross-attention to guarantee semantic slot identity persistence.
-#    - Fuses broadcasted past action with extracted object tokens and advances state
-#      via nn.GRUCell.
+# 1. The Belief Filter Mirrors the Exact Bayes Filter's Signature:
+#    - Exact:   b0 given,        b_{t+1} = tau(b_t, a_t, o_{t+1})   (src/ipomdp/domain/belief.py)
+#    - Learned: z_0 = learned,   z_{t+1} = GRU([a_t, o_{t+1}], z_t)
+#      The learned initial latent z_0 is the network's representation of the prior b0. There
+#      is no observation at t = 0 (canonical Tiger), so no placeholder input is needed.
+#      z_t = phi(h_t) is a function of the history h_t = (a_0, o_1, ..., a_{t-1}, o_t), and
+#      the Phase-2 acceptance test probes it against the exact posterior b*(h_t).
 #
-# 2. Causal Relational Dynamics Predictor & bfloat16 KL Stability:
-#    - Predicts open-loop stochastic transitions in latent space:
-#         b_{t+1} ~ p_phi(b_{t+1} | b_t, a_i, a_j, z_t)
-#    - Parameterizes stochasticity using N_cat x N_class discrete categorical latents z_t
-#      sampled via Straight-Through Gumbel-Softmax with symmetric probability clamping.
-#    - Employs DreamerV3 KL Balancing (alpha = 0.8) to train the prior p_phi to track the
-#      posterior q_psi while regularizing posterior drift.
-#    - Promotes probability distributions to float32 before logarithmic evaluation in
-#      _kl_divergence to prevent mantissa underflow and NaN values under bfloat16 AMP.
-#    - Invokes .contiguous() on expanded query mask tokens to ensure memory stride
-#      safety in compiled Transformer decoders.
+# 2. One Latent Vector (No Object Slots):
+#    - Single-agent Tiger has one binary hidden variable. An earlier iteration split the
+#      latent into N_obj "object slots" with slot embeddings, inter-slot attention and
+#      attention pooling. Nothing gave those slots meaning, and the per-slot offsets let
+#      VICReg's variance target be met without encoding any information. Structured slots
+#      will be reintroduced only when the interactive state (S x M_j) gives them semantics.
 #
-# 3. Target EMA Encoder Synchronization:
-#    - RecurrentJEPABase manages the online context filter and an Exponential Moving Average
-#      (EMA) target encoder. Updates execute in-place under @torch.no_grad() for maximum
-#      GPU memory efficiency and PyTorch compile safety.
+# 3. Training Signal (see src/ipomdp/training/trainer.py):
+#    - JEPA self-prediction: the transition predicts the EMA target filter's next latent
+#      z-bar_{t+1} from (z_t, a_t), in latent space, with no observation reconstruction.
+#    - Grounding: reward prediction from (z_t, a_t) (plus the value/TD targets).
+#    - Measured on canonical Tiger (Phase-2 isolated study, random-policy data): JEPA
+#      self-prediction ALONE leaves the latent no more belief-like than an untrained network
+#      (probe KL 0.018 vs 0.024 nats); reward grounding brings it to 0.0015 (linear probe) /
+#      0.0002 (MLP probe). This matches the self-predictive RL analysis of Ni et al. (ICLR
+#      2024): latent self-prediction has uninformative fixed points unless grounded. VICReg
+#      was removed: applied to the encoder it made the latent WORSE (KL 0.076 without reward,
+#      0.0026 vs 0.0015 with reward), and its old placement (on predictor outputs, slots
+#      pooled into one batch) could not prevent encoder collapse at all.
+#
+# 4. EMA Target Filter:
+#    - A frozen copy of the filter, updated as target <- m * target + (1 - m) * online after
+#      every optimiser step, produces the self-prediction targets (BYOL/JEPA stop-gradient).
+#
+# 5. Stochastic Latent Transition (DreamerV3-style; reviewed in Phase 3):
+#    - In a POMDP the next latent is random (it depends on o_{t+1}). The transition therefore
+#      samples a discrete latent z ~ Cat(N_cat x N_class): from a posterior q(z | z_t, a, z-bar_{t+1})
+#      during training and from a prior p(z | z_t, a) during imagination (MCTS), with
+#      straight-through gradients and KL balancing (alpha = 0.8) between the two.
+#    - Opponent actions enter as a one-hot; the single-agent POMDP passes a singleton
+#      opponent action space until Phases 3-4 settle the opponent model.
 # ==============================================================================
 
 import copy
-from typing import Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import Tensor
 
-from .extractors import FeatureExtractor
-from .layers import SwarmActionEncoder, build_residual_stack, RMSNorm
-from ..types import Action
+from .layers import build_residual_stack
 
 
-class RecurrentContextEncoder(nn.Module):
-    """
-    Recurrent Context Filter for Interactive POMDP Belief Tracking:
-    b_t = Filter(b_{t-1}, a_{t-1}, o_t) in R^(B x N_obj x D_latent).
-    """
+class BeliefFilter(nn.Module):
+    """Learned recurrent belief filter z_{t+1} = f(z_t, a_t, o_{t+1}) with a learned z_0."""
+
+    def __init__(self, num_actions: int, num_observations: int, latent_dim: int, hidden_dim: int, num_blocks: int):
+        """
+        Args:
+            num_actions: |A|; actions are fed one-hot.
+            num_observations: |O|; observations are fed one-hot.
+            latent_dim: Dimension D of the belief latent.
+            hidden_dim: Width of the input network.
+            num_blocks: SwiGLU residual blocks in the input network.
+        """
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.initial_latent = nn.Parameter(torch.zeros(latent_dim))
+        self.input_net = build_residual_stack(num_actions + num_observations, hidden_dim, hidden_dim, num_blocks)
+        self.cell = nn.GRUCell(hidden_dim, latent_dim)
+
+    def initial(self, batch_size: int) -> Tensor:
+        """z_0 replicated to shape (batch_size, D)."""
+        return self.initial_latent.expand(batch_size, -1)
+
+    def step(self, latent: Tensor, action: Tensor, observation: Tensor) -> Tensor:
+        """
+        One filter step.
+
+        Args:
+            latent: z_t, shape (B, D).
+            action: One-hot a_t, shape (B, |A|).
+            observation: One-hot o_{t+1}, shape (B, |O|).
+
+        Returns:
+            z_{t+1}, shape (B, D).
+        """
+        return self.cell(self.input_net(torch.cat([action, observation], dim=-1)), latent)
+
+    def unroll(self, actions: Tensor, observations: Tensor) -> Tensor:
+        """
+        Filters whole episodes from z_0.
+
+        Args:
+            actions: One-hot a_0..a_{T-1}, shape (B, T, |A|).
+            observations: One-hot o_1..o_T, shape (B, T, |O|).
+
+        Returns:
+            z_0..z_T, shape (B, T + 1, D).
+        """
+        latent = self.initial(actions.shape[0])
+        latents = [latent]
+        for t in range(actions.shape[1]):
+            latent = self.step(latent, actions[:, t], observations[:, t])
+            latents.append(latent)
+        return torch.stack(latents, dim=1)
+
+
+class LatentTransition(nn.Module):
+    """Stochastic latent dynamics z_{t+1} = g(z_t, a_t, a^j_t, z), z ~ q (train) or p (imagine)."""
 
     def __init__(
         self,
-        feature_extractor: FeatureExtractor,
-        action_dim: int,
         latent_dim: int,
-        hidden_dim: int = 128,
-        num_blocks: int = 2
+        num_actions: int,
+        num_opponent_actions: int,
+        hidden_dim: int,
+        num_blocks: int,
+        num_categoricals: int,
+        num_classes: int,
+        kl_balance: float,
     ):
         """
-        Initializes Recurrent Context Encoder.
-
         Args:
-            feature_extractor: Feature extractor module producing object tokens.
-            action_dim: Dimensionality of action vector.
-            latent_dim: Target latent representation dimension per object slot.
-            hidden_dim: Intermediate feature dimension.
-            num_blocks: Number of SwiGLU residual blocks in fusion stack.
+            latent_dim: Dimension D of the belief latent.
+            num_actions: |A_i| (ego actions, one-hot).
+            num_opponent_actions: |A_j| (opponent actions, one-hot).
+            hidden_dim: Width of the prior, posterior and decoder networks.
+            num_blocks: SwiGLU residual blocks per network.
+            num_categoricals: Number of categorical variables in z.
+            num_classes: Classes per categorical variable.
+            kl_balance: Weight alpha on KL(sg(q) || p) (trains the prior); 1 - alpha on KL(q || sg(p)).
         """
         super().__init__()
-        self.feature_extractor = feature_extractor
-        self.num_objects = feature_extractor.num_objects
-        self.is_permutation_invariant = feature_extractor.is_permutation_invariant
-        self.action_dim = int(action_dim)
-        self.latent_dim = int(latent_dim)
+        self.num_categoricals = num_categoricals
+        self.num_classes = num_classes
+        self.kl_balance = kl_balance
+        action_width = num_actions + num_opponent_actions
+        z_width = num_categoricals * num_classes
+        self.prior_net = build_residual_stack(latent_dim + action_width, hidden_dim, z_width, num_blocks)
+        self.posterior_net = build_residual_stack(2 * latent_dim + action_width, hidden_dim, z_width, num_blocks)
+        self.decoder = build_residual_stack(latent_dim + action_width + z_width, hidden_dim, latent_dim, num_blocks)
 
-        self.feature_proj = nn.Linear(feature_extractor.output_dim, latent_dim)
+    def _logits(self, net: nn.Module, inputs: Tensor) -> Tensor:
+        return net(inputs).view(inputs.shape[0], self.num_categoricals, self.num_classes)
 
-        # Slot positional embeddings to preserve slot identities across time
-        self.slot_pos_embed = nn.Parameter(torch.randn(1, self.num_objects, latent_dim))
-        nn.init.normal_(self.slot_pos_embed, std=0.02)
+    def _sample(self, logits: Tensor) -> Tensor:
+        """Straight-through Gumbel-softmax one-hot sample, flattened to (B, N_cat * N_class)."""
+        logits = logits.float()
+        uniform = torch.rand_like(logits).clamp(1e-7, 1.0 - 1e-7)
+        noisy = logits - torch.log(-torch.log(uniform))
+        hard = F.one_hot(noisy.argmax(dim=-1), self.num_classes).float()
+        soft = noisy.softmax(dim=-1)
+        return (hard - soft.detach() + soft).flatten(1)
 
-        if self.is_permutation_invariant:
-            self.object_tracker = nn.TransformerDecoderLayer(
-                d_model=latent_dim, nhead=4, dim_feedforward=hidden_dim * 2,
-                activation="gelu", batch_first=True, norm_first=True
-            )
-        else:
-            self.inter_slot_attn = nn.MultiheadAttention(
-                embed_dim=latent_dim, num_heads=4, batch_first=True
-            )
-            self.slot_norm = RMSNorm(latent_dim)
+    @staticmethod
+    def _categorical_kl(p_logits: Tensor, q_logits: Tensor) -> Tensor:
+        """KL(p || q) summed over categoricals, float32; shape (B,)."""
+        p_log = F.log_softmax(p_logits.float(), dim=-1)
+        q_log = F.log_softmax(q_logits.float(), dim=-1)
+        return (p_log.exp() * (p_log - q_log)).sum(dim=(-1, -2))
 
-        self.fusion_layer = build_residual_stack(latent_dim + self.action_dim, hidden_dim, hidden_dim, num_blocks)
-        self.gru_cell = nn.GRUCell(input_size=hidden_dim, hidden_size=latent_dim)
+    def imagine(self, latent: Tensor, action: Tensor, opponent_action: Tensor) -> Tensor:
+        """Samples z from the prior and returns an imagined z_{t+1}, shape (B, D)."""
+        conditioning = torch.cat([latent, action, opponent_action], dim=-1)
+        z = self._sample(self._logits(self.prior_net, conditioning)).to(latent.dtype)
+        return self.decoder(torch.cat([conditioning, z], dim=-1))
 
-    def forward(self, obs: torch.Tensor, prev_action: torch.Tensor, prev_belief: torch.Tensor) -> torch.Tensor:
+    def predict_train(
+        self, latent: Tensor, action: Tensor, opponent_action: Tensor, target_next: Tensor
+    ) -> tuple[Tensor, Tensor]:
         """
-        Updates recurrent belief state tensor given new observation and previous action.
-
-        Args:
-            obs: Raw observation tensor of shape (B, *obs_shape).
-            prev_action: Action tensor taken at step t-1 of shape (B, action_dim) or (B, 1) integer index.
-            prev_belief: Prior recurrent belief state tensor of shape (B, N_obj, D_latent).
+        Posterior-sampled prediction of the target latent and the balanced KL.
 
         Returns:
-            Updated belief state tensor of shape (B, N_obj, D_latent).
+            (predicted z_{t+1} of shape (B, D), balanced KL of shape (B,)).
         """
-        b = obs.size(0)
-
-        # Ensure prev_action is a one-hot float tensor of shape (B, action_dim)
-        prev_action_onehot = Action.to_one_hot(prev_action, self.action_dim, device=obs.device)
-        if prev_action_onehot.size(0) != b:
-            prev_action_onehot = prev_action_onehot.expand(b, -1)
-
-
-        obs_objects = self.feature_extractor(obs)
-        projected_objects = self.feature_proj(obs_objects)
-
-        pos_embed = self.slot_pos_embed.to(dtype=projected_objects.dtype)
-        projected_objects_pos = projected_objects + pos_embed
-        prev_belief_pos = prev_belief + pos_embed
-
-        if self.is_permutation_invariant:
-            tracked_objects = self.object_tracker(tgt=prev_belief_pos, memory=projected_objects_pos)
-        else:
-            attn_out, _ = self.inter_slot_attn(
-                query=projected_objects_pos,
-                key=projected_objects_pos,
-                value=projected_objects
-            )
-            tracked_objects = self.slot_norm(projected_objects + attn_out)
-
-        # Broadcast action vector across all object slots
-        prev_a_broadcast = prev_action_onehot.unsqueeze(1).expand(-1, self.num_objects, -1)
-        x = torch.cat([tracked_objects, prev_a_broadcast], dim=-1)
-
-        fused = self.fusion_layer(x)
-        fused_flat = fused.reshape(b * self.num_objects, -1)
-        prev_belief_flat = prev_belief.reshape(b * self.num_objects, -1)
-
-        new_belief_flat = self.gru_cell(fused_flat, prev_belief_flat)
-        return new_belief_flat.reshape(b, self.num_objects, -1)
+        conditioning = torch.cat([latent, action, opponent_action], dim=-1)
+        prior_logits = self._logits(self.prior_net, conditioning)
+        posterior_logits = self._logits(self.posterior_net, torch.cat([conditioning, target_next], dim=-1))
+        z = self._sample(posterior_logits).to(latent.dtype)
+        predicted = self.decoder(torch.cat([conditioning, z], dim=-1))
+        kl = (self.kl_balance * self._categorical_kl(posterior_logits.detach(), prior_logits)
+              + (1.0 - self.kl_balance) * self._categorical_kl(posterior_logits, prior_logits.detach()))
+        return predicted, kl
 
 
-class CausalRelationalPredictor(nn.Module):
-    """
-    Latent Transition World Model: b_{t+1} ~ p_phi(b_{t+1} | b_t, a_i, a_j, z_t).
-    Uses Transformer Prior/Posterior towers with Straight-Through Gumbel-Softmax categoricals.
-    """
+class RecurrentJEPA(nn.Module):
+    """Online belief filter, its EMA target copy, and the stochastic latent transition."""
 
-    def __init__(
-        self,
-        num_objects: int,
-        latent_dim: int,
-        action_dim_i: int,
-        action_dim_j: int,
-        hidden_dim: int = 128,
-        num_categoricals: int = 4,
-        num_classes: int = 4,
-        num_blocks: int = 2
-    ):
+    def __init__(self, belief_filter: BeliefFilter, transition: LatentTransition, ema_momentum: float):
         """
-        Initializes Causal Relational Dynamics Predictor.
-
         Args:
-            num_objects: Number of structured object slots.
-            latent_dim: Dimension of latent belief state per slot.
-            action_dim_i: Dimensionality of ego action vector.
-            action_dim_j: Dimensionality of opponent action vector.
-            hidden_dim: Transformer feedforward and projection dimension.
-            num_categoricals: Number of discrete latent categorical variables (default: 4).
-            num_classes: Classes per discrete categorical variable (default: 4).
-            num_blocks: Number of Transformer encoder/decoder layers.
+            belief_filter: Online filter trained by gradient descent.
+            transition: Stochastic latent transition.
+            ema_momentum: m in target <- m * target + (1 - m) * online.
         """
         super().__init__()
-        self.num_objects = int(num_objects)
-        self.latent_dim = int(latent_dim)
-        self.num_categoricals = int(num_categoricals)
-        self.num_classes = int(num_classes)
-        self.tau = 1.0
-        z_dim = self.num_categoricals * self.num_classes
-
-        self.swarm_encoder = SwarmActionEncoder(action_dim_i, action_dim_j, hidden_dim=hidden_dim, num_heads=4)
-        self.action_proj = nn.Linear(hidden_dim, latent_dim)
-
-        self.mask_token = nn.Parameter(torch.randn(1, 1, latent_dim))
-        nn.init.normal_(self.mask_token, std=0.02)
-
-        self.slot_pos_embed = nn.Parameter(torch.randn(1, num_objects, latent_dim))
-        nn.init.normal_(self.slot_pos_embed, std=0.02)
-
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=latent_dim, nhead=4, dim_feedforward=hidden_dim * 2,
-            activation="gelu", batch_first=True, norm_first=True
-        )
-        decoder_layer = nn.TransformerDecoderLayer(
-            d_model=latent_dim, nhead=4, dim_feedforward=hidden_dim * 2,
-            activation="gelu", batch_first=True, norm_first=True
-        )
-
-        self.prior_transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_blocks, enable_nested_tensor=False)
-        self.post_transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_blocks, enable_nested_tensor=False)
-        self.dynamics_decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_blocks)
-
-        self.prior_proj = nn.Linear(latent_dim, z_dim)
-        self.post_proj = nn.Linear(latent_dim, z_dim)
-        self.z_fusion = nn.Linear(latent_dim + z_dim, latent_dim)
-
-    def sample_z_categorical(self, logits: torch.Tensor) -> torch.Tensor:
-        """
-        Straight-Through Gumbel-Softmax Sampling.
-        Executes in float32 with symmetric probability clamping to prevent tail skew.
-
-        Args:
-            logits: Unnormalized discrete categorical logits of shape (B, N, num_cat, num_class).
-
-        Returns:
-            Continuous straight-through one-hot samples of shape (B, N, num_cat * num_class).
-        """
-        orig_dtype = logits.dtype
-        logits_f32 = logits.float()
-
-        uniform = torch.rand_like(logits_f32)
-        u_safe = torch.clamp(uniform, 1e-7, 1.0 - 1e-7)
-        gumbel = -torch.log(-torch.log(u_safe))
-
-        noisy_logits = (logits_f32 + gumbel) / self.tau
-
-        hard_sample = F.one_hot(
-            torch.argmax(noisy_logits, dim=-1), num_classes=self.num_classes
-        ).float()
-
-        soft_sample = F.softmax(noisy_logits, dim=-1)
-        z_f32 = hard_sample.detach() - soft_sample.detach() + soft_sample
-
-        z = z_f32.to(dtype=orig_dtype)
-        return z.view(z.shape[0], z.shape[1], -1)
-
-    def _kl_divergence(self, p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
-        """
-        Computes analytical KL divergence KL(p || q) across categorical distributions.
-        Promotes distributions to float32 to prevent bfloat16 mantissa underflow.
-        """
-        orig_dtype = p.dtype
-        p_f32 = p.float()
-        q_f32 = q.float()
-
-        p_safe = torch.clamp(p_f32, 1e-7, 1.0)
-        q_safe = torch.clamp(q_f32, 1e-7, 1.0)
-
-        kl = torch.sum(p_safe * (torch.log(p_safe) - torch.log(q_safe)), dim=-1)
-        return kl.to(dtype=orig_dtype)
-
-    def forward_train(
-        self,
-        belief: torch.Tensor,
-        ego_a: torch.Tensor,
-        opp_a: torch.Tensor,
-        target_next_belief: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Trains dynamics predictor using Posterior and Prior Transformer towers with KL Balancing.
-
-        Args:
-            belief: Current belief state tensor of shape (B, N_obj, D_latent).
-            ego_a: Ego action tensor of shape (B, action_dim_i).
-            opp_a: Opponent action tensor of shape (B, M, action_dim_j) or (B, action_dim_j).
-            target_next_belief: Target EMA next belief state tensor of shape (B, N_obj, D_latent).
-
-        Returns:
-            Tuple of (predicted_next_belief, kl_loss).
-        """
-        b, n, _ = belief.shape
-        joint_features = self.swarm_encoder(ego_a, opp_a)
-        action_token = self.action_proj(joint_features).unsqueeze(1)
-
-        pos_embed = self.slot_pos_embed.to(dtype=belief.dtype)
-        belief_pos = belief + pos_embed
-        target_next_pos = target_next_belief + pos_embed
-
-        # Prior Tower: Conditioned strictly on (action, b_t)
-        prior_in = torch.cat([action_token, belief_pos], dim=1)
-        prior_out = self.prior_transformer(prior_in)[:, 1:, :]
-        prior_logits = self.prior_proj(prior_out).view(b, n, self.num_categoricals, self.num_classes)
-
-        # Posterior Tower: Conditioned on (action, b_{t+1}^target)
-        post_in = torch.cat([action_token, target_next_pos], dim=1)
-        post_out = self.post_transformer(post_in)[:, 1:, :]
-        post_logits = self.post_proj(post_out).view(b, n, self.num_categoricals, self.num_classes)
-
-        z = self.sample_z_categorical(post_logits)
-
-        dyn_context = self.z_fusion(torch.cat([belief, z], dim=-1))
-        memory = torch.cat([action_token, dyn_context], dim=1)
-        queries = (self.mask_token.expand(b, n, -1) + belief_pos).contiguous()
-
-        next_belief = self.dynamics_decoder(tgt=queries, memory=memory)
-
-        # DreamerV3 KL Balancing (alpha = 0.8)
-        post_probs = F.softmax(post_logits, dim=-1)
-        prior_probs = F.softmax(prior_logits, dim=-1)
-        alpha = 0.8
-
-        kl_prior_moves = self._kl_divergence(post_probs.detach(), prior_probs)
-        kl_post_moves = self._kl_divergence(post_probs, prior_probs.detach())
-        kl_loss = (alpha * kl_prior_moves + (1.0 - alpha) * kl_post_moves).sum(dim=2).mean(dim=1).unsqueeze(-1)
-
-        return next_belief, kl_loss
-
-    def forward(self, belief: torch.Tensor, ego_action: torch.Tensor, opp_actions: torch.Tensor) -> torch.Tensor:
-        """
-        Executes open-loop prior prediction step without target observations (used in MCTS search).
-
-        Args:
-            belief: Current belief state tensor of shape (B, N_obj, D_latent).
-            ego_action: Ego action tensor of shape (B, action_dim_i).
-            opp_actions: Opponent action tensor of shape (B, M, action_dim_j) or (B, action_dim_j).
-
-        Returns:
-            Imagined next belief state tensor of shape (B, N_obj, D_latent).
-        """
-        b, n, _ = belief.shape
-        joint_features = self.swarm_encoder(ego_action, opp_actions)
-        action_token = self.action_proj(joint_features).unsqueeze(1)
-
-        pos_embed = self.slot_pos_embed.to(dtype=belief.dtype)
-        belief_pos = belief + pos_embed
-
-        prior_in = torch.cat([action_token, belief_pos], dim=1)
-        prior_out = self.prior_transformer(prior_in)[:, 1:, :]
-        prior_logits = self.prior_proj(prior_out).view(b, n, self.num_categoricals, self.num_classes)
-
-        z = self.sample_z_categorical(prior_logits)
-
-        dyn_context = self.z_fusion(torch.cat([belief, z], dim=-1))
-        memory = torch.cat([action_token, dyn_context], dim=1)
-        queries = (self.mask_token.expand(b, n, -1) + belief_pos).contiguous()
-
-        return self.dynamics_decoder(tgt=queries, memory=memory)
-
-
-class RecurrentJEPABase(nn.Module):
-    """
-    Top-Level Joint-Embedding Predictive Architecture Container.
-    Manages online context encoder filter, dynamics predictor, and target EMA encoder.
-    """
-
-    def __init__(
-        self,
-        encoder: RecurrentContextEncoder,
-        predictor: CausalRelationalPredictor,
-        ema_momentum: float = 0.99
-    ):
-        """
-        Initializes Recurrent JEPA world model container.
-
-        Args:
-            encoder: Online recurrent context encoder filter.
-            predictor: Causal relational dynamics predictor.
-            ema_momentum: Exponential Moving Average momentum coefficient.
-        """
-        super().__init__()
-        self.context_encoder = encoder
-        self.predictor = predictor
-        self.ema_momentum = float(ema_momentum)
-
-        self.target_encoder = copy.deepcopy(self.context_encoder)
-        for param in self.target_encoder.parameters():
-            param.requires_grad = False
+        self.belief_filter = belief_filter
+        self.transition = transition
+        self.ema_momentum = ema_momentum
+        self.target_filter = copy.deepcopy(belief_filter).requires_grad_(False)
 
     @torch.no_grad()
-    def update_target_encoder(self):
-        """In-place EMA target encoder update for compile and memory safety."""
-        for tgt, ctx in zip(self.target_encoder.parameters(), self.context_encoder.parameters()):
-            tgt.mul_(self.ema_momentum).add_(ctx, alpha=1.0 - self.ema_momentum)
+    def update_target(self) -> None:
+        """EMA update of the target filter (in place, after each optimiser step)."""
+        for target, online in zip(self.target_filter.parameters(), self.belief_filter.parameters()):
+            target.mul_(self.ema_momentum).add_(online, alpha=1.0 - self.ema_momentum)
 
-    def encode_context(self, obs: torch.Tensor, prev_action: torch.Tensor, prev_belief: torch.Tensor) -> torch.Tensor:
-        """Advances online recurrent belief filter: b_t = Filter(b_{t-1}, a_{t-1}, o_t)."""
-        return self.context_encoder(obs, prev_action, prev_belief)
-
-    @torch.no_grad()
-    def encode_target(self, next_obs: torch.Tensor, action: torch.Tensor, belief: torch.Tensor) -> torch.Tensor:
-        """Computes target belief state b_{t+1}^target using frozen EMA target encoder."""
-        return self.target_encoder(next_obs, action, belief)
-
-    def predict_next_belief(self, belief: torch.Tensor, ego_action: torch.Tensor, opp_actions: torch.Tensor) -> torch.Tensor:
-        """Executes open-loop prior imagination step for MCTS rollouts."""
-        return self.predictor(belief, ego_action, opp_actions)
-
-    def predict_next_belief_train(
-        self,
-        belief: torch.Tensor,
-        ego_action: torch.Tensor,
-        opp_actions: torch.Tensor,
-        target_next: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Trains dynamics predictor using Posterior and Prior Transformer towers."""
-        return self.predictor.forward_train(belief, ego_action, opp_actions, target_next)
+    def predict_next_belief(self, latent: Tensor, action: Tensor, opponent_action: Tensor) -> Tensor:
+        """Prior imagination step used by MCTS: (B, D) -> (B, D)."""
+        return self.transition.imagine(latent, action, opponent_action)

@@ -39,8 +39,8 @@ import torch
 import torch.nn.functional as F
 
 from ..interfaces import AbstractPlanner
-from ..models.world_model import RecurrentJEPABase
-from ..models.heads import ValueHead, RewardHead, DiscretePolicyHead
+from ..models.world_model import RecurrentJEPA
+from ..models.heads import ValueHead, RewardHead, OpponentPolicyHead
 from ..models.distributions import TwoHotSymlog
 
 
@@ -84,7 +84,7 @@ class LatentSearchNode:
         Initializes latent search node.
 
         Args:
-            belief: Single-sample belief tensor of shape (1, N_obj, D_latent).
+            belief: Single-sample belief latent of shape (1, D).
             action_taken: Discrete ego action leading to this node.
             reward: Immediate step reward r_t emitted during arrival transition.
             prior: Action selection prior probability P(s, a).
@@ -106,10 +106,10 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
 
     def __init__(
         self,
-        jepa_model: RecurrentJEPABase,
+        jepa_model: RecurrentJEPA,
         value_head: ValueHead,
         reward_head: RewardHead,
-        opponent_head: DiscretePolicyHead,
+        opponent_head: OpponentPolicyHead,
         action_dim_i: int,
         action_dim_j: int,
         num_simulations: int = 50,
@@ -163,17 +163,13 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
         self.last_q_spread: float = 0.0
         self.last_entropy: float = 0.0
 
-    def encode_context(self, obs: torch.Tensor, action: torch.Tensor, prev_belief: torch.Tensor) -> torch.Tensor:
-        """Advances latent belief state through recurrent context filter."""
-        return self.jepa_model.encode_context(obs, action, prev_belief)
-
     @torch.no_grad()
     def search(self, root_state: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
         """
         Executes parallel batched latent MCTS simulations across B environment channels.
 
         Args:
-            root_state: Root belief state tensor of shape (B, N_obj, D_latent).
+            root_state: Root belief latents of shape (B, D).
             temperature: Action selection sampling temperature.
 
         Returns:
@@ -274,15 +270,11 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
         use_amp = (self.device.type == 'cuda')
         with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=use_amp):
             opp_logits = self.opponent_head(batched_beliefs).clone()
-            opp_probs = F.softmax(opp_logits, dim=-1)
-            _, num_opps, act_dim = opp_probs.shape
 
-            # Row-aligned opponent action sampling with explicit float32 promotion for multinomial safety
-            rep_opp_probs = opp_probs.repeat_interleave(num_branches, dim=0)
-            opp_a_idx = torch.multinomial(
-                rep_opp_probs.float().view(-1, act_dim), num_samples=1
-            ).view(b_eval * num_branches, num_opps)
-
+            # Row-aligned opponent action sampling (float32 for multinomial): one opponent
+            # action per expanded branch, drawn from pi_j(. | z) of the branch's parent latent.
+            rep_opp_probs = F.softmax(opp_logits.float(), dim=-1).repeat_interleave(num_branches, dim=0)
+            opp_a_idx = torch.multinomial(rep_opp_probs, num_samples=1).squeeze(-1)
             rep_opp_a = F.one_hot(opp_a_idx, num_classes=self.action_dim_j).float()
 
             next_beliefs = self.jepa_model.predict_next_belief(rep_beliefs, rep_ego_a, rep_opp_a).clone()

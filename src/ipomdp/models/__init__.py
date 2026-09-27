@@ -1,52 +1,22 @@
-# ABSOLUTE PATH: src/ipomdp/models/__init__.py
-"""Neural network architectures, layers, distributions, extractors, and world models for JEPA-IPOMDP."""
+"""JEPA world model (belief filter, EMA target, stochastic transition), prediction heads and building blocks."""
 
-from .layers import (
-    RMSNorm,
-    SwiGLUResidualBlock,
-    build_residual_stack,
-    LearnedPositionalEncoding2D,
-    AttentionPooler,
-    SwarmActionEncoder,
-)
-from .distributions import TwoHotSymlog, symlog, symexp
-from .extractors import (
-    FeatureExtractor,
-    SlotAttention,
-    MLPFeatureExtractor,
-    CNNFeatureExtractor,
-)
-from .heads import (
-    ValueHead,
-    RewardHead,
-    DiscretePolicyHead,
-    ObservationProbeHead,
-)
-from .world_model import (
-    RecurrentContextEncoder,
-    CausalRelationalPredictor,
-    RecurrentJEPABase,
-)
+from .distributions import TwoHotSymlog, symexp, symlog
+from .heads import ObservationProbeHead, OpponentPolicyHead, RewardHead, ValueHead
+from .layers import RMSNorm, SwiGLUResidualBlock, build_residual_stack
+from .world_model import BeliefFilter, LatentTransition, RecurrentJEPA
 
 __all__ = [
-    "RMSNorm",
-    "SwiGLUResidualBlock",
-    "build_residual_stack",
-    "LearnedPositionalEncoding2D",
-    "AttentionPooler",
-    "SwarmActionEncoder",
-    "TwoHotSymlog",
-    "symlog",
-    "symexp",
-    "FeatureExtractor",
-    "SlotAttention",
-    "MLPFeatureExtractor",
-    "CNNFeatureExtractor",
-    "ValueHead",
-    "RewardHead",
-    "DiscretePolicyHead",
+    "BeliefFilter",
+    "LatentTransition",
     "ObservationProbeHead",
-    "RecurrentContextEncoder",
-    "CausalRelationalPredictor",
-    "RecurrentJEPABase",
+    "OpponentPolicyHead",
+    "RMSNorm",
+    "RecurrentJEPA",
+    "RewardHead",
+    "SwiGLUResidualBlock",
+    "TwoHotSymlog",
+    "ValueHead",
+    "build_residual_stack",
+    "symexp",
+    "symlog",
 ]

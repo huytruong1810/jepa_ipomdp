@@ -1,436 +1,249 @@
 # ABSOLUTE PATH: src/ipomdp/training/trainer.py
 # ==============================================================================
-# SEQUENCE WORLD MODEL & MULTI-STEP CONSISTENCY TRAINER
+# WHOLE-EPISODE WORLD-MODEL TRAINER (JEPA SELF-PREDICTION + REWARD/VALUE GROUNDING)
 # ==============================================================================
 #
 # DESIGN DECISIONS & THEORETICAL FOUNDATIONS:
-# 1. Contiguous Sequence Unrolling with Burn-In Isolation:
-#    - Unrolls context filter b_t = Filter(b_{t-1}, a_{t-1}, o_t) and target encoder
-#      b_t^target over (burn_in + train_seq_len) steps.
-#    - Multiplies loss terms by mask[:, t, :] to strictly isolate gradients to steps
-#      following recurrent filter warmup.
+# 1. Whole-Episode Unrolls:
+#    - Each update filters complete episodes from the learned z_0 (see episode_buffer.py),
+#      so training sees exactly the latents the online agent computes. There is no burn-in,
+#      no mask, and no zero-initialised mid-episode state.
 #
-# 2. bfloat16 AMP Dtype Initialization Safety:
-#    - Allocates initial zero beliefs using dtype=obs_seq.dtype to match autocast
-#      or input dtypes, preventing fatal GRU hidden state dtype mismatches at t=0.
+# 2. Loss Terms (all averaged over the B x T transitions of the batch):
+#      JEPA        SmoothL1( g(z_t, a_t, a^j_t, z~q), sg(z-bar_{t+1}) ) + kl_scale * max(KL, free_nats)
+#                  z-bar is the EMA target filter's latent; q is the posterior over the
+#                  discrete latent z; KL is the balanced prior/posterior KL (world_model.py).
+#      Reward      TwoHot( R(z_t, a_t, a^j_t), r_t )
+#      Value       TwoHot( V(z_t), G^lambda_t )
+#      Opponent    CE( pi_j(z_t), a^j_t )
+#      Imagination consistency_scale * TwoHot( V(d_k), sg(G^imag_k) ), see section 4.
+#    - Reward and value are the grounding that makes z_t a belief; JEPA self-prediction
+#      alone does not (Phase-2 study, documented in world_model.py section 3). VICReg was
+#      removed for the reasons given there.
 #
-# 3. Swarm Opponent Target Dimensionality Safety (M >= 1):
-#    - Standardizes target opponent indices to shape (B, M) across all loss evaluations,
-#      guaranteeing CrossEntropyLoss alignment without shape crashes.
+# 3. TD(lambda) Targets With Truncation Bootstrapping:
+#      G_{T} = V(z_T),   G_t = r_t + gamma * ((1 - lambda) V(z_{t+1}) + lambda G_{t+1})
+#    - Every episode ends by TRUNCATION (continuing task), so the final latent is always
+#      bootstrapped with V(z_T); there are no terminal states and no (1 - done) factors.
+#    - gamma is the domain's discount (0.95 for canonical Tiger), passed in by main.py.
 #
-# 4. TD(lambda) Target Recursion on Physical Scale:
-#    - Computes continuous lambda-returns via backward Bellman recursion:
-#         G_t^lambda = r_t + gamma * ((1 - lambda) * V_{t+1} + lambda * G_{t+1}^lambda)
-#    - Regresses predicted value logits pred_v_logits against G_t^lambda using TwoHotSymlog.
+# 4. Imagination Consistency (reviewed in Phase 3):
+#    - From every real latent d_0 = z_t, the prior transition imagines d_{h+1} =
+#      g(d_h, a_{t+h}, a^j_{t+h}) along the actions actually taken, for h < L_t =
+#      min(H, T - t). Imagined rewards r^_h = R(d_h, a_{t+h}, a^j_{t+h}) use the latent the
+#      action is taken FROM (an earlier version paired a_{t+h} with d_{h+1}, which is off by
+#      one step). Targets G^imag_L = V(d_L), G^imag_k = r^_k + gamma G^imag_{k+1}; the value
+#      head is trained on d_1..d_{L-1} so MCTS values imagined latents consistently.
 #
-# 5. Precision-Guarded VICReg Regularization:
-#    - Promotes representations to float32 inside _vicreg_loss_batch prior to calculating
-#      variance and covariance terms, preventing bfloat16 mantissa underflow and gradient zeroing.
-#    - Normalizes MSE similarity and covariance Frobenius norms by latent dimension D:
-#         L_sim = (1 / (N * D)) * sum (x - y)^2
-#         L_cov = (1 / D) * (||C(X)||_F^2 - ||diag(C(X))||_2^2)
+# 5. Failure Is Loud:
+#    - A non-finite loss (or a non-finite two-hot target, see distributions.py) raises
+#      FloatingPointError instead of silently skipping or sanitising the update; silent
+#      skips and NaN-to-zero substitutions hid numerical bugs in an earlier iteration.
+#
+# 6. Mixed Precision:
+#    - The forward pass runs under bfloat16 autocast on CUDA; KL, two-hot and SmoothL1
+#      losses are computed in float32.
 # ==============================================================================
 
-import logging
-from typing import Dict, Tuple, Optional
+from dataclasses import dataclass
+
 import torch
-import torch.nn as nn
-import torch.optim as optim
 import torch.nn.functional as F
+from torch import Tensor
 
-from ..models.world_model import RecurrentJEPABase
-from ..models.heads import ValueHead, RewardHead, DiscretePolicyHead
-from ..models.distributions import TwoHotSymlog, symlog
+from ..models.distributions import TwoHotSymlog
+from ..models.heads import OpponentPolicyHead, RewardHead, ValueHead
+from ..models.world_model import RecurrentJEPA
+from .episode_buffer import EpisodeBatch
 
 
-class DiscreteRecurrentIPOMDPTrainer:
-    """
-    Sequence Trainer for Causal JEPA I-POMDP World Models.
-    Optimizes JEPA Prediction, VICReg, Two-Hot Symlog Returns/Rewards, and Hallucinated Consistency.
-    """
+@dataclass(frozen=True)
+class TrainerConfig:
+    """Optimisation and loss hyper-parameters (conf/config.yaml, section `trainer`)."""
+
+    learning_rate: float
+    weight_decay: float
+    grad_clip_norm: float
+    lambda_return: float
+    kl_free_nats: float
+    kl_scale: float
+    imagination_horizon: int
+    consistency_scale: float
+
+
+class WorldModelTrainer:
+    """One gradient step of the JEPA world model and its heads on a batch of whole episodes."""
 
     def __init__(
         self,
-        jepa_model: RecurrentJEPABase,
+        world_model: RecurrentJEPA,
         value_head: ValueHead,
         reward_head: RewardHead,
-        opponent_head: DiscretePolicyHead,
-        logger: logging.Logger,
+        opponent_head: OpponentPolicyHead,
+        num_actions: int,
+        num_observations: int,
+        num_opponent_actions: int,
+        discount: float,
+        config: TrainerConfig,
         device: torch.device,
-        latent_dim: int,
-        action_dim_i: int,
-        action_dim_j: int,
-        num_objects: int,
-        learning_rate: float = 3e-4,
-        hallucination_horizon: int = 3,
-        lambda_consistency: float = 0.5,
-        vicreg_sim_coeff: float = 25.0,
-        vicreg_std_coeff: float = 25.0,
-        vicreg_cov_coeff: float = 1.0,
-        gamma: float = 0.99,
-        lam: float = 0.95,
-        detach_belief_for_rl: bool = False
     ):
-        """
-        Initializes Trainer and AdamW optimizer.
-        """
-        self.logger = logger
+        self.world_model = world_model
+        self.value_head = value_head
+        self.reward_head = reward_head
+        self.opponent_head = opponent_head
+        self.num_actions = num_actions
+        self.num_observations = num_observations
+        self.num_opponent_actions = num_opponent_actions
+        self.discount = discount
+        self.config = config
         self.device = device
-        self.latent_dim = int(latent_dim)
-        self.action_dim_i = int(action_dim_i)
-        self.action_dim_j = int(action_dim_j)
-        self.num_objects = int(num_objects)
-        self.hallucination_horizon = int(hallucination_horizon)
-        self.lambda_consistency = float(lambda_consistency)
-        self.gamma = float(gamma)
-        self.lam = float(lam)
-        self.detach_belief_for_rl = bool(detach_belief_for_rl)
+        self.twohot = TwoHotSymlog().to(device)
+        self.parameters = [
+            *world_model.belief_filter.parameters(),
+            *world_model.transition.parameters(),
+            *value_head.parameters(),
+            *reward_head.parameters(),
+            *opponent_head.parameters(),
+        ]
+        self.optimizer = torch.optim.AdamW(self.parameters, lr=config.learning_rate, weight_decay=config.weight_decay)
 
-        self.vicreg_sim_coeff = float(vicreg_sim_coeff)
-        self.vicreg_std_coeff = float(vicreg_std_coeff)
-        self.vicreg_cov_coeff = float(vicreg_cov_coeff)
-
-        self.jepa_model = jepa_model.to(self.device)
-        self.value_head = value_head.to(self.device)
-        self.reward_head = reward_head.to(self.device)
-        self.opponent_head = opponent_head.to(self.device)
-
-        self.trainable_params = (
-            list(self.jepa_model.context_encoder.parameters()) +
-            list(self.jepa_model.predictor.parameters()) +
-            list(self.value_head.parameters()) +
-            list(self.reward_head.parameters()) +
-            list(self.opponent_head.parameters())
-        )
-        self.optimizer = optim.AdamW(self.trainable_params, lr=learning_rate, weight_decay=1e-4)
-
-        self.jepa_criterion = nn.SmoothL1Loss(reduction='none')
-        self.ce_criterion = nn.CrossEntropyLoss(reduction='none')
-        self.twohot_criterion = TwoHotSymlog().to(self.device)
-
-    def compute_lambda_returns(
-        self,
-        rewards: torch.Tensor,
-        values: torch.Tensor,
-        mask: torch.Tensor,
-        dones: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+    def lambda_returns(self, rewards: Tensor, values: Tensor) -> Tensor:
         """
-        Computes TD(lambda) target returns across temporal sequence horizons.
+        TD(lambda) targets for truncated episodes.
 
         Args:
-            rewards: Immediate rewards tensor of shape (B, T, 1).
-            values: Decoded continuous value predictions of shape (B, T + 1, 1).
-            mask: Sequence mask tensor of shape (B, T, 1).
-            dones: Optional episode termination tensor of shape (B, T, 1).
+            rewards: r_0..r_{T-1}, shape (B, T).
+            values: V(z_0)..V(z_T), shape (B, T + 1).
 
         Returns:
-            Calculated lambda return targets of shape (B, T, 1).
+            G_0..G_{T-1}, shape (B, T).
         """
-        _, t_steps, _ = rewards.shape
-        returns = torch.zeros_like(rewards)
-        last_lambda_return = values[:, -1, :]
-
-        for t in reversed(range(t_steps)):
-            discount = self.gamma * (1.0 - dones[:, t, :]) if dones is not None else self.gamma
-            ret = rewards[:, t, :] + discount * (
-                (1.0 - self.lam) * values[:, t + 1, :] + self.lam * last_lambda_return
-            )
-            last_lambda_return = ret * mask[:, t, :] + values[:, t, :] * (1.0 - mask[:, t, :])
-            returns[:, t, :] = last_lambda_return
-
+        lam = self.config.lambda_return
+        returns = torch.empty_like(rewards)
+        next_return = values[:, -1]
+        for t in reversed(range(rewards.shape[1])):
+            next_return = rewards[:, t] + self.discount * ((1.0 - lam) * values[:, t + 1] + lam * next_return)
+            returns[:, t] = next_return
         return returns
 
-    def train_sequence(
-        self,
-        batch: Dict[str, torch.Tensor],
-        is_weights: torch.Tensor
-    ) -> Tuple[Dict[str, float], torch.Tensor]:
+    def _imagination_loss(self, latents: Tensor, actions: Tensor, opponent_actions: Tensor) -> Tensor:
         """
-        Executes a complete backpropagation training step over a sequence batch.
+        Value consistency on prior-imagined latents (module header, section 4).
 
         Args:
-            batch: Sequence dictionary containing obs, rewards, mask, act_i, prev_act_i, act_j.
-            is_weights: Importance sampling weights tensor of shape (B, 1).
+            latents: Real z_0..z_{T-1}, shape (B, T, D).
+            actions: One-hot a_0..a_{T-1}, shape (B, T, |A|).
+            opponent_actions: One-hot a^j_0..a^j_{T-1}, shape (B, T, |A_j|).
 
         Returns:
-            Tuple of (metrics_dict, mean_seq_td_errors of shape (B,)).
+            Scalar loss averaged over all trained imagined latents.
         """
-        self.jepa_model.train()
-        self.value_head.train()
-        self.reward_head.train()
-        self.opponent_head.train()
+        batch, steps, dim = latents.shape
+        horizon = self.config.imagination_horizon
+        # L_t = min(H, T - t): imagination never runs past the actions actually recorded.
+        rollout_length = torch.clamp(steps - torch.arange(steps, device=self.device), max=horizon)
+        rollout_length = rollout_length.expand(batch, -1).reshape(-1)
+
+        def shifted(x: Tensor, h: int) -> Tensor:
+            """x_{t+h} for every t, zero-padded past the episode end; shape (B*T, width)."""
+            return F.pad(x[:, h:], (0, 0, 0, h)).reshape(batch * steps, -1)
+
+        imagined = [latents.reshape(-1, dim)]
+        imagined_rewards = []
+        for h in range(horizon):
+            action, opponent_action = shifted(actions, h), shifted(opponent_actions, h)
+            with torch.no_grad():
+                imagined_rewards.append(self.twohot.decode(
+                    self.reward_head(imagined[-1], action, opponent_action).float(), real_scale=True).squeeze(-1))
+            imagined.append(self.world_model.predict_next_belief(imagined[-1], action, opponent_action))
+
+        # Backward recursion over h = H..1. Entries with h > L_t are never read: every d_h
+        # with h <= L_t sits at the end of the rollout (h == L_t) or recurses into h + 1 <= L_t.
+        losses, counts = [], []
+        target = torch.zeros(batch * steps, device=self.device)
+        for h in range(horizon, 0, -1):
+            with torch.no_grad():
+                bootstrap = self.twohot.decode(self.value_head(imagined[h]).float(), real_scale=True).squeeze(-1)
+                recursion = imagined_rewards[h] + self.discount * target if h < horizon else bootstrap
+                target = torch.where(rollout_length == h, bootstrap, recursion)
+            trained = h < rollout_length  # d_h with h < L_t has a genuine multi-step target
+            if trained.any():
+                loss = self.twohot(self.value_head(imagined[h][trained]), target[trained]).float()
+                losses.append(loss.sum())
+                counts.append(int(trained.sum()))
+        if not losses:
+            return torch.zeros((), device=self.device)
+        return torch.stack(losses).sum() / sum(counts)
+
+    def train_step(self, episodes: EpisodeBatch) -> dict[str, float]:
+        """
+        One optimiser step on a batch of complete episodes.
+
+        Returns:
+            Scalar diagnostics (losses and value explained variance).
+        """
+        self.world_model.train()
+        cfg = self.config
+        actions = F.one_hot(episodes.actions, self.num_actions).float()
+        observations = F.one_hot(episodes.observations, self.num_observations).float()
+        opponent_actions = F.one_hot(episodes.opponent_actions, self.num_opponent_actions).float()
+        batch, steps = episodes.actions.shape
+
+        with torch.autocast(self.device.type, dtype=torch.bfloat16, enabled=self.device.type == "cuda"):
+            latents = self.world_model.belief_filter.unroll(actions, observations)          # (B, T+1, D)
+            with torch.no_grad():
+                targets = self.world_model.target_filter.unroll(actions, observations)    # (B, T+1, D)
+
+            flat = lambda x: x.reshape(batch * steps, -1)  # noqa: E731
+            current = flat(latents[:, :-1])
+            action_flat, opponent_flat = flat(actions), flat(opponent_actions)
+
+            predicted, kl = self.world_model.transition.predict_train(
+                current, action_flat, opponent_flat, flat(targets[:, 1:]))
+            loss_prediction = F.smooth_l1_loss(predicted.float(), flat(targets[:, 1:]).float())
+            loss_kl = cfg.kl_scale * kl.clamp(min=cfg.kl_free_nats).mean()
+
+            loss_reward = self.twohot(self.reward_head(current, action_flat, opponent_flat),
+                                      episodes.rewards.reshape(-1)).float().mean()
+
+            with torch.no_grad():
+                values = self.twohot.decode(
+                    self.value_head(latents.reshape(batch * (steps + 1), -1)).float(), real_scale=True)
+                returns = self.lambda_returns(episodes.rewards, values.view(batch, steps + 1))
+            value_logits = self.value_head(current)
+            loss_value = self.twohot(value_logits, returns.reshape(-1)).float().mean()
+
+            loss_opponent = F.cross_entropy(self.opponent_head(current).float(), episodes.opponent_actions.reshape(-1))
+
+            loss_consistency = cfg.consistency_scale * self._imagination_loss(
+                latents[:, :-1], actions, opponent_actions)
+
+            total = loss_prediction + loss_kl + loss_reward + loss_value + loss_opponent + loss_consistency
+
+        if not torch.isfinite(total):
+            raise FloatingPointError(
+                f"Non-finite loss: prediction={loss_prediction.item()}, kl={loss_kl.item()}, "
+                f"reward={loss_reward.item()}, value={loss_value.item()}, opponent={loss_opponent.item()}, "
+                f"consistency={loss_consistency.item()}")
+
         self.optimizer.zero_grad(set_to_none=True)
-
-        use_amp = (self.device.type == 'cuda')
-        with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=use_amp):
-            obs_seq = batch["obs"].to(self.device, non_blocking=True)
-            reward_seq = batch["rewards"].to(self.device, non_blocking=True)
-            mask = batch["mask"].to(self.device, non_blocking=True)
-            is_weights = is_weights.to(self.device, non_blocking=True)
-            dones_seq = batch["dones"].to(self.device, non_blocking=True) if "dones" in batch else None
-
-            act_i_seq = F.one_hot(
-                batch["act_i"].to(self.device, non_blocking=True).long().squeeze(-1),
-                num_classes=self.action_dim_i
-            ).float()
-
-            prev_a_i = F.one_hot(
-                batch["prev_act_i"].to(self.device, non_blocking=True).long().squeeze(-1),
-                num_classes=self.action_dim_i
-            ).float()
-
-            act_j_seq = batch["act_j"].to(self.device, non_blocking=True).long()
-            if act_j_seq.dim() == 2:
-                act_j_seq = act_j_seq.unsqueeze(-1)
-
-            b_batch, t_steps, _ = act_i_seq.shape
-            b_states, target_b_states = [], []
-
-            # Dtype-safe initialization: Match obs_seq.dtype to prevent GRU bfloat16/float32 crashes
-            init_belief = torch.zeros(b_batch, self.num_objects, self.latent_dim, device=self.device, dtype=obs_seq.dtype)
-
-            b_t = self.jepa_model.encode_context(obs_seq[:, 0, :], prev_a_i, init_belief)
-            with torch.no_grad():
-                target_b_t = self.jepa_model.encode_target(obs_seq[:, 0, :], prev_a_i, init_belief)
-
-            for t in range(t_steps):
-                b_states.append(b_t)
-                target_b_states.append(target_b_t)
-                b_t = self.jepa_model.encode_context(obs_seq[:, t + 1, :], act_i_seq[:, t, :], b_t)
-                with torch.no_grad():
-                    target_b_t = self.jepa_model.encode_target(obs_seq[:, t + 1, :], act_i_seq[:, t, :], target_b_t)
-
-            b_states.append(b_t)
-            target_b_states.append(target_b_t)
-
-            with torch.no_grad():
-                stacked_beliefs = torch.stack(b_states, dim=1)
-                flat_beliefs = stacked_beliefs.view(b_batch * (t_steps + 1), self.num_objects, self.latent_dim)
-                v_logits = self.value_head(flat_beliefs)
-                v_vals = self.twohot_criterion.decode(v_logits, real_scale=True).view(b_batch, t_steps + 1, 1)
-
-                real_returns = self.compute_lambda_returns(reward_seq, v_vals, mask, dones_seq)
-
-            seq_loss_jepa, seq_loss_rl, seq_loss_consistency = 0.0, 0.0, 0.0
-            seq_loss_value, seq_loss_reward, seq_loss_opp = 0.0, 0.0, 0.0
-            seq_mask_sum = torch.zeros(b_batch, 1, device=self.device)
-            seq_td_errors = torch.zeros(b_batch, t_steps, device=self.device)
-            vicreg_loss_accum = torch.tensor(0.0, device=self.device)
-            vicreg_steps = 0
-            vicreg_sim_accum, vicreg_std_accum, vicreg_cov_accum, latent_std_accum = 0.0, 0.0, 0.0, 0.0
-            opp_correct_accum, opp_total_accum = 0.0, 0.0
-            all_y_true, all_y_pred, all_td_errors = [], [], []
-
-            for t in range(t_steps):
-                a_i_t = act_i_seq[:, t, :]
-                a_j_t_loss = act_j_seq[:, t, :]
-                a_j_t_warm = F.one_hot(a_j_t_loss, num_classes=self.action_dim_j).float()
-
-                m_t = mask[:, t, :]
-                seq_mask_sum += m_t
-
-                current_b = b_states[t]
-                target_b_t1 = target_b_states[t + 1]
-
-                predicted_b_t1, kl_loss = self.jepa_model.predict_next_belief_train(
-                    current_b, a_i_t, a_j_t_warm, target_b_t1
-                )
-
-                loss_jepa = self.jepa_criterion(predicted_b_t1, target_b_t1).mean(dim=(1, 2)).unsqueeze(-1) * m_t
-                loss_kl = torch.max(kl_loss, torch.tensor(1.0, device=self.device)) * 0.1 * m_t
-                seq_loss_jepa += (loss_jepa + loss_kl)
-
-                if m_t.sum() > 1:
-                    valid_idx = m_t.squeeze(-1).bool()
-                    step_v_loss, step_sim, step_std, step_cov, step_m_std = self._vicreg_loss_batch(
-                        predicted_b_t1[valid_idx].view(-1, self.latent_dim),
-                        target_b_t1[valid_idx].view(-1, self.latent_dim),
-                        is_weights[valid_idx]
-                    )
-                    vicreg_loss_accum = vicreg_loss_accum + step_v_loss
-                    vicreg_sim_accum += step_sim.item()
-                    vicreg_std_accum += step_std.item()
-                    vicreg_cov_accum += step_cov.item()
-                    latent_std_accum += step_m_std.item()
-                    vicreg_steps += 1
-
-                b_for_rl = current_b.detach() if self.detach_belief_for_rl else current_b
-                pred_v_logits = self.value_head(b_for_rl)
-                pred_r_logits = self.reward_head(b_for_rl, a_i_t, a_j_t_warm)
-                pred_opp_logits = self.opponent_head(b_for_rl)
-
-                loss_value = self.twohot_criterion(pred_v_logits, real_returns[:, t, :], auto_symlog=True) * m_t
-                loss_reward = self.twohot_criterion(pred_r_logits, reward_seq[:, t, :], auto_symlog=True) * m_t
-
-                # Swarm-safe opponent cross-entropy loss computation
-                b_curr, num_opps = a_j_t_loss.shape[:2] if a_j_t_loss.dim() >= 2 else (a_j_t_loss.size(0), 1)
-                flat_pred_opp = pred_opp_logits.view(-1, self.action_dim_j)
-                flat_targ_opp = a_j_t_loss.contiguous().view(-1)
-                loss_opp = self.ce_criterion(flat_pred_opp, flat_targ_opp).view(b_curr, num_opps).mean(dim=1).unsqueeze(-1) * m_t
-
-                with torch.no_grad():
-                    pred_opp_choice = flat_pred_opp.argmax(dim=-1)
-                    opp_mask = m_t.repeat_interleave(num_opps, dim=0).squeeze(-1).bool()
-                    if opp_mask.sum() > 0:
-                        opp_correct_accum += (pred_opp_choice[opp_mask] == flat_targ_opp[opp_mask]).float().sum().item()
-                        opp_total_accum += float(opp_mask.sum().item())
-
-                with torch.no_grad():
-                    pred_v_real = self.twohot_criterion.decode(pred_v_logits, real_scale=True)
-                    td_error = torch.abs(
-                        self.twohot_criterion.decode(pred_v_logits, real_scale=False) - symlog(real_returns[:, t, :])
-                    ) * m_t
-                    seq_td_errors[:, t] = td_error.squeeze(-1)
-
-                    valid_m = m_t.squeeze(-1).bool()
-                    if valid_m.sum() > 0:
-                        all_y_true.append(real_returns[:, t, :][valid_m].view(-1))
-                        all_y_pred.append(pred_v_real[valid_m].view(-1))
-                        all_td_errors.append(td_error[valid_m].view(-1))
-
-                seq_loss_value += loss_value
-                seq_loss_reward += loss_reward
-                seq_loss_opp += loss_opp
-                seq_loss_rl += (loss_value + loss_reward + loss_opp)
-
-                dream_b = current_b
-                dream_states, dream_rewards, dream_discounts = [], [], []
-
-                for h in range(self.hallucination_horizon):
-                    if t + h >= t_steps:
-                        break
-                    future_a_i = act_i_seq[:, t + h, :]
-                    future_a_j = F.one_hot(act_j_seq[:, t + h, :], num_classes=self.action_dim_j).float()
-                    step_done = dones_seq[:, t + h, :] if dones_seq is not None else torch.zeros_like(mask[:, t + h, :])
-
-                    dream_b = self.jepa_model.predict_next_belief(dream_b, future_a_i, future_a_j)
-                    dream_states.append((dream_b, mask[:, t + h, :]))
-                    dream_rewards.append(self.reward_head(dream_b, future_a_i, future_a_j))
-                    dream_discounts.append(self.gamma * (1.0 - step_done))
-
-                if dream_states:
-                    with torch.no_grad():
-                        last_v = self.twohot_criterion.decode(self.value_head(dream_states[-1][0]), real_scale=True)
-                    dream_lambda_target = last_v
-
-                    for h_idx in reversed(range(len(dream_states))):
-                        d_b, d_m = dream_states[h_idx]
-                        r_val = self.twohot_criterion.decode(dream_rewards[h_idx], real_scale=True)
-                        disc = dream_discounts[h_idx]
-                        dream_lambda_target = r_val + disc * dream_lambda_target
-
-                        v_dream_logits = self.value_head(d_b)
-                        loss_consist = self.twohot_criterion(v_dream_logits, dream_lambda_target.detach(), auto_symlog=True)
-                        seq_loss_consistency += (loss_consist * d_m)
-
-            total_mask_sum = seq_mask_sum.sum().clamp(min=1.0)
-            total_loss_jepa = (seq_loss_jepa * is_weights).sum() / total_mask_sum
-            total_loss_vicreg = (vicreg_loss_accum / max(vicreg_steps, 1)) if vicreg_steps > 0 else torch.tensor(0.0, device=self.device)
-            total_loss_rl = (seq_loss_rl * is_weights).sum() / total_mask_sum
-            total_loss_value = (seq_loss_value * is_weights).sum() / total_mask_sum
-            total_loss_reward = (seq_loss_reward * is_weights).sum() / total_mask_sum
-            total_loss_opp = (seq_loss_opp * is_weights).sum() / total_mask_sum
-            total_loss_consistency = ((seq_loss_consistency * is_weights).sum() / total_mask_sum) * self.lambda_consistency
-
-            combined_loss = total_loss_jepa + total_loss_vicreg + total_loss_rl + total_loss_consistency
-
-        if not torch.isfinite(combined_loss):
-            self.logger.warning(
-                f"[!] Non-finite combined_loss detected at gradient update: "
-                f"JEPA={total_loss_jepa.item()}, VICReg={total_loss_vicreg.item()}, "
-                f"RL={total_loss_rl.item()}, Consistency={total_loss_consistency.item()}. "
-                f"Skipping backward step to prevent CUDA state corruption."
-            )
-            self.optimizer.zero_grad(set_to_none=True)
-            return {}, torch.zeros(b_curr, device=self.device)
-
-        combined_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.trainable_params, max_norm=1.0)
+        total.backward()
+        torch.nn.utils.clip_grad_norm_(self.parameters, cfg.grad_clip_norm)
         self.optimizer.step()
-        self.jepa_model.update_target_encoder()
-
-        mean_seq_td_errors = seq_td_errors.sum(dim=1) / seq_mask_sum.squeeze(-1).clamp(min=1.0)
+        self.world_model.update_target()
 
         with torch.no_grad():
-            if all_y_true and len(all_y_true) > 0:
-                y_true_cat = torch.cat(all_y_true)
-                y_pred_cat = torch.cat(all_y_pred)
-                var_y = torch.var(y_true_cat)
-                var_diff = torch.var(y_true_cat - y_pred_cat)
-                explained_var = float((1.0 - var_diff / (var_y + 1e-8)).item()) if var_y > 1e-6 else 0.0
+            predicted_values = self.twohot.decode(value_logits.float(), real_scale=True).squeeze(-1)
+            target_values = returns.reshape(-1)
+            explained_variance = 1.0 - (target_values - predicted_values).var() / target_values.var().clamp(min=1e-8)
 
-                td_cat = torch.cat(all_td_errors)
-                td_p50 = float(torch.quantile(td_cat, 0.50).item()) if td_cat.numel() > 0 else 0.0
-                td_p95 = float(torch.quantile(td_cat, 0.95).item()) if td_cat.numel() > 0 else 0.0
-            else:
-                explained_var, td_p50, td_p95 = 0.0, 0.0, 0.0
-
-        opp_accuracy = float(opp_correct_accum / max(opp_total_accum, 1.0) * 100.0)
-
-        metrics = {
-            "loss_jepa": total_loss_jepa.item(),
-            "loss_vicreg": total_loss_vicreg.item(),
-            "loss_rl": total_loss_rl.item(),
-            "loss_value": total_loss_value.item(),
-            "loss_reward": total_loss_reward.item(),
-            "loss_opp": total_loss_opp.item(),
-            "loss_consistency": total_loss_consistency.item(),
-            "mean_td_error": mean_seq_td_errors.mean().item(),
-            "vicreg_sim": vicreg_sim_accum / max(vicreg_steps, 1),
-            "vicreg_std": vicreg_std_accum / max(vicreg_steps, 1),
-            "vicreg_cov": vicreg_cov_accum / max(vicreg_steps, 1),
-            "latent_mean_std": latent_std_accum / max(vicreg_steps, 1),
-            "opp_acc_pct": opp_accuracy,
-            "value_explained_var": explained_var,
-            "td_error_p50": td_p50,
-            "td_error_p95": td_p95
+        return {
+            "loss_total": total.item(),
+            "loss_prediction": loss_prediction.item(),
+            "loss_kl": loss_kl.item(),
+            "loss_reward": loss_reward.item(),
+            "loss_value": loss_value.item(),
+            "loss_opponent": loss_opponent.item(),
+            "loss_consistency": loss_consistency.item(),
+            "value_explained_variance": explained_variance.item(),
         }
-        return metrics, mean_seq_td_errors
-
-    def _vicreg_loss_batch(
-        self,
-        x: torch.Tensor,
-        y: torch.Tensor,
-        weights: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Dimension-Normalized VICReg Regularization Loss.
-        Promotes representations to float32 to prevent bfloat16 mantissa underflow.
-        Returns: Tuple of (loss, sim_loss, std_loss, cov_loss, mean_std).
-        """
-        x_f32 = x.float()
-        y_f32 = y.float()
-        weights_f32 = weights.float().repeat_interleave(self.num_objects, dim=0)
-
-        w_sum = weights_f32.sum().clamp(min=1e-8)
-        n, d = x_f32.shape
-
-        sim_loss = torch.sum(weights_f32 * (x_f32 - y_f32) ** 2) / (w_sum * float(d))
-
-        mean_x = torch.sum(weights_f32 * x_f32, dim=0) / w_sum
-        mean_y = torch.sum(weights_f32 * y_f32, dim=0) / w_sum
-        x_c, y_c = x_f32 - mean_x, y_f32 - mean_y
-
-        var_x = torch.sum(weights_f32 * (x_c ** 2), dim=0) / w_sum
-        var_y = torch.sum(weights_f32 * (y_c ** 2), dim=0) / w_sum
-
-        std_x = torch.sqrt(var_x + 1e-4)
-        std_y = torch.sqrt(var_y + 1e-4)
-        std_loss = torch.mean(F.relu(1.0 - std_x)) + torch.mean(F.relu(1.0 - std_y))
-        mean_std = 0.5 * (std_x.mean() + std_y.mean())
-
-        if n <= 1:
-            cov_loss = torch.tensor(0.0, device=x.device)
-            loss = self.vicreg_sim_coeff * sim_loss + self.vicreg_std_coeff * std_loss
-            return loss, sim_loss, std_loss, cov_loss, mean_std
-
-        cov_x = (x_c.T @ (weights_f32 * x_c)) / w_sum
-        cov_y = (y_c.T @ (weights_f32 * y_c)) / w_sum
-
-        cov_loss_x = (cov_x.pow(2).sum() - cov_x.diagonal().pow(2).sum()) / float(d)
-        cov_loss_y = (cov_y.pow(2).sum() - cov_y.diagonal().pow(2).sum()) / float(d)
-        cov_loss = cov_loss_x + cov_loss_y
-
-        loss = self.vicreg_sim_coeff * sim_loss + self.vicreg_std_coeff * std_loss + self.vicreg_cov_coeff * cov_loss
-        return loss, sim_loss, std_loss, cov_loss, mean_std

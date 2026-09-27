@@ -1,67 +1,74 @@
 # ABSOLUTE PATH: conf/config.yaml
 # ==============================================================================
-# HYDRA TOP-LEVEL GLOBAL ORCHESTRATION CONFIGURATION
+# HYDRA TOP-LEVEL CONFIGURATION
 # ==============================================================================
 #
 # DESIGN DECISIONS & THEORETICAL FOUNDATIONS:
-# 1. Temporal Sequence Learning Contracts (Seq-PER):
-#    - burn_in: 5 steps. Used strictly to warm up the recurrent GRU context encoder
-#      b_t = Filter(b_{t-1}, a_{t-1}, o_t) before loss backpropagation.
-#    - train_seq_len: 10 steps. Active temporal horizon over which JEPA prediction,
-#      two-hot symlog return/reward regression, and multi-step hallucination
-#      consistency losses are backpropagated.
-#    - Total contiguous sequence chunk: chunk_len = burn_in + train_seq_len = 15 steps.
-#    - Episode length is env.max_steps (conf/env/<name>.yaml); it must be >= chunk_len
-#      so every episode yields at least one full sequence chunk.
+# 1. Episode-Major Data Collection:
+#    - env_batch_size episodes are played in lock-step from reset to truncation
+#      (env.max_steps steps), then stored whole in the EpisodeBuffer and followed by
+#      updates_per_collection gradient steps on batch_size uniformly sampled episodes.
+#    - With the defaults each collection adds 16 x 20 = 320 transitions and each update
+#      trains on 16 x 20 = 320 transitions (replay ratio 2).
 #
-# 2. Vectorized Hardware Orchestration:
-#    - env_batch_size: 16 parallel episodes stepped in lock-step by BatchedPOMDPEnv.
-#    - batch_size: 16 sequence chunks sampled per gradient optimization step.
-#    - update_freq: 8 environment steps between gradient updates. With 16 parallel
-#      channels, exactly 128 environment transitions are pushed to the Prioritized
-#      Sequence Buffer between training iterations.
+# 2. Exploration Schedule:
+#    - The first warmup_episodes episodes use uniformly random actions to fill the buffer;
+#      afterwards actions are sampled from MCTS visit counts with a temperature annealed
+#      once per collection from agent.temperature towards agent.temperature_min.
 #
-# 3. Open-Loop Latent MCTS Branching:
-#    - num_simulations: 50 MCTS search rollouts per action decision.
-#    - num_latent_obs: 1 canonical open-loop latent transition per discrete ego action.
-#      Avoids exponential branching explosion and enables deep planning horizons.
+# 3. No Domain Constants Here:
+#    - |A|, |O|, action names and the discount come from the FinitePOMDP (conf/env/*.yaml
+#      only selects the domain and the episode length).
 #
-# 4. Latent Space Capacity:
-#    - latent_dim: 32 continuous features per object slot.
-#    - num_objects: 2 dynamically tracked object slots (Belief tensor: B x 2 x 32).
-#    - hidden_dim: 64 hidden units in SwiGLU gated residual stacks.
-#    - num_blocks: 1 Pre-RMSNorm SwiGLU residual block per neural head.
+# 4. World Model (see src/ipomdp/models/world_model.py and src/ipomdp/training/trainer.py):
+#    - A single belief latent of latent_dim features (no object slots).
+#    - JEPA self-prediction against an EMA target filter (ema_momentum), with a stochastic
+#      discrete latent of num_categoricals x num_classes and KL balancing (kl_balance).
+#    - Grounding by two-hot reward and TD(lambda) value regression (num_bins bins).
 # ==============================================================================
 
 defaults:
   - env: tiger
   - _self_
 
-seed: 0                       # Seeds torch (networks, MCTS sampling) and the simulator generator
+seed: 0                       # Seeds torch (networks, MCTS sampling), the simulator and replay sampling
 
 training:
-  env_batch_size: 16          # Number of parallel episodes simulated by BatchedPOMDPEnv
-  batch_size: 16              # Number of sequence chunks sampled from Seq-PER per update
-  burn_in: 5                  # Recurrent context GRU filter warmup steps (loss masked out)
-  train_seq_len: 10           # Active training horizon (chunk_len = burn_in + train_seq_len = 15)
-  total_steps: 1000000        # Total training environment steps (1 Million)
-  warmup_episodes: 100        # Random exploration episodes before neural policy engagement
-  update_freq: 8              # Frequency of gradient descent steps relative to env steps
-  save_freq: 500              # Frequency of model checkpoint serialization
-  viz_freq: 100               # Frequency of latent PCA and MCTS tree visualizations
-  compile: false              # Whether to use torch.compile on neural networks (disabled by default for low memory footprint)
+  env_batch_size: 16          # Episodes played in parallel per collection
+  total_episodes: 50000       # Episodes collected over the whole run (all rows)
+  warmup_episodes: 100        # Initial episodes played with uniformly random actions
+  buffer_capacity: 10000      # Episodes kept in the replay buffer
+  batch_size: 16              # Episodes per gradient step
+  updates_per_collection: 2   # Gradient steps after each collection
+  save_every: 50              # Collections between checkpoints
+  viz_every: 100              # Collections between latent / MCTS visualisations
+  compile: false              # torch.compile the networks (CUDA only)
+
+trainer:
+  learning_rate: 3.0e-4
+  weight_decay: 1.0e-4
+  grad_clip_norm: 1.0
+  lambda_return: 0.95         # TD(lambda) mixing for value targets
+  kl_free_nats: 1.0           # KL below this many nats is not penalised
+  kl_scale: 0.1               # Weight of the (free-nats clamped) balanced KL
+  imagination_horizon: 3      # Prior-imagination steps for the value consistency loss
+  consistency_scale: 0.5      # Weight of the value consistency loss
 
 agent:
   temperature: 1.0            # Initial MCTS visit-count sampling temperature
   temperature_min: 0.1        # Floor of the annealed temperature
-  temperature_decay: 0.999    # Multiplicative decay per completed episode (env row 0)
+  temperature_decay: 0.999    # Multiplicative decay per collection
 
 model:
-  latent_dim: 32              # Latent representation dimension per object slot (D_latent)
-  num_objects: 2              # Number of object tokens in structured latent state (N_obj)
-  hidden_dim: 64              # Intermediate feature dimension for SwiGLU ResMLP blocks
-  num_blocks: 1               # Number of residual blocks per representation/prediction tower
+  latent_dim: 32              # Belief latent dimension D
+  hidden_dim: 64              # Width of SwiGLU residual MLPs
+  num_blocks: 1               # SwiGLU residual blocks per MLP
+  num_categoricals: 4         # Discrete latent: number of categorical variables
+  num_classes: 4              # Discrete latent: classes per categorical
+  kl_balance: 0.8             # DreamerV3 KL balancing weight on KL(sg(q) || p)
+  ema_momentum: 0.99          # Target filter EMA momentum
+  num_bins: 255               # Two-hot bins for value and reward
 
 mcts:
-  num_simulations: 50         # Number of search tree simulation traversals per step
-  num_latent_obs: 1           # Canonical open-loop: 1 sampled latent branch per action
+  num_simulations: 50         # Search simulations per decision
+  num_latent_obs: 1           # Prior samples per action at each expansion

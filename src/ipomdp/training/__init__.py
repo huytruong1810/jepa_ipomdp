@@ -1,11 +1,6 @@
-# ABSOLUTE PATH: src/ipomdp/training/__init__.py
-"""Sequence replay buffer, segment tree, and optimization trainers for JEPA-IPOMDP."""
+"""Whole-episode replay and the JEPA world-model trainer."""
 
-from .replay_buffer import SumTree, PrioritizedSequenceBuffer
-from .trainer import DiscreteRecurrentIPOMDPTrainer
+from .episode_buffer import EpisodeBatch, EpisodeBuffer
+from .trainer import TrainerConfig, WorldModelTrainer
 
-__all__ = [
-    "SumTree",
-    "PrioritizedSequenceBuffer",
-    "DiscreteRecurrentIPOMDPTrainer",
-]
+__all__ = ["EpisodeBatch", "EpisodeBuffer", "TrainerConfig", "WorldModelTrainer"]

@@ -4,13 +4,13 @@
 # ==============================================================================
 #
 # DESIGN DECISIONS & THEORETICAL FOUNDATIONS:
-# 1. Structural Multi-Object Tensor Contract:
-#    - Beliefs exchanged with a planner are latent tensors of shape (B, N_obj, D_latent).
+# 1. Tensor Contract:
+#    - Beliefs exchanged with a planner are latent tensors of shape (B, D); search returns
+#      batched action distributions of shape (B, |A|).
 #
-# 2. Causal Belief Filter Boundary:
-#    - encode_context implements the information-state recurrence
-#         b_t = Filter(b_{t-1}, a_{t-1}, o_t)
-#      and search returns batched action distributions of shape (B, |A|).
+# 2. Separation of Filtering and Planning:
+#    - Belief filtering belongs to the world model (models/world_model.py, BeliefFilter);
+#      a planner only searches from given latents.
 #
 # 3. Scope:
 #    - Environments are FinitePOMDP simulators (src/ipomdp/domain) and the agent is a
@@ -26,23 +26,8 @@ from torch import Tensor
 class AbstractPlanner(ABC):
     """
     Abstract interface for planning algorithms operating over latent belief representations.
-    Operates over multi-object latent belief state tensors of shape (B, N_obj, D_latent).
+    Operates over belief latents of shape (B, D).
     """
-
-    @abstractmethod
-    def encode_context(self, obs: Tensor, action: Tensor, prev_belief: Tensor) -> Tensor:
-        """
-        Advances latent belief state through the recurrent context filter.
-
-        Args:
-            obs: Raw observation tensor of shape (B, *obs_shape).
-            action: Action tensor taken at step t-1 of shape (B, action_dim_i).
-            prev_belief: Prior recurrent belief state tensor of shape (B, N_obj, D_latent).
-
-        Returns:
-            Updated recurrent belief state tensor of shape (B, N_obj, D_latent).
-        """
-        pass
 
     @abstractmethod
     def search(self, root_state: Tensor, temperature: float = 1.0) -> Tensor:
@@ -50,7 +35,7 @@ class AbstractPlanner(ABC):
         Performs open-loop MCTS lookahead search in latent space and returns action distributions.
 
         Args:
-            root_state: Initial root belief state tensor of shape (B, N_obj, D_latent).
+            root_state: Root belief latents of shape (B, D).
             temperature: Action selection temperature (0.0 for argmax, 1.0 for proportional).
 
         Returns:

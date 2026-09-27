@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Research code for a model-based RL agent for partially observable (and eventually interactive, I-POMDP) domains. A recurrent JEPA world model (no observation decoder) keeps a multi-object latent belief `b_t ∈ R^(B × N_obj × D_latent)`. An open-loop MCTS plans entirely in that latent space, using learned value, reward and opponent-policy heads. README.md holds the theory (VICReg, DreamerV3 two-hot symlog, KL balancing). **README's "Repository Structure" section and HANDOFF.md are stale** (they describe the pre-review codebase and a deleted training run).
 
-The codebase is being reviewed bottom-up in phases (domain → JEPA filter → DreamerV3 parts → MCTS → training loop → interpretability → scripts/layout → holistic). Phase 1 (domain) is done. Current scope is the **single-agent canonical Tiger only**; the learned agent must match the exact solver before anything larger is run.
+The codebase is being reviewed bottom-up in phases (domain → JEPA filter → DreamerV3 parts → MCTS → training loop → interpretability → scripts/layout → holistic). Phases 1 (domain) and 2 (JEPA belief filter) are done. Current scope is the **single-agent canonical Tiger only**; the learned agent must match the exact solver before anything larger is run.
 
 ## Commands
 
@@ -17,7 +17,7 @@ uv run main.py                                   # train (resumes from tiger_che
 uv run main.py training.total_steps=400 mcts.num_simulations=10 seed=1   # any config key can be overridden
 
 uv run pytest                                    # fast suite (slow tests excluded via addopts)
-uv run pytest -m slow                            # certified infinite-horizon Tiger solve (~4 min)
+uv run pytest -m slow                            # certified infinite-horizon solve (~4 min) + belief-filter acceptance (~3 min, GPU)
 uv run pytest tests/test_domain.py::TestExactSolver::test_optimal_actions   # single test
 tensorboard --logdir tiger_tensorboard
 ```
@@ -38,13 +38,24 @@ The evaluation, probing and interactive scripts (`eval_*`, `probe_*`, `enjoy_*`)
 
 **Config.** Hydra: `conf/config.yaml` (`seed`, `training`, `agent`, `model`, `mcts`) plus `conf/env/tiger.yaml`, which holds only `name` and `max_steps`. `|A|`, `|O|`, action names and γ are derived from the `FinitePOMDP` in `main.py` (`DOMAIN_BUILDERS`) and passed explicitly to the planner and trainer. Hydra writes run directories to `outputs/`.
 
-**Pipeline wiring (`main.py`).** `main.py` builds every component by hand. The loop is: `agent.observe(o_t)` → `a_t = agent.act()` (or `act_uniformly()` during warm-up) → `env.step(a_t)` → `buffer.push(o_t, a_t, r_t)`. Truncated rows call `buffer.end_episode(final_obs=o_T, terminated=False)` and are then reset in the env, the agent and the pending observation.
-- Observations reach the networks one-hot (`|O|` wide). Every episode starts with the all-zero "empty history" observation, an agent-side encoding that carries no state information.
-- The single-agent POMDP has no opponent. The world model, planner and trainer still carry opponent inputs, so they receive a singleton opponent action space (`OPPONENT_ACTION_DIM = 1`) until Phases 3–4 review them.
-- World model (`models/world_model.py`): `RecurrentJEPABase` wraps an extractor, the `RecurrentContextEncoder` GRU filter `b_t = f(b_{t-1}, a_{t-1}, o_t)`, and the `CausalRelationalPredictor` (stochastic latent dynamics with categorical `z_t` and KL balancing). An EMA target encoder provides the JEPA targets.
-- Heads (`models/heads.py`): value and reward are 255-bin two-hot symlog (`models/distributions.py`). `DiscretePolicyHead` is the opponent model.
-- `DiscreteLatentOpenLoopSearch` (`planning/mcts.py`): PUCT over latent beliefs with MinMax Q-normalization and Dirichlet root noise.
-- Training: `PrioritizedSequenceBuffer` (sequence PER over a SumTree, chunks of `burn_in + train_seq_len`). `DiscreteRecurrentIPOMDPTrainer.train_sequence` combines JEPA + KL, VICReg, two-hot value/reward on TD(λ) returns, opponent cross-entropy and dream consistency.
+**Pipeline wiring (`main.py`).** Episode-major collection:
+- Each collection starts `env_batch_size` episodes together, all at the learned z_0 via `agent.reset()`. Every step: `a = agent.act()` (uniform during `warmup_episodes`) → `env.step(a)` → `agent.update(a, o')`. After `env.max_steps` steps the whole episodes go into `EpisodeBuffer`, which is on-device and sampled uniformly. `updates_per_collection` calls to `WorldModelTrainer.train_step` follow.
+- The single-agent POMDP has no opponent. World model, heads and planner still carry opponent inputs, so they receive a singleton opponent action space (`OPPONENT_ACTION_DIM = 1`) until Phases 3–4.
+
+**World model (`models/world_model.py`).** One latent vector; there are no object slots.
+- `BeliefFilter`: learned `z_0`, `z_{t+1} = GRU([a_t, o_{t+1}], z_t)`, the counterpart of the exact `tau(b, a, o')`.
+- `RecurrentJEPA` holds the online filter, an EMA `target_filter` and a `LatentTransition` (DreamerV3-style discrete z with prior/posterior and KL balancing). `predict_next_belief` is prior imagination for MCTS.
+- `WorldModelTrainer.train_step` (`training/trainer.py`) unrolls whole episodes and combines:
+  - JEPA self-prediction of the target latent, plus KL;
+  - two-hot reward and TD(λ) value, bootstrapped at truncation;
+  - opponent cross-entropy;
+  - imagined-value consistency.
+- Why reward/value grounding is essential: pure JEPA self-prediction does not produce a belief. VICReg was removed because it made the latent worse. The evidence is recorded in the `world_model.py` header.
+- Heads (`models/heads.py`): value and reward are 255-bin two-hot symlog with a zero-initialized last layer; plus `OpponentPolicyHead` and `ObservationProbeHead`.
+
+**Interpretability (`src/ipomdp/interpretability/`).** `collect_probe_dataset` produces pairs of (filter latent, exact posterior). `linear_probe` and `mlp_probe` report KL(b* ‖ probe) overall, worst-case and per posterior value. R² is not used: an untrained GRU already reaches R² = 0.93. `tests/test_belief_filter_acceptance.py` is the Phase-2 acceptance gate: linear KL < 0.005, MLP KL < 0.001, per-belief KL < 0.02.
+
+**Planner.** `DiscreteLatentOpenLoopSearch` (`planning/mcts.py`) runs PUCT over latents `(B, D)` with MinMax Q-normalization and Dirichlet root noise. It is reviewed in Phase 4.
 
 **Telemetry (`ipomdp/telemetry/`).** Checkpointer (`tiger_checkpoints/`), TensorBoard logger, latent/MCTS/reward visualizers (`tiger_plots/`), system monitor, profiler and execution guardrail. SIGINT saves an interrupt checkpoint.
 
@@ -58,6 +69,7 @@ The evaluation, probing and interactive scripts (`eval_*`, `probe_*`, `enjoy_*`)
 - Source files start with a `# ABSOLUTE PATH: <repo-relative path>` line and a `DESIGN DECISIONS & THEORETICAL FOUNDATIONS` comment block.
 - Anything used as ground truth (domain tensors, filter, solver) is float64. Statistical tests use fixed seeds and a 5-standard-error tolerance.
 - With `training.compile=true` (CUDA only), the four networks are wrapped in `torch.compile` and the MCTS control flow stays eager. Outputs of compiled modules must be `.clone()`d before reuse, because CUDA-graph static buffers get overwritten.
-- Inference runs under `bfloat16` autocast. The trainer skips the update when `combined_loss` is non-finite.
+- Inference runs under `bfloat16` autocast. Non-finite losses or two-hot targets raise `FloatingPointError`; they are never skipped or sanitized.
+- Never copy CUDA tensors to the CPU with `non_blocking=True` and then read them without synchronizing. The result is stale memory, which silently corrupted every replay buffer before commit `c267482`.
 - Value/reward projection layers are zero-initialized on purpose.
 - Before launching training, check whether a run is already going (`pgrep -fl main.py`).

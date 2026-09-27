@@ -142,7 +142,11 @@ class TwoHotSymlog(nn.Module):
         else:
             targets_symlog = targets_f32
 
-        targets_symlog = torch.nan_to_num(targets_symlog, nan=0.0, posinf=self.max_val, neginf=self.min_val)
+        # Non-finite targets are a bug upstream (e.g. a diverged bootstrap value). They are
+        # rejected rather than sanitised: floor(NaN) cast to long is an arbitrary bin index,
+        # which on CUDA surfaces as an unrelated device-side assert in scatter_add_.
+        if not torch.isfinite(targets_symlog).all():
+            raise FloatingPointError("TwoHotSymlog received non-finite targets.")
         targets_clamped = torch.clamp(targets_symlog, self.min_val, self.max_val)
 
         below = torch.floor((targets_clamped - self.min_val) / self.step_size).long()
