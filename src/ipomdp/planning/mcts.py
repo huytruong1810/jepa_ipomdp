@@ -1,13 +1,16 @@
 # ABSOLUTE PATH: src/ipomdp/planning/mcts.py
 # ==============================================================================
-# OPEN-LOOP LATENT MONTE CARLO TREE SEARCH (MCTS) PLANNER
+# LATENT BELIEF-TREE MONTE CARLO TREE SEARCH (MCTS) PLANNER
 # ==============================================================================
 #
 # DESIGN DECISIONS & THEORETICAL FOUNDATIONS:
-# 1. Latent Information-State Lookahead Search:
-#    - Plans open-loop trajectories entirely within learned Causal-JEPA latent belief space:
-#         b_{t+1} ~ p_phi(b_{t+1} | b_t, a_i, a_j)
-#      without requiring generative observation decoders.
+# 1. Latent Belief-Tree Search by Observation Branching (Phase 3 decision):
+#    - A child of latent z under action a is z' = BeliefFilter.step(z, a, o') for an
+#      observation o' sampled from the learned P(o' | z, a, a^j) (models/heads.py,
+#      ObservationHead). Imagined latents are thus exactly the filter's latents for that
+#      history (models/world_model.py, section 6). num_observation_samples children are
+#      drawn per action; Phase 4 reviews the search itself (exact branching over |O|,
+#      selection, backup) against the exact solver.
 #
 # 2. Row-Aligned Opponent Action Batch Sampling (B >= 1 Safety):
 #    - In _evaluate_and_expand_batched, uses repeat_interleave(num_branches, dim=0)
@@ -40,7 +43,7 @@ import torch.nn.functional as F
 
 from ..interfaces import AbstractPlanner
 from ..models.world_model import RecurrentJEPA
-from ..models.heads import ValueHead, RewardHead, OpponentPolicyHead
+from ..models.heads import ObservationHead, OpponentPolicyHead, RewardHead, ValueHead
 from ..models.distributions import TwoHotSymlog
 
 
@@ -70,7 +73,7 @@ class MinMaxStats:
 
 class LatentSearchNode:
     """
-    Represents an open-loop belief state node within the latent MCTS search tree.
+    Belief-latent node of the latent MCTS search tree.
     """
 
     def __init__(
@@ -99,22 +102,23 @@ class LatentSearchNode:
         self.bootstrap_value = 0.0
 
 
-class DiscreteLatentOpenLoopSearch(AbstractPlanner):
+class LatentBeliefTreeSearch(AbstractPlanner):
     """
-    Open-loop Monte Carlo Tree Search executed natively inside Causal-JEPA latent belief space.
+    Monte Carlo Tree Search over learned belief latents, branching on sampled observations.
     """
 
     def __init__(
         self,
-        jepa_model: RecurrentJEPA,
+        world_model: RecurrentJEPA,
         value_head: ValueHead,
         reward_head: RewardHead,
         opponent_head: OpponentPolicyHead,
+        observation_head: ObservationHead,
         codec: TwoHotSymlog,
         action_dim_i: int,
         action_dim_j: int,
         num_simulations: int = 50,
-        num_latent_obs: int = 1,
+        num_observation_samples: int = 1,
         discount: float = 0.99,
         c_puct: float = 1.25,
         dirichlet_alpha: float = 0.3,
@@ -124,29 +128,31 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
         Initializes Discrete Latent MCTS Planner.
 
         Args:
-            jepa_model: Recurrent JEPA world model container.
+            world_model: Recurrent JEPA world model (its online belief filter steps imagined latents).
             value_head: Value distribution projection head.
             reward_head: Immediate reward distribution projection head.
             opponent_head: Opponent policy prediction head.
+            observation_head: Planning model P(o' | z, a, a^j).
             codec: Two-hot codec shared with the trainer (decodes value/reward means).
             action_dim_i: Ego action dimensionality.
             action_dim_j: Opponent action dimensionality.
             num_simulations: Number of search rollouts per decision step.
-            num_latent_obs: Number of stochastic prior branches sampled per discrete action (default: 1 for canonical open-loop).
+            num_observation_samples: Observations sampled (children created) per action at each expansion.
             discount: Discount factor gamma.
             c_puct: PUCT exploration constant.
             dirichlet_alpha: Alpha parameter for root Dirichlet noise (default: 0.3).
             dirichlet_epsilon: Mixing weight for root Dirichlet noise (default: 0.25).
         """
         super().__init__()
-        self.jepa_model = jepa_model
+        self.world_model = world_model
+        self.observation_head = observation_head
         self.value_head = value_head
         self.reward_head = reward_head
         self.opponent_head = opponent_head
         self.action_dim_i = int(action_dim_i)
         self.action_dim_j = int(action_dim_j)
         self.num_simulations = int(num_simulations)
-        self.num_latent_obs = int(num_latent_obs)
+        self.num_observation_samples = int(num_observation_samples)
         self.discount = float(discount)
         self.c_puct = float(c_puct)
         self.dirichlet_alpha = float(dirichlet_alpha)
@@ -262,11 +268,11 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
 
         batched_beliefs = torch.cat([n.belief for n in nodes], dim=0)
         b_eval = batched_beliefs.size(0)
-        num_branches = self.action_dim_i * self.num_latent_obs
+        num_branches = self.action_dim_i * self.num_observation_samples
 
         rep_beliefs = batched_beliefs.repeat_interleave(num_branches, dim=0)
 
-        action_indices = torch.arange(self.action_dim_i, device=self.device).repeat_interleave(self.num_latent_obs)
+        action_indices = torch.arange(self.action_dim_i, device=self.device).repeat_interleave(self.num_observation_samples)
         rep_ego_a = F.one_hot(action_indices.repeat(b_eval), num_classes=self.action_dim_i).float()
 
         use_amp = (self.device.type == 'cuda')
@@ -279,7 +285,10 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
             opp_a_idx = torch.multinomial(rep_opp_probs, num_samples=1).squeeze(-1)
             rep_opp_a = F.one_hot(opp_a_idx, num_classes=self.action_dim_j).float()
 
-            next_beliefs = self.jepa_model.predict_next_belief(rep_beliefs, rep_ego_a, rep_opp_a).clone()
+            observation_probs = F.softmax(self.observation_head(rep_beliefs, rep_ego_a, rep_opp_a).float(), dim=-1)
+            observation = torch.multinomial(observation_probs, num_samples=1).squeeze(-1)
+            next_beliefs = self.world_model.belief_filter.step(
+                rep_beliefs, rep_ego_a, F.one_hot(observation, observation_probs.shape[-1]).to(rep_beliefs.dtype)).clone()
             rewards_logits = self.reward_head(rep_beliefs, rep_ego_a, rep_opp_a).clone()
             v_logits = self.value_head(next_beliefs).clone()
 
@@ -297,8 +306,8 @@ class DiscreteLatentOpenLoopSearch(AbstractPlanner):
                     (1.0 - self.dirichlet_epsilon) * base_prior + self.dirichlet_epsilon * float(dirichlet_noise[a_idx])
                 ) if is_root else base_prior
 
-                for k_idx in range(self.num_latent_obs):
-                    flat_idx = (b_idx * num_branches) + (a_idx * self.num_latent_obs) + k_idx
+                for k_idx in range(self.num_observation_samples):
+                    flat_idx = (b_idx * num_branches) + (a_idx * self.num_observation_samples) + k_idx
                     child_node = LatentSearchNode(
                         belief=next_beliefs[flat_idx:flat_idx + 1].detach(),
                         action_taken=a_idx,

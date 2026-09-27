@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Research code for a model-based RL agent for partially observable (and eventually interactive, I-POMDP) domains. A recurrent JEPA world model (no observation decoder) keeps a multi-object latent belief `b_t ∈ R^(B × N_obj × D_latent)`. An open-loop MCTS plans entirely in that latent space, using learned value, reward and opponent-policy heads. README.md holds the theory (VICReg, DreamerV3 two-hot symlog, KL balancing). **README's "Repository Structure" section and HANDOFF.md are stale** (they describe the pre-review codebase and a deleted training run).
 
-The codebase is being reviewed bottom-up in phases (domain → JEPA filter → DreamerV3 parts → MCTS → training loop → interpretability → scripts/layout → holistic). Phases 1 (domain) and 2 (JEPA belief filter) are done. Current scope is the **single-agent canonical Tiger only**; the learned agent must match the exact solver before anything larger is run.
+The codebase is being reviewed bottom-up in phases (domain → JEPA filter → DreamerV3 parts → MCTS → training loop → interpretability → scripts/layout → holistic). Phases 1 (domain), 2 (JEPA belief filter) and 3 (DreamerV3 components) are done. Current scope is the **single-agent canonical Tiger only**; the learned agent must match the exact solver before anything larger is run.
 
 ## Commands
 
@@ -17,7 +17,7 @@ uv run main.py                                   # train (resumes from tiger_che
 uv run main.py training.total_steps=400 mcts.num_simulations=10 seed=1   # any config key can be overridden
 
 uv run pytest                                    # fast suite (slow tests excluded via addopts)
-uv run pytest -m slow                            # certified infinite-horizon solve (~4 min) + belief-filter acceptance (~3 min, GPU)
+uv run pytest -m slow                            # certified infinite-horizon solve (~4 min) + world-model acceptance (~3 min, GPU)
 uv run pytest tests/test_domain.py::TestExactSolver::test_optimal_actions   # single test
 tensorboard --logdir tiger_tensorboard
 ```
@@ -44,18 +44,19 @@ The evaluation, probing and interactive scripts (`eval_*`, `probe_*`, `enjoy_*`)
 
 **World model (`models/world_model.py`).** One latent vector; there are no object slots.
 - `BeliefFilter`: learned `z_0`, `z_{t+1} = GRU([a_t, o_{t+1}], z_t)`, the counterpart of the exact `tau(b, a, o')`.
-- `RecurrentJEPA` holds the online filter, an EMA `target_filter` and a `LatentTransition` (DreamerV3-style discrete z with prior/posterior and KL balancing). `predict_next_belief` is prior imagination for MCTS.
+- `RecurrentJEPA` holds the online filter, an EMA `target_filter` and a deterministic `LatentPredictor`, which is JEPA self-prediction of the target latent and is used for representation learning only.
 - `WorldModelTrainer.train_step` (`training/trainer.py`) unrolls whole episodes and combines:
-  - JEPA self-prediction of the target latent, plus KL;
+  - JEPA mean-squared error;
   - two-hot reward and TD(λ) value, bootstrapped at truncation;
   - opponent cross-entropy;
-  - imagined-value consistency.
-- Why reward/value grounding is essential: pure JEPA self-prediction does not produce a belief. VICReg was removed because it made the latent worse. The evidence is recorded in the `world_model.py` header.
-- Heads (`models/heads.py`): value and reward are 255-bin two-hot symlog with a zero-initialized last layer; plus `OpponentPolicyHead` and `ObservationProbeHead`.
+  - observation cross-entropy on **detached** latents.
+- The design follows from studies recorded in module headers. Pure JEPA gives no belief without reward grounding, and VICReg hurts (`world_model.py`, sections 3 and 5). The stochastic latent transition imagined biased beliefs and was removed.
+- **Planning imagines by observation branching:** sample `o' ~ ObservationHead(z, a)`, then `z' = BeliefFilter.step(z, a, o')`. Imagined latents stay on the filter's manifold.
+- Heads (`models/heads.py`): value, reward, opponent policy and observation. `TwoHotSymlog` (`models/distributions.py`) is one shared instance injected into trainer and planner. Its bins are symlog-spaced real values bounded by `FinitePOMDP.value_bound` = max|R|/(1−γ). Encoding and decoding are linear in real space, so means are unbiased. The old symlog-space decoding turned Tiger's −100/+10 door gamble (mean −45) into −2.9.
 
-**Interpretability (`src/ipomdp/interpretability/`).** `collect_probe_dataset` produces pairs of (filter latent, exact posterior). `linear_probe` and `mlp_probe` report KL(b* ‖ probe) overall, worst-case and per posterior value. R² is not used: an untrained GRU already reaches R² = 0.93. `tests/test_belief_filter_acceptance.py` is the Phase-2 acceptance gate: linear KL < 0.005, MLP KL < 0.001, per-belief KL < 0.02.
+**Interpretability (`src/ipomdp/interpretability/`).** `collect_probe_dataset` produces pairs of (filter latent, exact posterior). `linear_probe` and `mlp_probe` report KL(b* ‖ probe) overall, worst-case and per posterior value. R² is not used: an untrained GRU already reaches R² = 0.93. `tests/test_world_model_acceptance.py` (slow, GPU) is the acceptance gate. It checks the belief probes, the reward head against b·R[a], the observation head against the exact P(o′|b,a), and the value head against the exact random-policy value of −606.67.
 
-**Planner.** `DiscreteLatentOpenLoopSearch` (`planning/mcts.py`) runs PUCT over latents `(B, D)` with MinMax Q-normalization and Dirichlet root noise. It is reviewed in Phase 4.
+**Planner.** `LatentBeliefTreeSearch` (`planning/mcts.py`) runs PUCT over latents `(B, D)`. It creates children by observation branching (`num_observation_samples` per action) and uses MinMax Q-normalization and Dirichlet root noise. It is reviewed in Phase 4.
 
 **Telemetry (`ipomdp/telemetry/`).** Checkpointer (`tiger_checkpoints/`), TensorBoard logger, latent/MCTS/reward visualizers (`tiger_plots/`), system monitor, profiler and execution guardrail. SIGINT saves an interrupt checkpoint.
 

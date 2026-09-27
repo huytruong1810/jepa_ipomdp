@@ -18,9 +18,12 @@
 #    - Predicts the opponent's action distribution from z_t. In the single-agent POMDP the
 #      opponent action space is a singleton, so the head is inert until Phases 3-4.
 #
-# 4. Observation Probe Head:
-#    - P(o_{t+1} | z_t, a_t), trained only on detached latents for interpretability; it never
-#      shapes the representation (reviewed in Phase 6).
+# 4. Observation Head (the planning model):
+#    - P(o_{t+1} | z_t, a_t, a^j_t). MCTS branches on observations sampled from it and steps
+#      the belief filter (models/world_model.py, section 6). It is trained on DETACHED
+#      latents, so it never shapes the representation: the filter's objective stays reward
+#      grounding + JEPA self-prediction. On canonical Tiger it reaches a mean KL to the exact
+#      P(o' | b, a) of 0.007 nats (LISTEN) and 0.0002 (door actions) after 1000 updates.
 # ==============================================================================
 
 import torch
@@ -75,13 +78,15 @@ class OpponentPolicyHead(nn.Module):
         return self.net(latent)
 
 
-class ObservationProbeHead(nn.Module):
-    """P(o_{t+1} | z_t, a_t) as logits; an interpretability probe trained on detached latents."""
+class ObservationHead(nn.Module):
+    """P(o_{t+1} | z_t, a_t, a^j_t) as logits; the planning model, trained on detached latents."""
 
-    def __init__(self, latent_dim: int, num_actions: int, num_observations: int, hidden_dim: int, num_blocks: int):
+    def __init__(self, latent_dim: int, num_actions: int, num_opponent_actions: int, num_observations: int,
+                 hidden_dim: int, num_blocks: int):
         super().__init__()
-        self.net = build_residual_stack(latent_dim + num_actions, hidden_dim, num_observations, num_blocks)
+        self.net = build_residual_stack(latent_dim + num_actions + num_opponent_actions, hidden_dim,
+                                        num_observations, num_blocks)
 
-    def forward(self, latent: Tensor, action: Tensor) -> Tensor:
-        """(B, D), one-hot (B, |A|) -> (B, |O|) logits."""
-        return self.net(torch.cat([latent, action], dim=-1))
+    def forward(self, latent: Tensor, action: Tensor, opponent_action: Tensor) -> Tensor:
+        """(B, D), one-hot (B, |A_i|), one-hot (B, |A_j|) -> (B, |O|) logits."""
+        return self.net(torch.cat([latent, action, opponent_action], dim=-1))

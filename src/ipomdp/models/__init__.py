@@ -1,14 +1,14 @@
-"""JEPA world model (belief filter, EMA target, stochastic transition), prediction heads and building blocks."""
+"""JEPA world model (belief filter, EMA target, self-prediction), prediction heads, two-hot codec, building blocks."""
 
 from .distributions import TwoHotSymlog, symexp, symlog
-from .heads import ObservationProbeHead, OpponentPolicyHead, RewardHead, ValueHead
+from .heads import ObservationHead, OpponentPolicyHead, RewardHead, ValueHead
 from .layers import RMSNorm, SwiGLUResidualBlock, build_residual_stack
-from .world_model import BeliefFilter, LatentTransition, RecurrentJEPA
+from .world_model import BeliefFilter, LatentPredictor, RecurrentJEPA
 
 __all__ = [
     "BeliefFilter",
-    "LatentTransition",
-    "ObservationProbeHead",
+    "LatentPredictor",
+    "ObservationHead",
     "OpponentPolicyHead",
     "RMSNorm",
     "RecurrentJEPA",

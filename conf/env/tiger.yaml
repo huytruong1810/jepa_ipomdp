@@ -13,7 +13,16 @@
 #    - Canonical Tiger is a continuing task. max_steps truncates it into episodes for
 #      training-data segmentation and logging; truncation is not termination and value
 #      targets bootstrap through it.
+#
+# 3. Why 100 Steps (Phase-3 finding):
+#    - The learned filter's latent carries a transient in elapsed time since z_0 that
+#      settles after ~20 steps. The truncation bootstrap V(z_T) is evaluated at an "age" the
+#      value loss never trains, so it is only anchored if z_T lies in the settled regime.
+#      With 20-step episodes it did not: V(z_t) drifted from -578 (t = 0) to -531 (t = 20)
+#      and was biased by 8% against the exact random-policy value -606.67. With 60 / 100
+#      steps the value is flat in t and off by 0.9% / 0.4%. 100 steps also makes the
+#      truncated tail negligible (gamma^100 = 0.006).
 # ==============================================================================
 
 name: tiger
-max_steps: 20                 # Truncation length of one episode (steps per episode)
+max_steps: 100                # Truncation length of one episode (steps per episode)

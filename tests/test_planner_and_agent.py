@@ -6,9 +6,9 @@ import torch
 import torch.nn.functional as F
 
 from ipomdp.agents import DiscreteJEPAAgent
-from ipomdp.models import (BeliefFilter, LatentTransition, OpponentPolicyHead, RecurrentJEPA, RewardHead, TwoHotSymlog,
-                           ValueHead)
-from ipomdp.planning import DiscreteLatentOpenLoopSearch, MinMaxStats
+from ipomdp.models import (BeliefFilter, LatentPredictor, ObservationHead, OpponentPolicyHead, RecurrentJEPA, RewardHead,
+                           TwoHotSymlog, ValueHead)
+from ipomdp.planning import LatentBeliefTreeSearch, MinMaxStats
 
 CPU = torch.device("cpu")
 A, O, AJ, D, H = 3, 2, 1, 16, 32
@@ -17,11 +17,12 @@ A, O, AJ, D, H = 3, 2, 1, 16, 32
 @pytest.fixture
 def components():
     torch.manual_seed(0)
-    world_model = RecurrentJEPA(BeliefFilter(A, O, D, H, 1), LatentTransition(D, A, AJ, H, 1, 4, 4, 0.01), 0.99)
-    planner = DiscreteLatentOpenLoopSearch(
-        jepa_model=world_model, value_head=ValueHead(D, H, 1, 255), reward_head=RewardHead(D, A, AJ, H, 1, 255),
-        opponent_head=OpponentPolicyHead(D, AJ, H, 1), codec=TwoHotSymlog(255, 2000.0), action_dim_i=A, action_dim_j=AJ,
-        num_simulations=10, num_latent_obs=2, discount=0.95)
+    world_model = RecurrentJEPA(BeliefFilter(A, O, D, H, 1), LatentPredictor(D, A, AJ, H, 1), 0.99)
+    planner = LatentBeliefTreeSearch(
+        world_model=world_model, value_head=ValueHead(D, H, 1, 255), reward_head=RewardHead(D, A, AJ, H, 1, 255),
+        opponent_head=OpponentPolicyHead(D, AJ, H, 1),
+        observation_head=ObservationHead(D, A, AJ, O, H, 1), codec=TwoHotSymlog(255, 2000.0), action_dim_i=A, action_dim_j=AJ,
+        num_simulations=10, num_observation_samples=2, discount=0.95)
     return world_model, planner
 
 

@@ -51,14 +51,15 @@ from ipomdp.agents import DiscreteJEPAAgent
 from ipomdp.domain import BatchedPOMDPEnv, FinitePOMDP, build_tiger_pomdp
 from ipomdp.models import (
     BeliefFilter,
-    TwoHotSymlog,
-    LatentTransition,
+    LatentPredictor,
+    ObservationHead,
     OpponentPolicyHead,
+    TwoHotSymlog,
     RecurrentJEPA,
     RewardHead,
     ValueHead,
 )
-from ipomdp.planning import DiscreteLatentOpenLoopSearch
+from ipomdp.planning import LatentBeliefTreeSearch
 from ipomdp.telemetry import (
     ExecutionGuardrail,
     LatentSpaceVisualizer,
@@ -99,33 +100,35 @@ def main(cfg: DictConfig):
     m = cfg.model
     world_model = RecurrentJEPA(
         BeliefFilter(num_actions, num_obs, m.latent_dim, m.hidden_dim, m.num_blocks),
-        LatentTransition(m.latent_dim, num_actions, OPPONENT_ACTION_DIM, m.hidden_dim, m.num_blocks,
-                         m.num_categoricals, m.num_classes, m.unimix),
+        LatentPredictor(m.latent_dim, num_actions, OPPONENT_ACTION_DIM, m.hidden_dim, m.num_blocks),
         ema_momentum=m.ema_momentum,
     ).to(device)
     value_head = ValueHead(m.latent_dim, m.hidden_dim, m.num_blocks, m.num_bins).to(device)
     reward_head = RewardHead(m.latent_dim, num_actions, OPPONENT_ACTION_DIM, m.hidden_dim, m.num_blocks,
                              m.num_bins).to(device)
     opponent_head = OpponentPolicyHead(m.latent_dim, OPPONENT_ACTION_DIM, m.hidden_dim, m.num_blocks).to(device)
+    observation_head = ObservationHead(m.latent_dim, num_actions, OPPONENT_ACTION_DIM, num_obs, m.hidden_dim,
+                                       m.num_blocks).to(device)
     codec = TwoHotSymlog(m.num_bins, pomdp.value_bound).to(device)  # shared by planner and trainer
 
     use_compile = cfg.training.compile and device.type == "cuda"
-    networks = (world_model, value_head, reward_head, opponent_head)
+    networks = (world_model, value_head, reward_head, opponent_head, observation_head)
     if use_compile:
         logger.info("Selective PyTorch compilation enabled...")
         networks = tuple(torch.compile(net) for net in networks)
-    run_world_model, run_value, run_reward, run_opponent = networks
+    run_world_model, run_value, run_reward, run_opponent, run_observation = networks
 
-    planner = DiscreteLatentOpenLoopSearch(
-        jepa_model=run_world_model,
+    planner = LatentBeliefTreeSearch(
+        world_model=run_world_model,
         value_head=run_value,
         reward_head=run_reward,
         opponent_head=run_opponent,
+        observation_head=run_observation,
         codec=codec,
         action_dim_i=num_actions,
         action_dim_j=OPPONENT_ACTION_DIM,
         num_simulations=cfg.mcts.num_simulations,
-        num_latent_obs=cfg.mcts.num_latent_obs,
+        num_observation_samples=cfg.mcts.num_observation_samples,
         discount=pomdp.discount,
     )
     trainer = WorldModelTrainer(
@@ -133,6 +136,7 @@ def main(cfg: DictConfig):
         value_head=value_head,
         reward_head=reward_head,
         opponent_head=opponent_head,
+        observation_head=observation_head,
         codec=codec,
         num_actions=num_actions,
         num_observations=num_obs,
@@ -162,7 +166,8 @@ def main(cfg: DictConfig):
     system_monitor = SystemTelemetryMonitor(thermal_threshold_c=82.0)
     profiler = PipelineProfiler(window_size=100)
 
-    models_dict = {"world_model": world_model, "value": value_head, "reward": reward_head, "opponent": opponent_head}
+    models_dict = {"world_model": world_model, "value": value_head, "reward": reward_head, "opponent": opponent_head,
+                   "observation": observation_head}
     current_collection = [0]
     guardrail = ExecutionGuardrail(
         logger=logger,

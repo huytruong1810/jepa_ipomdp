@@ -8,8 +8,8 @@
 #    - env_batch_size episodes are played in lock-step from reset to truncation
 #      (env.max_steps steps), then stored whole in the EpisodeBuffer and followed by
 #      updates_per_collection gradient steps on batch_size uniformly sampled episodes.
-#    - With the defaults each collection adds 16 x 20 = 320 transitions and each update
-#      trains on 16 x 20 = 320 transitions (replay ratio 2).
+#    - With the defaults each collection adds 16 x 100 = 1600 transitions and each update
+#      trains on 16 x 100 = 1600 transitions (replay ratio 2).
 #
 # 2. Exploration Schedule:
 #    - The first warmup_episodes episodes use uniformly random actions to fill the buffer;
@@ -22,10 +22,11 @@
 #
 # 4. World Model (see src/ipomdp/models/world_model.py and src/ipomdp/training/trainer.py):
 #    - A single belief latent of latent_dim features (no object slots).
-#    - JEPA self-prediction against an EMA target filter (ema_momentum), with a stochastic
-#      discrete latent of num_categoricals x num_classes; the prior is trained by an
-#      unclamped dynamics KL, the posterior regularised by a free-nats representation KL.
-#    - Grounding by two-hot reward and TD(lambda) value regression (num_bins bins).
+#    - JEPA self-prediction (deterministic predictor) against an EMA target filter
+#      (ema_momentum); grounding by two-hot reward and TD(lambda) value regression
+#      (num_bins bins, bounded by the domain's value bound).
+#    - Planning imagines by sampling observations from a learned observation head and
+#      stepping the belief filter (num_observation_samples children per action).
 # ==============================================================================
 
 defaults:
@@ -50,11 +51,6 @@ trainer:
   weight_decay: 1.0e-4
   grad_clip_norm: 1.0
   lambda_return: 0.95         # TD(lambda) mixing for value targets
-  kl_dynamics_scale: 0.5      # Weight of KL(sg(q) || p): trains the prior, never clamped
-  kl_representation_scale: 0.1  # Weight of max(KL(q || sg(p)), kl_free_nats): regularises the posterior
-  kl_free_nats: 1.0           # Free nats of the representation KL only
-  imagination_horizon: 3      # Prior-imagination steps for the value consistency loss
-  consistency_scale: 0.5      # Weight of the value consistency loss
 
 agent:
   temperature: 1.0            # Initial MCTS visit-count sampling temperature
@@ -65,12 +61,9 @@ model:
   latent_dim: 32              # Belief latent dimension D
   hidden_dim: 64              # Width of SwiGLU residual MLPs
   num_blocks: 1               # SwiGLU residual blocks per MLP
-  num_categoricals: 4         # Discrete latent: number of categorical variables
-  num_classes: 4              # Discrete latent: classes per categorical
-  unimix: 0.01                # Uniform mixture weight in prior/posterior categorical probabilities
   ema_momentum: 0.99          # Target filter EMA momentum
   num_bins: 255               # Two-hot bins for value and reward
 
 mcts:
   num_simulations: 50         # Search simulations per decision
-  num_latent_obs: 1           # Prior samples per action at each expansion
+  num_observation_samples: 1  # Observations sampled (children) per action at each expansion

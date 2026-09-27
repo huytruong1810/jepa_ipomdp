@@ -8,8 +8,8 @@ import torch.nn.functional as F
 
 from ipomdp.models import (
     BeliefFilter,
-    LatentTransition,
-    ObservationProbeHead,
+    LatentPredictor,
+    ObservationHead,
     OpponentPolicyHead,
     RecurrentJEPA,
     RewardHead,
@@ -26,7 +26,7 @@ A, O, AJ, D, H = 3, 2, 1, 16, 32
 
 def _world_model() -> RecurrentJEPA:
     torch.manual_seed(0)
-    return RecurrentJEPA(BeliefFilter(A, O, D, H, 1), LatentTransition(D, A, AJ, H, 1, 4, 4, 0.01), ema_momentum=0.9)
+    return RecurrentJEPA(BeliefFilter(A, O, D, H, 1), LatentPredictor(D, A, AJ, H, 1), ema_momentum=0.9)
 
 
 class TestBuildingBlocks:
@@ -57,6 +57,12 @@ class TestTwoHotSymlog:
         with pytest.raises(ValueError):
             TwoHotSymlog(num_bins, 2000.0)
 
+    def test_loss_is_cross_entropy_to_encoding(self):
+        codec = TwoHotSymlog(255, 2000.0)
+        logits, targets = torch.randn(3, 255), torch.tensor([-100.0, 0.0, 10.0])
+        expected = -(codec.encode(targets) * torch.log_softmax(logits, -1)).sum(-1)
+        assert torch.allclose(codec.loss(logits, targets), expected)
+
     def test_encoding_has_exact_mean(self):
         codec = TwoHotSymlog(255, 2000.0)
         targets = torch.tensor([-100.0, -45.0, -1.0, 0.0, 0.37, 10.0, 19.3713, 1234.5])
@@ -73,11 +79,12 @@ class TestTwoHotSymlog:
         outcomes = torch.tensor([-100.0, 10.0])
         logits = nn.Parameter(torch.zeros(1, 255))
         optimizer = torch.optim.Adam([logits], lr=0.1)
+        target = codec.encode(outcomes)  # identical to codec.loss, encoded once for speed
         for _ in range(2000):
             optimizer.zero_grad()
-            codec.loss(logits.expand(2, -1), outcomes).mean().backward()
+            (-(target * torch.log_softmax(logits.expand(2, -1), dim=-1)).sum(-1)).mean().backward()
             optimizer.step()
-        assert float(codec.mean(logits)) == pytest.approx(-45.0, abs=0.1)
+        assert float(codec.mean(logits.detach())) == pytest.approx(-45.0, abs=0.1)
         # The exact minimiser E[twohot(Y)] has mean E[Y] by linearity of the encoding.
         assert float(codec.encode(outcomes).mean(0) @ codec.bins) == pytest.approx(-45.0, abs=1e-4)
 
@@ -86,9 +93,10 @@ class TestTwoHotSymlog:
         targets = torch.tensor([-100.0, 0.0, 10.0, 50.0])
         logits = nn.Parameter(torch.zeros(4, 255))
         optimizer = torch.optim.Adam([logits], lr=0.1)
+        encoded = codec.encode(targets)  # identical to codec.loss, encoded once for speed
         for _ in range(2000):
             optimizer.zero_grad()
-            codec.loss(logits, targets).mean().backward()
+            (-(encoded * torch.log_softmax(logits, dim=-1)).sum(-1)).mean().backward()
             optimizer.step()
         assert torch.allclose(codec.mean(logits), targets, atol=0.1)
 
@@ -147,40 +155,10 @@ class TestRecurrentJEPA:
         for p, q, q0 in zip(online.parameters(), target.parameters(), before):
             assert torch.allclose(q, 0.9 * q0 + 0.1 * p)
 
-    def test_transition_shapes_and_kl(self):
-        transition = _world_model().transition
-        latent = torch.randn(6, D)
+    def test_predictor_shape(self):
+        predictor = _world_model().predictor
         action = F.one_hot(torch.randint(0, A, (6,)), A).float()
-        opponent = torch.ones(6, AJ)
-        predicted, kl_dynamics, kl_representation = transition.predict_train(latent, action, opponent, torch.randn(6, D))
-        assert predicted.shape == (6, D) and kl_dynamics.shape == (6,) and kl_representation.shape == (6,)
-        assert torch.allclose(kl_dynamics, kl_representation)  # same value, different gradient routes
-        assert (kl_dynamics >= -1e-6).all()
-        assert transition.imagine(latent, action, opponent).shape == (6, D)
-
-    def test_kl_gradients_are_routed(self):
-        # Dynamics KL trains only the prior; representation KL trains only the posterior.
-        transition = _world_model().transition
-        latent, target = torch.randn(6, D), torch.randn(6, D)
-        action, opponent = F.one_hot(torch.randint(0, A, (6,)), A).float(), torch.ones(6, AJ)
-        _, kl_dynamics, kl_representation = transition.predict_train(latent, action, opponent, target)
-        prior_grad = torch.autograd.grad(kl_dynamics.sum(), list(transition.prior_net.parameters()), allow_unused=True)
-        post_grad = torch.autograd.grad(kl_dynamics.sum(), list(transition.posterior_net.parameters()),
-                                        retain_graph=True, allow_unused=True)
-        assert any(g is not None and g.abs().sum() > 0 for g in prior_grad)
-        assert all(g is None or g.abs().sum() == 0 for g in post_grad)
-
-    def test_unimix_bounds_probabilities_and_kl(self):
-        transition = _world_model().transition
-        with torch.no_grad():
-            transition.prior_net[-1].bias.fill_(0.0)
-            transition.prior_net[-1].bias[0::4] = 1e4  # try to force a one-hot prior
-        log_probs = transition._log_probs(transition.prior_net, torch.zeros(1, D + A + AJ))
-        assert log_probs.exp().min() >= 0.01 / 4 - 1e-7
-
-    def test_kl_is_zero_for_identical_distributions(self):
-        log_probs = torch.randn(3, 4, 4).log_softmax(-1)
-        assert torch.allclose(LatentTransition.categorical_kl(log_probs, log_probs), torch.zeros(3), atol=1e-6)
+        assert predictor(torch.randn(6, D), action, torch.ones(6, AJ)).shape == (6, D)
 
 
 class TestHeads:
@@ -197,5 +175,5 @@ class TestHeads:
     def test_policy_and_probe_head_shapes(self):
         latent = torch.randn(4, D)
         assert OpponentPolicyHead(D, 5, H, 1)(latent).shape == (4, 5)
-        probe = ObservationProbeHead(D, A, O, H, 1)
-        assert probe(latent, F.one_hot(torch.tensor([0, 1, 2, 0]), A).float()).shape == (4, O)
+        head = ObservationHead(D, A, AJ, O, H, 1)
+        assert head(latent, F.one_hot(torch.tensor([0, 1, 2, 0]), A).float(), torch.ones(4, AJ)).shape == (4, O)

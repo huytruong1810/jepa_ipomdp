@@ -1,6 +1,6 @@
 # ABSOLUTE PATH: src/ipomdp/models/world_model.py
 # ==============================================================================
-# RECURRENT JEPA WORLD MODEL: BELIEF FILTER, EMA TARGET, STOCHASTIC LATENT TRANSITION
+# RECURRENT JEPA WORLD MODEL: BELIEF FILTER, EMA TARGET, SELF-PREDICTION
 # ==============================================================================
 #
 # DESIGN DECISIONS & THEORETICAL FOUNDATIONS:
@@ -20,7 +20,7 @@
 #      will be reintroduced only when the interactive state (S x M_j) gives them semantics.
 #
 # 3. Training Signal (see src/ipomdp/training/trainer.py):
-#    - JEPA self-prediction: the transition predicts the EMA target filter's next latent
+#    - JEPA self-prediction: the predictor predicts the EMA target filter's next latent
 #      z-bar_{t+1} from (z_t, a_t), in latent space, with no observation reconstruction.
 #    - Grounding: reward prediction from (z_t, a_t) (plus the value/TD targets).
 #    - Measured on canonical Tiger (Phase-2 isolated study, random-policy data): JEPA
@@ -36,30 +36,32 @@
 #    - A frozen copy of the filter, updated as target <- m * target + (1 - m) * online after
 #      every optimiser step, produces the self-prediction targets (BYOL/JEPA stop-gradient).
 #
-# 5. Stochastic Latent Transition (DreamerV3-style):
-#    - In a POMDP the next latent is random (it depends on o_{t+1}). The transition samples a
-#      discrete latent z ~ Cat(N_cat x N_class): from a posterior q(z | z_t, a, z-bar_{t+1})
-#      during training and from a prior p(z | z_t, a) during imagination (MCTS), with
-#      straight-through gradients. Probabilities are mixed with 1% uniform ("unimix") so no
-#      class has zero probability and KL terms stay bounded.
-#    - Two KL terms, returned separately and weighted by the trainer:
-#         dynamics       KL(sg(q) || p)  trains ONLY the prior, with NO free bits;
-#         representation KL(q || sg(p))  regularises the posterior, with free bits.
-#      Phase-3 finding: the earlier form clamped the balanced sum 0.8 KL_dyn + 0.2 KL_rep at
-#      1 free nat. With a 4 x 4 latent the KL stayed at 0.4-0.85 nats, below the clamp, so the
-#      prior never received a gradient and MCTS imagined from an untrained prior: imagined
-#      post-LISTEN latents decoded to beliefs of 0.6-0.8 from ANY start (exact: mean b, std up
-#      to 0.35) and post-OPEN latents to 0.83 (exact: 0.5). Free bits exist to stop the
-#      posterior from collapsing onto the prior; they must never switch off prior learning.
-#    - Opponent actions enter as a one-hot; the single-agent POMDP passes a singleton
-#      opponent action space until Phase 4 settles the opponent model.
+# 5. Deterministic JEPA Predictor (representation learning only):
+#    - g(z_t, a_t, a^j_t) predicts the EMA target latent z-bar_{t+1}; the loss is the mean
+#      squared error. In a POMDP z-bar_{t+1} is random (it depends on o_{t+1}), so g learns
+#      its conditional mean -- the "expected self-prediction" (EZP) objective of Ni et al.,
+#      which together with reward grounding is what the Phase-2 study validated.
+#    - The predictor is NOT used for planning. Phase-3 study (canonical Tiger, 1000 updates):
+#      a DreamerV3-style stochastic latent transition imagined biased beliefs (post-LISTEN
+#      mean 0.57 from b = 0.85, never moving towards TL), because (i) the EMA target lives in
+#      a different latent space than the online latents the heads read (probe error 0.41 vs
+#      0.03 on the same histories), (ii) predicting online latents instead collapses the
+#      representation (probe error 0.13), and (iii) straight-through discrete latents learned
+#      even the two-outcome growl distribution poorly. The discrete latent, prior/posterior,
+#      KL balancing and unimix were therefore removed.
+#
+# 6. Planning Model = Observation Branching Through the Filter:
+#    - MCTS imagines by sampling o' from the learned P(o' | z, a, a^j) (ObservationHead,
+#      models/heads.py, trained on detached latents) and stepping the SAME filter,
+#      z' = BeliefFilter.step(z, a, o'). Imagined latents are therefore exactly the latents
+#      the filter would produce after that history, on the manifold the heads were trained
+#      on, and branching mirrors the exact belief tree of the benchmark solver.
 # ==============================================================================
 
 import copy
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch import Tensor
 
 from .layers import build_residual_stack
@@ -120,104 +122,33 @@ class BeliefFilter(nn.Module):
         return torch.stack(latents, dim=1)
 
 
-class LatentTransition(nn.Module):
-    """Stochastic latent dynamics z_{t+1} = g(z_t, a_t, a^j_t, z), z ~ q (train) or p (imagine)."""
+class LatentPredictor(nn.Module):
+    """Deterministic JEPA predictor g(z_t, a_t, a^j_t) of the EMA target latent z-bar_{t+1}."""
 
-    def __init__(
-        self,
-        latent_dim: int,
-        num_actions: int,
-        num_opponent_actions: int,
-        hidden_dim: int,
-        num_blocks: int,
-        num_categoricals: int,
-        num_classes: int,
-        unimix: float,
-    ):
-        """
-        Args:
-            latent_dim: Dimension D of the belief latent.
-            num_actions: |A_i| (ego actions, one-hot).
-            num_opponent_actions: |A_j| (opponent actions, one-hot).
-            hidden_dim: Width of the prior, posterior and decoder networks.
-            num_blocks: SwiGLU residual blocks per network.
-            num_categoricals: Number of categorical variables in z.
-            num_classes: Classes per categorical variable.
-            unimix: Weight of the uniform distribution mixed into prior and posterior probabilities.
-        """
+    def __init__(self, latent_dim: int, num_actions: int, num_opponent_actions: int, hidden_dim: int,
+                 num_blocks: int):
         super().__init__()
-        self.num_categoricals = num_categoricals
-        self.num_classes = num_classes
-        self.unimix = unimix
-        action_width = num_actions + num_opponent_actions
-        z_width = num_categoricals * num_classes
-        self.prior_net = build_residual_stack(latent_dim + action_width, hidden_dim, z_width, num_blocks)
-        self.posterior_net = build_residual_stack(2 * latent_dim + action_width, hidden_dim, z_width, num_blocks)
-        self.decoder = build_residual_stack(latent_dim + action_width + z_width, hidden_dim, latent_dim, num_blocks)
+        self.net = build_residual_stack(latent_dim + num_actions + num_opponent_actions, hidden_dim, latent_dim,
+                                        num_blocks)
 
-    def _log_probs(self, net: nn.Module, inputs: Tensor) -> Tensor:
-        """Unimix log-probabilities of shape (B, N_cat, N_class), float32."""
-        logits = net(inputs).float().view(inputs.shape[0], self.num_categoricals, self.num_classes)
-        probs = (1.0 - self.unimix) * logits.softmax(dim=-1) + self.unimix / self.num_classes
-        return probs.log()
-
-    def _sample(self, log_probs: Tensor) -> Tensor:
-        """
-        Straight-through categorical sample, flattened to (B, N_cat * N_class).
-
-        argmax(log p + Gumbel noise) is an exact categorical sample; the forward value is
-        the one-hot sample and the gradient is that of the probabilities.
-        """
-        uniform = torch.rand_like(log_probs).clamp(1e-7, 1.0 - 1e-7)
-        hard = F.one_hot((log_probs - torch.log(-torch.log(uniform))).argmax(dim=-1), self.num_classes).float()
-        probs = log_probs.exp()
-        return (hard - probs.detach() + probs).flatten(1)
-
-    @staticmethod
-    def categorical_kl(p_log: Tensor, q_log: Tensor) -> Tensor:
-        """KL(p || q) from log-probabilities, summed over categoricals; shape (B,)."""
-        return (p_log.exp() * (p_log - q_log)).sum(dim=(-1, -2))
-
-    def imagine(self, latent: Tensor, action: Tensor, opponent_action: Tensor) -> Tensor:
-        """Samples z from the prior and returns an imagined z_{t+1}, shape (B, D)."""
-        conditioning = torch.cat([latent, action, opponent_action], dim=-1)
-        z = self._sample(self._log_probs(self.prior_net, conditioning)).to(latent.dtype)
-        return self.decoder(torch.cat([conditioning, z], dim=-1))
-
-    def predict_train(
-        self, latent: Tensor, action: Tensor, opponent_action: Tensor, target_next: Tensor
-    ) -> tuple[Tensor, Tensor, Tensor]:
-        """
-        Posterior-sampled prediction of the target latent and both KL terms.
-
-        Returns:
-            (predicted z_{t+1} of shape (B, D),
-             dynamics KL(sg(q) || p) of shape (B,),
-             representation KL(q || sg(p)) of shape (B,)).
-        """
-        conditioning = torch.cat([latent, action, opponent_action], dim=-1)
-        prior = self._log_probs(self.prior_net, conditioning)
-        posterior = self._log_probs(self.posterior_net, torch.cat([conditioning, target_next], dim=-1))
-        z = self._sample(posterior).to(latent.dtype)
-        predicted = self.decoder(torch.cat([conditioning, z], dim=-1))
-        return (predicted,
-                self.categorical_kl(posterior.detach(), prior),
-                self.categorical_kl(posterior, prior.detach()))
+    def forward(self, latent: Tensor, action: Tensor, opponent_action: Tensor) -> Tensor:
+        """(B, D), one-hot (B, |A_i|), one-hot (B, |A_j|) -> predicted z-bar_{t+1}, (B, D)."""
+        return self.net(torch.cat([latent, action, opponent_action], dim=-1))
 
 
 class RecurrentJEPA(nn.Module):
-    """Online belief filter, its EMA target copy, and the stochastic latent transition."""
+    """Online belief filter, its EMA target copy, and the JEPA self-prediction predictor."""
 
-    def __init__(self, belief_filter: BeliefFilter, transition: LatentTransition, ema_momentum: float):
+    def __init__(self, belief_filter: BeliefFilter, predictor: LatentPredictor, ema_momentum: float):
         """
         Args:
             belief_filter: Online filter trained by gradient descent.
-            transition: Stochastic latent transition.
+            predictor: Deterministic predictor of the EMA target's next latent.
             ema_momentum: m in target <- m * target + (1 - m) * online.
         """
         super().__init__()
         self.belief_filter = belief_filter
-        self.transition = transition
+        self.predictor = predictor
         self.ema_momentum = ema_momentum
         self.target_filter = copy.deepcopy(belief_filter).requires_grad_(False)
 
@@ -226,7 +157,3 @@ class RecurrentJEPA(nn.Module):
         """EMA update of the target filter (in place, after each optimiser step)."""
         for target, online in zip(self.target_filter.parameters(), self.belief_filter.parameters()):
             target.mul_(self.ema_momentum).add_(online, alpha=1.0 - self.ema_momentum)
-
-    def predict_next_belief(self, latent: Tensor, action: Tensor, opponent_action: Tensor) -> Tensor:
-        """Prior imagination step used by MCTS: (B, D) -> (B, D)."""
-        return self.transition.imagine(latent, action, opponent_action)

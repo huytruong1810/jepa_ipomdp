@@ -5,14 +5,13 @@ import pytest
 import torch
 
 from ipomdp.domain import BatchedPOMDPEnv, build_tiger_pomdp
-from ipomdp.models import (BeliefFilter, LatentTransition, OpponentPolicyHead, RecurrentJEPA, RewardHead, TwoHotSymlog,
-                           ValueHead)
+from ipomdp.models import (BeliefFilter, LatentPredictor, ObservationHead, OpponentPolicyHead, RecurrentJEPA, RewardHead,
+                           TwoHotSymlog, ValueHead)
 from ipomdp.training import EpisodeBatch, EpisodeBuffer, TrainerConfig, WorldModelTrainer
 
 CPU = torch.device("cpu")
 A, O, AJ, D, H, T = 3, 2, 1, 16, 32, 6
-CONFIG = TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0, lambda_return=0.95,
-                       kl_dynamics_scale=0.5, kl_representation_scale=0.1, kl_free_nats=1.0, imagination_horizon=3, consistency_scale=0.5)
+CONFIG = TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0, lambda_return=0.95)
 
 
 def _episodes(batch: int, seed: int, device: torch.device = CPU) -> EpisodeBatch:
@@ -32,10 +31,10 @@ def _episodes(batch: int, seed: int, device: torch.device = CPU) -> EpisodeBatch
 
 def _trainer(device: torch.device = CPU) -> WorldModelTrainer:
     torch.manual_seed(0)
-    world_model = RecurrentJEPA(BeliefFilter(A, O, D, H, 1), LatentTransition(D, A, AJ, H, 1, 4, 4, 0.01), 0.99)
+    world_model = RecurrentJEPA(BeliefFilter(A, O, D, H, 1), LatentPredictor(D, A, AJ, H, 1), 0.99)
     return WorldModelTrainer(world_model.to(device), ValueHead(D, H, 1, 255).to(device),
                              RewardHead(D, A, AJ, H, 1, 255).to(device), OpponentPolicyHead(D, AJ, H, 1).to(device),
-                             TwoHotSymlog(255, 2000.0).to(device), A, O, AJ, discount=0.95, config=CONFIG, device=device)
+                             ObservationHead(D, A, AJ, O, H, 1).to(device), TwoHotSymlog(255, 2000.0).to(device), A, O, AJ, discount=0.95, config=CONFIG, device=device)
 
 
 class TestEpisodeBuffer:
@@ -94,14 +93,17 @@ class TestWorldModelTrainer:
         with pytest.raises(FloatingPointError):
             trainer.train_step(broken)
 
-    def test_imagination_loss_trains_only_latents_with_multistep_targets(self):
-        # With T = 2 and H = 3, only t = 0 has L_0 = 2 > 1, so exactly one imagined latent
-        # (d_1 from z_0) is trained; t = 1 has L_1 = 1 and contributes nothing.
+    def test_observation_head_does_not_shape_the_representation(self):
+        # The planning model is trained on detached latents: its loss alone must leave the
+        # belief filter's gradients at zero.
         trainer = _trainer()
-        latents = torch.randn(1, 2, D)
-        actions = torch.nn.functional.one_hot(torch.tensor([[0, 0]]), A).float()
-        loss = trainer._imagination_loss(latents, actions, torch.ones(1, 2, AJ))
-        assert torch.isfinite(loss) and loss > 0
+        batch = _episodes(4, 0)
+        actions = torch.nn.functional.one_hot(batch.actions, A).float()
+        observations = torch.nn.functional.one_hot(batch.observations, O).float()
+        latents = trainer.world_model.belief_filter.unroll(actions, observations)[:, :-1].reshape(-1, D)
+        logits = trainer.observation_head(latents.detach(), actions.reshape(-1, A), torch.ones(4 * T, AJ))
+        torch.nn.functional.cross_entropy(logits, batch.observations.reshape(-1)).backward()
+        assert all(p.grad is None for p in trainer.world_model.belief_filter.parameters())
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
     def test_train_step_on_cuda_with_bfloat16_autocast(self):

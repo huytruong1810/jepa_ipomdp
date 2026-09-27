@@ -10,7 +10,6 @@ from .metrics import (
 from .visualizers import (
     LatentSpaceVisualizer,
     MCTSGraphVisualizer,
-    JEPASemanticsProbe,
     RewardTrajectoryVisualizer,
 )
 from .checkpointer import ModelCheckpointer
@@ -27,7 +26,6 @@ __all__ = [
     "compute_observation_accuracy_metrics",
     "LatentSpaceVisualizer",
     "MCTSGraphVisualizer",
-    "JEPASemanticsProbe",
     "RewardTrajectoryVisualizer",
     "ModelCheckpointer",
     "SystemTelemetryMonitor",

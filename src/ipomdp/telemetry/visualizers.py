@@ -4,18 +4,13 @@
 # ==============================================================================
 #
 # DESIGN DECISIONS & THEORETICAL FOUNDATIONS:
-# 1. Permutation-Invariant Multi-Slot Pooling:
-#    - Uses AttentionPooler from ValueHead (or slot-mean fallback) to aggregate
-#      multi-object belief tensors (T, N_obj, D) -> (T, D) prior to PCA fitting.
+# 1. Vector Beliefs:
+#    - Belief latents are single vectors (models/world_model.py, section 2); trajectories
+#      of shape (T, D) are projected with PCA directly (reviewed in Phase 6).
 #
 # 2. Discrete Integer Layer Indexing for MCTS Tree Layouts:
 #    - Uses discrete integer layer keys (2*d for state nodes, 2*d + 1 for action nodes)
 #      to eliminate NetworkX multipartite layout sorting glitches across versions.
-#
-# 3. Memory Stride Alignment on Opponent Marginalization:
-#    - In JEPASemanticsProbe, reshaping matches the row-major memory order produced by
-#      torch.arange(action_dim_j).repeat_interleave(num_samples). This prevents mixing
-#      samples across different opponent choices when computing transition variance.
 # ==============================================================================
 
 from pathlib import Path
@@ -27,9 +22,6 @@ import numpy as np
 import plotly.graph_objects as go
 from sklearn.decomposition import PCA
 import torch
-import torch.nn.functional as F
-
-from ..models.distributions import TwoHotSymlog
 
 
 class LatentSpaceVisualizer:
@@ -41,20 +33,10 @@ class LatentSpaceVisualizer:
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
     def _pool_belief(self, b_seq: torch.Tensor, value_head: Optional[torch.nn.Module] = None) -> np.ndarray:
-        """Pools (Time, NumObjects, LatentDim) -> (Time, LatentDim)."""
-        if b_seq.dim() == 2:
-            return b_seq.detach().cpu().numpy()
-
-        if b_seq.dim() == 3:
-            if value_head is not None and hasattr(value_head, 'pooler'):
-                device = next(value_head.parameters()).device
-                with torch.no_grad():
-                    pooled = value_head.pooler(b_seq.to(device)).cpu()
-            else:
-                pooled = b_seq.mean(dim=1).detach().cpu()
-            return pooled.numpy()
-
-        raise ValueError(f"Unexpected belief tensor shape: {b_seq.shape}")
+        """Belief latents (T, D) as a NumPy matrix for PCA."""
+        if b_seq.dim() != 2:
+            raise ValueError(f"Expected belief latents of shape (T, D), got {tuple(b_seq.shape)}.")
+        return b_seq.detach().float().cpu().numpy()
 
     def plot_trajectory(
         self,
@@ -370,95 +352,6 @@ class MCTSGraphVisualizer:
 
             for i, child_node in enumerate(stochastic_children):
                 self._add_nodes_edges(G, child_node, depth + 1, max_depth, action_id, i)
-
-
-class JEPASemanticsProbe:
-    """
-    Diagnostic tool evaluating learned latent belief representations (b_t).
-    Measures stochastic dynamics variance and marginalized reward expectations.
-    """
-
-    def __init__(self, save_dir: str = "plots/semantics"):
-        """Initializes plot output directory."""
-        self.save_dir = Path(save_dir)
-        self.save_dir.mkdir(parents=True, exist_ok=True)
-
-    @torch.no_grad()
-    def analyze_episode(
-        self,
-        jepa_model: torch.nn.Module,
-        reward_head: torch.nn.Module,
-        codec: TwoHotSymlog,
-        ep_beliefs: List[torch.Tensor],
-        ep_actions: List[int],
-        action_dim_i: int,
-        action_dim_j: int,
-        episode_num: int
-    ):
-        """
-        Analyzes transition uncertainty and reward expectations for a trajectory.
-        """
-        if len(ep_beliefs) < 2:
-            return
-
-        device = next(jepa_model.parameters()).device
-        twohot = codec
-
-        b_seq = torch.cat(ep_beliefs, dim=0).to(device)
-        t_steps, latent_dim = b_seq.shape
-
-        uncertainties = []
-        expected_rewards = []
-
-        for t in range(t_steps - 1):
-            b_t = b_seq[t:t + 1]
-            a_i = F.one_hot(torch.tensor([ep_actions[t]], device=device), num_classes=action_dim_i).float()
-
-            num_samples = 50
-            total_batch = num_samples * action_dim_j
-
-            rep_b = b_t.repeat(total_batch, 1)
-            rep_ai = a_i.repeat(total_batch, 1)
-
-            opp_indices = torch.arange(action_dim_j, device=device).repeat_interleave(num_samples)
-            rep_aj = F.one_hot(opp_indices, num_classes=action_dim_j).float()
-
-            batched_next_b = jepa_model.predict_next_belief(rep_b, rep_ai, rep_aj)
-
-            # Memory Stride Alignment: Outer dim matches action_dim_j, inner dim matches num_samples
-            sample_b = batched_next_b.view(action_dim_j, num_samples, latent_dim)
-            marginal_b = sample_b.mean(dim=0)  # Mean across opponent action choices
-            variance = torch.var(marginal_b, dim=0).sum().item()
-            uncertainties.append(float(variance))
-
-            rep_b_reward = b_t.repeat(action_dim_j, 1)
-            rep_ai_reward = a_i.repeat(action_dim_j, 1)
-            all_aj = F.one_hot(torch.arange(action_dim_j, device=device), num_classes=action_dim_j).float()
-
-            r_logits = reward_head(rep_b_reward, rep_ai_reward, all_aj)
-            r_vals = twohot.mean(r_logits).tolist()
-            marginal_reward = sum(r_vals) / action_dim_j
-            expected_rewards.append(float(marginal_reward))
-
-        plt.figure(figsize=(10, 5))
-        plt.plot(range(t_steps - 1), uncertainties, marker='x', color='purple', label="Latent Variance (Tr(Cov))")
-        plt.title(f"Stochastic Uncertainty in Transition Dynamics (Ep {episode_num})")
-        plt.xlabel("Time Step (t)")
-        plt.ylabel("Variance")
-        plt.grid(True, linestyle='--', alpha=0.5)
-        plt.legend()
-        plt.savefig(self.save_dir / f"ep_{episode_num}_uncertainty.png", dpi=300)
-        plt.close()
-
-        plt.figure(figsize=(10, 5))
-        plt.plot(range(t_steps - 1), expected_rewards, marker='o', color='green', label="Expected Reward")
-        plt.title(f"Marginalized Expected Reward per Step (Ep {episode_num})")
-        plt.xlabel("Time Step (t)")
-        plt.ylabel("E[Reward | a_i, unknown a_j]")
-        plt.grid(True, linestyle='--', alpha=0.5)
-        plt.legend()
-        plt.savefig(self.save_dir / f"ep_{episode_num}_rewards.png", dpi=300)
-        plt.close()
 
 
 class RewardTrajectoryVisualizer:
