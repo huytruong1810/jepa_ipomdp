@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Research code for a model-based RL agent for partially observable (and eventually interactive, I-POMDP) domains. A recurrent JEPA belief filter (no observation decoder) keeps a latent belief `z_t ∈ R^D`. A belief-tree MCTS plans over those latents using learned reward, observation and value heads. README.md holds the original theory write-up and is partly superseded by the module headers. **README's "Repository Structure" section and HANDOFF.md are stale** (they describe the pre-review codebase and a deleted training run).
 
-The codebase is being reviewed bottom-up in phases (domain → JEPA filter → DreamerV3 parts → MCTS → training loop → interpretability → scripts/layout → holistic). Phases 1–4 (domain, JEPA belief filter, DreamerV3 components, planner and agent) are done; Phase 5 (training loop) is in progress. Current scope is the **single-agent canonical Tiger only**; the learned agent must match the exact solver before anything larger is run.
+The codebase is being reviewed bottom-up in phases (domain → JEPA filter → DreamerV3 parts → MCTS → training loop → interpretability → scripts/layout → holistic). Phases 1–5 (domain, JEPA belief filter, DreamerV3 components, planner and agent, training loop) are done. The full learning loop reaches near-optimal play on canonical Tiger with the default config (about 40 minutes); see `conf/config.yaml` section 1b. Current scope is the **single-agent canonical Tiger only**; the learned agent must match the exact solver before anything larger is run.
 
 ## Commands
 

@@ -8,8 +8,20 @@
 #    - env_batch_size episodes are played in lock-step from reset to truncation
 #      (env.max_steps steps), then stored whole in the EpisodeBuffer and followed by
 #      updates_per_collection gradient steps on batch_size uniformly sampled episodes.
-#    - With the defaults each collection adds 16 x 100 = 1600 transitions and each update
-#      trains on 16 x 100 = 1600 transitions (replay ratio 2).
+#    - With the defaults each collection adds 64 x 100 = 6400 transitions and 64 updates each
+#      train on 16 x 100 = 1600 transitions (replay ratio 16), with uniform replay.
+#
+# 1b. Validated Small-Scale Schedule (Phase 5, canonical Tiger, seed 0):
+#    - Learning is gated by GRADIENT UPDATES, not by collected data: the reward head becomes
+#      belief-dependent -- and the greedy agent stops listening forever (return -19.88) --
+#      after ~1000 updates in every run (off-policy on random data, 16 and 64 updates per
+#      collection alike). Collections cost ~60 s of search, updates ~0.1 s, so the replay
+#      ratio is the wall-clock lever: 16 updates/collection escaped at collection 65 (~70
+#      min), 64 updates/collection at collection 15 (~17 min).
+#    - Greedy evaluation after escape (V*(b0) = 19.37): 16 updates/collection 15.6-22.4 over
+#      collections 85-120 (one dip to 5.5); 64 updates/collection 12.6-17.8 over collections
+#      20-40. Uniform replay suffices; prioritised replay (and its importance-sampling
+#      corrections) was not reintroduced for lack of any demonstrated benefit.
 #
 # 2. Exploration Schedule:
 #    - The first warmup_episodes episodes use uniformly random actions to fill the buffer;
@@ -48,16 +60,16 @@ seed: 0                       # Base seed; each random stream uses a fixed offse
 resume: null                  # Path to a checkpoints/latest.pt to continue bit-for-bit
 
 training:
-  env_batch_size: 16          # Episodes played in parallel per collection
-  total_episodes: 50000       # Episodes collected over the whole run (all rows)
-  warmup_episodes: 100        # Initial episodes played with uniformly random actions
+  env_batch_size: 64          # Episodes played in parallel per collection
+  total_episodes: 2560        # Episodes collected over the whole run (40 collections)
+  warmup_episodes: 256        # Initial episodes played with uniformly random actions (4 collections)
   buffer_capacity: 10000      # Episodes kept in the replay buffer
   batch_size: 16              # Episodes per gradient step
-  updates_per_collection: 2   # Gradient steps after each collection
-  eval_every: 10              # Collections between greedy evaluations (discounted return vs V*)
-  eval_episodes: 64           # Episodes per greedy evaluation
-  save_every: 50              # Collections between latest.pt checkpoints
-  viz_every: 100              # Collections between latent / search-tree / reward visualisations
+  updates_per_collection: 64  # Gradient steps after each collection (section 1b)
+  eval_every: 5               # Collections between greedy evaluations (discounted return vs V*)
+  eval_episodes: 128          # Episodes per greedy evaluation
+  save_every: 10              # Collections between latest.pt checkpoints
+  viz_every: 20               # Collections between latent / search-tree / reward visualisations
 
 trainer:
   learning_rate: 3.0e-4
@@ -68,7 +80,7 @@ trainer:
 agent:
   temperature: 1.0            # Initial MCTS visit-count sampling temperature
   temperature_min: 0.1        # Floor of the annealed temperature
-  temperature_decay: 0.999    # Multiplicative decay per collection (after warm-up)
+  temperature_decay: 0.97     # Multiplicative decay per collection (after warm-up)
 
 model:
   latent_dim: 32              # Belief latent dimension D
