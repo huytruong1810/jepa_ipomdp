@@ -1,5 +1,5 @@
-"""Batched agent that filters latent beliefs with the JEPA encoder and acts by latent MCTS."""
+"""Batched planning agent: belief tracking with a SearchModel, action selection by BeliefTreeSearch."""
 
-from .jepa_agent import DiscreteJEPAAgent
+from .planning_agent import PlanningAgent
 
-__all__ = ["DiscreteJEPAAgent"]
+__all__ = ["PlanningAgent"]

@@ -23,7 +23,6 @@
 #      actions[C, T]           a_0 .. a_{T-1}
 #      observations[C, T]      o_1 .. o_T      (no o_0: the canonical POMDP emits none)
 #      rewards[C, T]           r_0 .. r_{T-1}
-#      opponent_actions[C, T]  a^j_0 .. a^j_{T-1}
 #    Every stored episode ends by truncation, never termination (continuing task).
 # ==============================================================================
 
@@ -40,7 +39,6 @@ class EpisodeBatch:
     actions: Tensor
     observations: Tensor
     rewards: Tensor
-    opponent_actions: Tensor
 
 
 class EpisodeBuffer:
@@ -61,7 +59,6 @@ class EpisodeBuffer:
         self._actions = torch.zeros(shape, dtype=torch.int64, device=device)
         self._observations = torch.zeros(shape, dtype=torch.int64, device=device)
         self._rewards = torch.zeros(shape, dtype=torch.float32, device=device)
-        self._opponent_actions = torch.zeros(shape, dtype=torch.int64, device=device)
         self._generator = torch.Generator(device=device)
         self._generator.manual_seed(seed)
         self._next = 0
@@ -76,7 +73,6 @@ class EpisodeBuffer:
         self._actions[slots] = episodes.actions
         self._observations[slots] = episodes.observations
         self._rewards[slots] = episodes.rewards
-        self._opponent_actions[slots] = episodes.opponent_actions
         self._next = (self._next + count) % self.capacity
         self.size = min(self.size + count, self.capacity)
 
@@ -85,5 +81,4 @@ class EpisodeBuffer:
         if self.size == 0:
             raise RuntimeError("Cannot sample from an empty EpisodeBuffer.")
         index = torch.randint(0, self.size, (batch_size,), generator=self._generator, device=self.device)
-        return EpisodeBatch(self._actions[index], self._observations[index], self._rewards[index],
-                            self._opponent_actions[index])
+        return EpisodeBatch(self._actions[index], self._observations[index], self._rewards[index])

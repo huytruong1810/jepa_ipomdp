@@ -10,7 +10,6 @@ from ipomdp.models import (
     BeliefFilter,
     LatentPredictor,
     ObservationHead,
-    OpponentPolicyHead,
     RecurrentJEPA,
     RewardHead,
     SwiGLUResidualBlock,
@@ -21,12 +20,12 @@ from ipomdp.models import (
     symlog,
 )
 
-A, O, AJ, D, H = 3, 2, 1, 16, 32
+A, O, D, H = 3, 2, 16, 32
 
 
 def _world_model() -> RecurrentJEPA:
     torch.manual_seed(0)
-    return RecurrentJEPA(BeliefFilter(A, O, D, H, 1), LatentPredictor(D, A, AJ, H, 1), ema_momentum=0.9)
+    return RecurrentJEPA(BeliefFilter(A, O, D, H, 1), LatentPredictor(D, A, H, 1), ema_momentum=0.9)
 
 
 class TestBuildingBlocks:
@@ -158,7 +157,7 @@ class TestRecurrentJEPA:
     def test_predictor_shape(self):
         predictor = _world_model().predictor
         action = F.one_hot(torch.randint(0, A, (6,)), A).float()
-        assert predictor(torch.randn(6, D), action, torch.ones(6, AJ)).shape == (6, D)
+        assert predictor(torch.randn(6, D), action).shape == (6, D)
 
 
 class TestHeads:
@@ -168,12 +167,11 @@ class TestHeads:
         latent = torch.randn(4, D)
         action = F.one_hot(torch.tensor([0, 1, 2, 0]), A).float()
         value = twohot.mean(ValueHead(D, H, 1, 255)(latent))
-        reward = twohot.mean(RewardHead(D, A, AJ, H, 1, 255)(latent, action, torch.ones(4, AJ)))
+        reward = twohot.mean(RewardHead(D, A, H, 1, 255)(latent, action))
         assert torch.allclose(value, torch.zeros_like(value), atol=1e-5)
         assert torch.allclose(reward, torch.zeros_like(reward), atol=1e-5)
 
-    def test_policy_and_probe_head_shapes(self):
+    def test_observation_head_shape(self):
         latent = torch.randn(4, D)
-        assert OpponentPolicyHead(D, 5, H, 1)(latent).shape == (4, 5)
-        head = ObservationHead(D, A, AJ, O, H, 1)
-        assert head(latent, F.one_hot(torch.tensor([0, 1, 2, 0]), A).float(), torch.ones(4, AJ)).shape == (4, O)
+        head = ObservationHead(D, A, O, H, 1)
+        assert head(latent, F.one_hot(torch.tensor([0, 1, 2, 0]), A).float()).shape == (4, O)

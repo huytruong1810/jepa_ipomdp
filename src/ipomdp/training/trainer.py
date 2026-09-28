@@ -10,11 +10,12 @@
 #      no mask, and no zero-initialised mid-episode state.
 #
 # 2. Loss Terms (all averaged over the B x T transitions of the batch):
-#      JEPA         MSE( g(z_t, a_t, a^j_t), sg(z-bar_{t+1}) )      z-bar = EMA target filter
-#      Reward       TwoHot( R(z_t, a_t, a^j_t), r_t )
+#      JEPA         MSE( g(z_t, a_t), sg(z-bar_{t+1}) )      z-bar = EMA target filter
+#      Reward       TwoHot( R(z_t, a_t), r_t )
 #      Value        TwoHot( V(z_t), G^lambda_t )
-#      Opponent     CE( pi_j(z_t), a^j_t )
-#      Observation  CE( P(o | sg(z_t), a_t, a^j_t), o_{t+1} )      planning model, detached input
+#      Observation  CE( P(o | sg(z_t), a_t), o_{t+1} )       planning model, detached input
+#    - No opponent terms: the model describes the POMDP the agent faces, with the opponent
+#      folded into the environment (models/heads.py, section 1).
 #    - Reward and value are the grounding that makes z_t a belief; JEPA self-prediction
 #      alone does not (Phase-2 study, models/world_model.py section 3). The observation head
 #      sees detached latents so it cannot change the representation (world_model.py section 6).
@@ -48,7 +49,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from ..models.distributions import TwoHotSymlog
-from ..models.heads import ObservationHead, OpponentPolicyHead, RewardHead, ValueHead
+from ..models.heads import ObservationHead, RewardHead, ValueHead
 from ..models.world_model import RecurrentJEPA
 from .episode_buffer import EpisodeBatch
 
@@ -71,12 +72,10 @@ class WorldModelTrainer:
         world_model: RecurrentJEPA,
         value_head: ValueHead,
         reward_head: RewardHead,
-        opponent_head: OpponentPolicyHead,
         observation_head: ObservationHead,
         codec: TwoHotSymlog,
         num_actions: int,
         num_observations: int,
-        num_opponent_actions: int,
         discount: float,
         config: TrainerConfig,
         device: torch.device,
@@ -84,12 +83,10 @@ class WorldModelTrainer:
         self.world_model = world_model
         self.value_head = value_head
         self.reward_head = reward_head
-        self.opponent_head = opponent_head
         self.observation_head = observation_head
         self.twohot = codec
         self.num_actions = num_actions
         self.num_observations = num_observations
-        self.num_opponent_actions = num_opponent_actions
         self.discount = discount
         self.config = config
         self.device = device
@@ -98,7 +95,6 @@ class WorldModelTrainer:
             *world_model.predictor.parameters(),
             *value_head.parameters(),
             *reward_head.parameters(),
-            *opponent_head.parameters(),
             *observation_head.parameters(),
         ]
         self.optimizer = torch.optim.AdamW(self.parameters, lr=config.learning_rate, weight_decay=config.weight_decay)
@@ -132,7 +128,6 @@ class WorldModelTrainer:
         self.world_model.train()
         actions = F.one_hot(episodes.actions, self.num_actions).float()
         observations = F.one_hot(episodes.observations, self.num_observations).float()
-        opponent_actions = F.one_hot(episodes.opponent_actions, self.num_opponent_actions).float()
         batch, steps = episodes.actions.shape
 
         with torch.autocast(self.device.type, dtype=torch.bfloat16, enabled=self.device.type == "cuda"):
@@ -142,12 +137,12 @@ class WorldModelTrainer:
 
             flat = lambda x: x.reshape(batch * steps, -1)  # noqa: E731
             current = flat(latents[:, :-1])
-            action_flat, opponent_flat = flat(actions), flat(opponent_actions)
+            action_flat = flat(actions)
 
-            predicted = self.world_model.predictor(current, action_flat, opponent_flat)
+            predicted = self.world_model.predictor(current, action_flat)
             loss_prediction = F.mse_loss(predicted.float(), flat(targets[:, 1:]).float())
 
-            loss_reward = self.twohot.loss(self.reward_head(current, action_flat, opponent_flat),
+            loss_reward = self.twohot.loss(self.reward_head(current, action_flat),
                                            episodes.rewards.reshape(-1)).mean()
 
             with torch.no_grad():
@@ -156,18 +151,16 @@ class WorldModelTrainer:
             value_logits = self.value_head(current)
             loss_value = self.twohot.loss(value_logits, returns.reshape(-1)).mean()
 
-            loss_opponent = F.cross_entropy(self.opponent_head(current).float(), episodes.opponent_actions.reshape(-1))
-
             loss_observation = F.cross_entropy(
-                self.observation_head(current.detach(), action_flat, opponent_flat).float(),
+                self.observation_head(current.detach(), action_flat).float(),
                 episodes.observations.reshape(-1))
 
-            total = loss_prediction + loss_reward + loss_value + loss_opponent + loss_observation
+            total = loss_prediction + loss_reward + loss_value + loss_observation
 
         if not torch.isfinite(total):
             raise FloatingPointError(
                 f"Non-finite loss: prediction={loss_prediction.item()}, reward={loss_reward.item()}, "
-                f"value={loss_value.item()}, opponent={loss_opponent.item()}, observation={loss_observation.item()}")
+                f"value={loss_value.item()}, observation={loss_observation.item()}")
 
         self.optimizer.zero_grad(set_to_none=True)
         total.backward()
@@ -185,7 +178,6 @@ class WorldModelTrainer:
             "loss_prediction": loss_prediction.item(),
             "loss_reward": loss_reward.item(),
             "loss_value": loss_value.item(),
-            "loss_opponent": loss_opponent.item(),
             "loss_observation": loss_observation.item(),
             "value_explained_variance": explained_variance.item(),
         }

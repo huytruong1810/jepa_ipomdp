@@ -37,7 +37,7 @@
 #      every optimiser step, produces the self-prediction targets (BYOL/JEPA stop-gradient).
 #
 # 5. Deterministic JEPA Predictor (representation learning only):
-#    - g(z_t, a_t, a^j_t) predicts the EMA target latent z-bar_{t+1}; the loss is the mean
+#    - g(z_t, a_t) predicts the EMA target latent z-bar_{t+1}; the loss is the mean
 #      squared error. In a POMDP z-bar_{t+1} is random (it depends on o_{t+1}), so g learns
 #      its conditional mean -- the "expected self-prediction" (EZP) objective of Ni et al.,
 #      which together with reward grounding is what the Phase-2 study validated.
@@ -51,8 +51,8 @@
 #      KL balancing and unimix were therefore removed.
 #
 # 6. Planning Model = Observation Branching Through the Filter:
-#    - MCTS imagines by sampling o' from the learned P(o' | z, a, a^j) (ObservationHead,
-#      models/heads.py, trained on detached latents) and stepping the SAME filter,
+#    - The planner branches over o' with the learned P(o' | z, a) (ObservationHead,
+#      models/heads.py, trained on detached latents) and steps the SAME filter,
 #      z' = BeliefFilter.step(z, a, o'). Imagined latents are therefore exactly the latents
 #      the filter would produce after that history, on the manifold the heads were trained
 #      on, and branching mirrors the exact belief tree of the benchmark solver.
@@ -123,17 +123,15 @@ class BeliefFilter(nn.Module):
 
 
 class LatentPredictor(nn.Module):
-    """Deterministic JEPA predictor g(z_t, a_t, a^j_t) of the EMA target latent z-bar_{t+1}."""
+    """Deterministic JEPA predictor g(z_t, a_t) of the EMA target latent z-bar_{t+1}."""
 
-    def __init__(self, latent_dim: int, num_actions: int, num_opponent_actions: int, hidden_dim: int,
-                 num_blocks: int):
+    def __init__(self, latent_dim: int, num_actions: int, hidden_dim: int, num_blocks: int):
         super().__init__()
-        self.net = build_residual_stack(latent_dim + num_actions + num_opponent_actions, hidden_dim, latent_dim,
-                                        num_blocks)
+        self.net = build_residual_stack(latent_dim + num_actions, hidden_dim, latent_dim, num_blocks)
 
-    def forward(self, latent: Tensor, action: Tensor, opponent_action: Tensor) -> Tensor:
-        """(B, D), one-hot (B, |A_i|), one-hot (B, |A_j|) -> predicted z-bar_{t+1}, (B, D)."""
-        return self.net(torch.cat([latent, action, opponent_action], dim=-1))
+    def forward(self, latent: Tensor, action: Tensor) -> Tensor:
+        """(B, D), one-hot (B, |A|) -> predicted z-bar_{t+1}, (B, D)."""
+        return self.net(torch.cat([latent, action], dim=-1))
 
 
 class RecurrentJEPA(nn.Module):

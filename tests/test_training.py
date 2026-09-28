@@ -5,12 +5,11 @@ import pytest
 import torch
 
 from ipomdp.domain import BatchedPOMDPEnv, build_tiger_pomdp
-from ipomdp.models import (BeliefFilter, LatentPredictor, ObservationHead, OpponentPolicyHead, RecurrentJEPA, RewardHead,
-                           TwoHotSymlog, ValueHead)
+from ipomdp.models import BeliefFilter, LatentPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueHead
 from ipomdp.training import EpisodeBatch, EpisodeBuffer, TrainerConfig, WorldModelTrainer
 
 CPU = torch.device("cpu")
-A, O, AJ, D, H, T = 3, 2, 1, 16, 32, 6
+A, O, D, H, T = 3, 2, 16, 32, 6
 CONFIG = TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0, lambda_return=0.95)
 
 
@@ -25,16 +24,15 @@ def _episodes(batch: int, seed: int, device: torch.device = CPU) -> EpisodeBatch
         actions.append(action)
         observations.append(out.observation)
         rewards.append(out.reward)
-    return EpisodeBatch(torch.stack(actions, 1), torch.stack(observations, 1), torch.stack(rewards, 1),
-                        torch.zeros(batch, T, dtype=torch.int64, device=device))
+    return EpisodeBatch(torch.stack(actions, 1), torch.stack(observations, 1), torch.stack(rewards, 1))
 
 
 def _trainer(device: torch.device = CPU) -> WorldModelTrainer:
     torch.manual_seed(0)
-    world_model = RecurrentJEPA(BeliefFilter(A, O, D, H, 1), LatentPredictor(D, A, AJ, H, 1), 0.99)
+    world_model = RecurrentJEPA(BeliefFilter(A, O, D, H, 1), LatentPredictor(D, A, H, 1), 0.99)
     return WorldModelTrainer(world_model.to(device), ValueHead(D, H, 1, 255).to(device),
-                             RewardHead(D, A, AJ, H, 1, 255).to(device), OpponentPolicyHead(D, AJ, H, 1).to(device),
-                             ObservationHead(D, A, AJ, O, H, 1).to(device), TwoHotSymlog(255, 2000.0).to(device), A, O, AJ, discount=0.95, config=CONFIG, device=device)
+                             RewardHead(D, A, H, 1, 255).to(device), ObservationHead(D, A, O, H, 1).to(device),
+                             TwoHotSymlog(255, 2000.0).to(device), A, O, discount=0.95, config=CONFIG, device=device)
 
 
 class TestEpisodeBuffer:
@@ -89,7 +87,7 @@ class TestWorldModelTrainer:
     def test_non_finite_loss_raises(self):
         trainer = _trainer()
         batch = _episodes(4, 0)
-        broken = EpisodeBatch(batch.actions, batch.observations, batch.rewards * float("nan"), batch.opponent_actions)
+        broken = EpisodeBatch(batch.actions, batch.observations, batch.rewards * float("nan"))
         with pytest.raises(FloatingPointError):
             trainer.train_step(broken)
 
@@ -101,7 +99,7 @@ class TestWorldModelTrainer:
         actions = torch.nn.functional.one_hot(batch.actions, A).float()
         observations = torch.nn.functional.one_hot(batch.observations, O).float()
         latents = trainer.world_model.belief_filter.unroll(actions, observations)[:, :-1].reshape(-1, D)
-        logits = trainer.observation_head(latents.detach(), actions.reshape(-1, A), torch.ones(4 * T, AJ))
+        logits = trainer.observation_head(latents.detach(), actions.reshape(-1, A))
         torch.nn.functional.cross_entropy(logits, batch.observations.reshape(-1)).backward()
         assert all(p.grad is None for p in trainer.world_model.belief_filter.parameters())
 

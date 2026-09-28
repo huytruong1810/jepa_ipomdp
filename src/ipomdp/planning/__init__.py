@@ -1,10 +1,16 @@
-# ABSOLUTE PATH: src/ipomdp/planning/__init__.py
-"""Lookahead planning and Monte Carlo Tree Search algorithms for JEPA-IPOMDP."""
+"""Belief-tree search over exact or learned models."""
 
-from .mcts import MinMaxStats, LatentSearchNode, LatentBeliefTreeSearch
+from .mcts import BeliefTreeSearch, DecisionNode, Edge, MinMaxStats, SearchStatistics
+from .search_model import ExactSearchModel, Expansion, LearnedSearchModel, SearchModel
 
 __all__ = [
+    "BeliefTreeSearch",
+    "DecisionNode",
+    "Edge",
+    "ExactSearchModel",
+    "Expansion",
+    "LearnedSearchModel",
     "MinMaxStats",
-    "LatentSearchNode",
-    "LatentBeliefTreeSearch",
+    "SearchModel",
+    "SearchStatistics",
 ]

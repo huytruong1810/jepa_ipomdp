@@ -28,8 +28,7 @@ import torch.nn.functional as F
 
 from ipomdp.domain import BatchedPOMDPEnv, build_tiger_pomdp, observation_distribution
 from ipomdp.interpretability import collect_probe_dataset, linear_probe, mlp_probe, uniform_random_policy
-from ipomdp.models import (BeliefFilter, LatentPredictor, ObservationHead, OpponentPolicyHead, RecurrentJEPA, RewardHead,
-                           TwoHotSymlog, ValueHead)
+from ipomdp.models import BeliefFilter, LatentPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueHead
 from ipomdp.training import EpisodeBatch, TrainerConfig, WorldModelTrainer
 
 UPDATES, BATCH, LENGTH, DIM, HIDDEN = 1000, 64, 100, 32, 64
@@ -42,14 +41,13 @@ def train_and_measure() -> dict:
     pomdp = build_tiger_pomdp()
     num_a, num_o = pomdp.num_actions, pomdp.num_observations
     world_model = RecurrentJEPA(BeliefFilter(num_a, num_o, DIM, HIDDEN, 1),
-                                LatentPredictor(DIM, num_a, 1, HIDDEN, 1), 0.99).to(device)
+                                LatentPredictor(DIM, num_a, HIDDEN, 1), 0.99).to(device)
     value_head = ValueHead(DIM, HIDDEN, 1, 255).to(device)
-    reward_head = RewardHead(DIM, num_a, 1, HIDDEN, 1, 255).to(device)
-    observation_head = ObservationHead(DIM, num_a, 1, num_o, HIDDEN, 1).to(device)
+    reward_head = RewardHead(DIM, num_a, HIDDEN, 1, 255).to(device)
+    observation_head = ObservationHead(DIM, num_a, num_o, HIDDEN, 1).to(device)
     codec = TwoHotSymlog(255, pomdp.value_bound).to(device)
     trainer = WorldModelTrainer(
-        world_model, value_head, reward_head, OpponentPolicyHead(DIM, 1, HIDDEN, 1).to(device), observation_head,
-        codec, num_a, num_o, 1, pomdp.discount,
+        world_model, value_head, reward_head, observation_head, codec, num_a, num_o, pomdp.discount,
         TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0, lambda_return=0.95), device)
 
     def probe_data():
@@ -58,7 +56,6 @@ def train_and_measure() -> dict:
 
     untrained_linear = linear_probe(probe_data())
     behaviour = uniform_random_policy(num_a, 123, device)
-    no_opponent = torch.zeros(BATCH, LENGTH, dtype=torch.int64, device=device)
     for update in range(UPDATES):
         env = BatchedPOMDPEnv(pomdp, BATCH, LENGTH, seed=update, device=device)
         actions, observations, rewards = [], [], []
@@ -69,11 +66,10 @@ def train_and_measure() -> dict:
             observations.append(out.observation)
             rewards.append(out.reward)
         trainer.train_step(EpisodeBatch(torch.stack(actions, 1), torch.stack(observations, 1),
-                                        torch.stack(rewards, 1), no_opponent))
+                                        torch.stack(rewards, 1)))
 
     dataset = probe_data()
     latents, beliefs = dataset.latents, dataset.posteriors
-    no_opponent_flat = torch.ones(len(latents), 1, device=device)
     measured = {"untrained_linear": untrained_linear, "linear": linear_probe(dataset), "mlp": mlp_probe(dataset)}
     with torch.no_grad():
         random_policy_value = float(torch.stack([beliefs @ pomdp.reward.to(device)[a] for a in range(num_a)]).mean(0)[0])
@@ -82,10 +78,10 @@ def train_and_measure() -> dict:
         for a in range(num_a):
             action = torch.full((len(latents),), a, device=device)
             onehot = F.one_hot(action, num_a).float()
-            measured[f"reward_error_{a}"] = (codec.mean(reward_head(latents, onehot, no_opponent_flat)).double()
+            measured[f"reward_error_{a}"] = (codec.mean(reward_head(latents, onehot)).double()
                                              - beliefs @ pomdp.reward.to(device)[a]).abs()
             exact = observation_distribution(pomdp, beliefs, action)
-            log_model = F.log_softmax(observation_head(latents, onehot, no_opponent_flat).float(), -1).double()
+            log_model = F.log_softmax(observation_head(latents, onehot).float(), -1).double()
             measured[f"observation_kl_{a}"] = (exact * (exact.clamp(min=1e-12).log() - log_model)).sum(-1)
     return measured
 

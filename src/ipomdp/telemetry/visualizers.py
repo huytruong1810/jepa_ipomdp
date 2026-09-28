@@ -244,25 +244,24 @@ class LatentSpaceVisualizer:
 
 
 class MCTSGraphVisualizer:
-    """Renders stochastic latent MCTS search trees into interactive Plotly HTML graphs."""
+    """Renders belief-tree searches (planning/mcts.py) into interactive Plotly HTML graphs."""
 
     def __init__(self, save_dir: str = "plots/trees"):
         """Initializes plot output directory."""
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
-    def visualize(self, root_node, filename: str = "mcts_tree", max_depth: int = 4):
-        """Traverses MCTS search tree up to max_depth and exports Plotly HTML visualizer."""
-        if root_node is None:
-            return
+    def visualize(self, root_node, discount: float, action_names: tuple[str, ...],
+                  observation_names: tuple[str, ...], filename: str = "mcts_tree", max_depth: int = 4):
+        """
+        Exports the belief tree below `root_node` (planning/mcts.py DecisionNode) to HTML.
 
+        Decision nodes show visits and V^; action nodes show visits, Q(s, a) and R(s, a);
+        edges into children are labelled by the observation and its probability.
+        """
         G = nx.DiGraph()
-        self._add_nodes_edges(G, root_node, depth=0, max_depth=max_depth)
-
-        try:
-            pos = nx.multipartite_layout(G, subset_key="depth", align="horizontal")
-        except Exception:
-            pos = nx.spring_layout(G)
+        self._add_nodes_edges(G, root_node, discount, action_names, observation_names, depth=0, max_depth=max_depth)
+        pos = nx.multipartite_layout(G, subset_key="depth", align="horizontal")
 
         edge_x, edge_y = [], []
         for edge in G.edges():
@@ -316,42 +315,26 @@ class MCTSGraphVisualizer:
         )
         fig.write_html(str(self.save_dir / f"{filename}.html"))
 
-    def _add_nodes_edges(self, G: nx.DiGraph, node, depth: int, max_depth: int, parent_id: str = None, child_idx: int = 0):
-        if depth > max_depth:
-            return
-
+    def _add_nodes_edges(self, G: nx.DiGraph, node, discount: float, action_names: tuple[str, ...],
+                         observation_names: tuple[str, ...], depth: int, max_depth: int,
+                         parent_id: str | None = None, branch_text: str = ""):
         node_id = f"d{depth}_{id(node)}"
-        hover_text = (
-            f"<b>Belief Node</b><br>"
-            f"Visits: {node.visit_count}<br>"
-            f"Value (V): {node.value:.3f}<br>"
-            f"Reward: {node.reward:.3f}"
-        )
-
-        G.add_node(node_id, text=hover_text, depth=2 * depth, type='state')
-
-        if parent_id:
+        G.add_node(node_id, depth=2 * depth, type='state',
+                   text=f"<b>Belief node</b><br>{branch_text}Visits: {node.visits}<br>V^: {node.value():.3f}")
+        if parent_id is not None:
             G.add_edge(parent_id, node_id)
-
-        if not hasattr(node, 'children') or not node.children:
+        if node.edges is None or depth >= max_depth:
             return
-
-        for action, stochastic_children in node.children.items():
+        for action, edge in enumerate(node.edges):
             action_id = f"{node_id}_a{action}"
-            action_visits = sum(c.visit_count for c in stochastic_children)
-            action_val = sum(c.value for c in stochastic_children) / max(1, len(stochastic_children))
-
-            action_text = (
-                f"<b>Action: {action}</b><br>"
-                f"Total Visits: {action_visits}<br>"
-                f"Expected Value: {action_val:.3f}"
-            )
-
-            G.add_node(action_id, text=action_text, depth=2 * depth + 1, type='action')
+            G.add_node(action_id, depth=2 * depth + 1, type='action',
+                       text=(f"<b>{action_names[action]}</b><br>Visits: {edge.visits}<br>"
+                             f"Q: {edge.q(discount):.3f}<br>R: {edge.reward:.3f}"))
             G.add_edge(node_id, action_id)
-
-            for i, child_node in enumerate(stochastic_children):
-                self._add_nodes_edges(G, child_node, depth + 1, max_depth, action_id, i)
+            for observation, child in enumerate(edge.children):
+                self._add_nodes_edges(
+                    G, child, discount, action_names, observation_names, depth + 1, max_depth, action_id,
+                    f"o = {observation_names[observation]} (p = {edge.observation_probs[observation]:.3f})<br>")
 
 
 class RewardTrajectoryVisualizer:

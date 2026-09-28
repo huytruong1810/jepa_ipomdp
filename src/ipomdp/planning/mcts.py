@@ -1,356 +1,249 @@
 # ABSOLUTE PATH: src/ipomdp/planning/mcts.py
 # ==============================================================================
-# LATENT BELIEF-TREE MONTE CARLO TREE SEARCH (MCTS) PLANNER
+# BELIEF-TREE MONTE CARLO TREE SEARCH WITH EXACT OBSERVATION BRANCHING
 # ==============================================================================
 #
 # DESIGN DECISIONS & THEORETICAL FOUNDATIONS:
-# 1. Latent Belief-Tree Search by Observation Branching (Phase 3 decision):
-#    - A child of latent z under action a is z' = BeliefFilter.step(z, a, o') for an
-#      observation o' sampled from the learned P(o' | z, a, a^j) (models/heads.py,
-#      ObservationHead). Imagined latents are thus exactly the filter's latents for that
-#      history (models/world_model.py, section 6). num_observation_samples children are
-#      drawn per action; Phase 4 reviews the search itself (exact branching over |O|,
-#      selection, backup) against the exact solver.
+# 1. Tree Structure (a belief tree, as in exact POMDP planning):
+#      decision node  s          (a belief b or a learned latent z; see search_model.py)
+#        -> edge (s, a)          reward R(s, a), observation probabilities P(o | s, a)
+#          -> child  tau(s,a,o)  one decision node per observation o (exact branching)
+#    - Expanding a node calls SearchModel.expand once and creates ALL |A| x |O| children, each
+#      with a leaf estimate V(child). Every action therefore has a one-step lookahead value
+#      from the moment its parent is expanded.
 #
-# 2. Row-Aligned Opponent Action Batch Sampling (B >= 1 Safety):
-#    - In _evaluate_and_expand_batched, uses repeat_interleave(num_branches, dim=0)
-#      and multinomial sampling to strictly preserve row alignment matching rep_beliefs
-#      for vectorized environment channels (B > 1), preventing cross-channel action leakage.
+# 2. Values: Expectimax Backups on the Expanded Tree:
+#      V^(s)    = max_a Q(s, a)            if s is expanded, else its leaf estimate V(s)
+#      Q(s, a)  = R(s, a) + gamma * sum_o P(o | s, a) * V^(tau(s, a, o))
+#    - Decision nodes take the MAX over actions and chance edges the EXACT EXPECTATION over
+#      observations, so the expanded tree computes precisely the finite belief-tree values the
+#      exact solver computes, with the leaf estimates at its frontier. With exact leaves the
+#      search can only improve on them; it never mixes in the values of exploratory actions.
+#    - Phase-4 finding: the earlier mean backup (V^ = average of all returns backed up through
+#      a node, as in MuZero) made estimates WORSE with more search. At b = (0.97, 0.03) with
+#      exact V_8 leaves, root Q(OPEN_RIGHT) fell from the exact 12.80 (1 simulation) to -2.98
+#      (1000 simulations) because returns of exploratory door openings (Q = -90) were averaged
+#      in; the search then preferred LISTEN over the optimal OPEN_RIGHT. MuZero tolerates mean
+#      backups only because a learned policy prior keeps exploration narrow; here the prior is
+#      uniform and the branch probabilities are exact, so expectimax is the principled choice.
+#    - Only nodes on the simulated path change, so V^ is cached per node and recomputed
+#      bottom-up along the path after each expansion.
 #
-# 3. bfloat16-Safe Multinomial Sampling:
-#    - Probabilities are explicitly promoted to float32 before calling torch.multinomial
-#      (rep_opp_probs.float().view(-1, act_dim)), eliminating CUDA runtime kernel failures.
+# 3. Selection (PUCT, AlphaZero/MuZero form):
+#      a* = argmax_a  Q_norm(s, a) + c_puct * P(a) * sqrt(N(s) + 1) / (1 + N(s, a))
+#    - P(a) is uniform (no policy network); at the root it is mixed with Dirichlet(alpha)
+#      noise with weight epsilon when exploration is requested (training), and left uniform
+#      for evaluation (dirichlet_epsilon = 0).
+#    - Q_norm is Q min-max normalised over all Q values computed in the current tree, so
+#      c_puct is independent of the reward scale (-100 .. +10 on Tiger).
+#    - Descent below the chosen edge samples o ~ P(o | s, a), so simulations concentrate on
+#      likely observation branches.
+#    - Bugs of the previous search fixed here: unvisited actions were scored by V(child)
+#      WITHOUT the immediate reward, so opening a door (r = -45 in expectation at b0) looked
+#      as good as listening; Python's `random`/NumPy global generators were unseeded; a
+#      silent random-action fallback existed; Q telemetry ignored rewards.
 #
-# 4. Bellman Step-Reward Integration & PUCT Action Selection:
-#    - Evaluates expected branch Q-values with immediate transition step-rewards:
-#         Q(s, a) = (1 / |C(s, a)|) * sum_{c in C(s, a)} [ r_c + gamma * V_c ]
-#      where V_c = c.value if c.visit_count > 0 else c.bootstrap_value.
-#    - Normalizes Q-values via MinMaxStats to prevent varying reward scales from
-#      overpowering the exploration bonus:
-#         score = Q_norm(s, a) + c_puct * P(a) * (sqrt(N(s)) / (1 + N(s, a)))
+# 4. Reproducibility:
+#    - All randomness (Dirichlet noise, observation sampling) comes from one seeded
+#      numpy Generator owned by the planner.
 #
-# 5. Static Memory Pool CUDA Graph Safety:
-#    - Applies explicit .clone() calls on compiled model outputs inside
-#      _evaluate_and_expand_batched to prevent static CUDA Graph address overwrites.
+# 5. Output:
+#    - temperature = 0 (evaluation): a one-hot on argmax_a Q(root, a), the Bellman-optimal
+#      action of the searched tree.
+#    - temperature > 0 (training collection): visit counts shaped by counts^(1/T), which
+#      follow PUCT's exploration and give a smoothed, exploratory policy.
+#    - Root visit counts and Q values are recorded for telemetry and tests.
 # ==============================================================================
 
-import math
-import random
-from typing import Dict, List, Optional
+from dataclasses import dataclass, field
+
 import numpy as np
 import torch
-import torch.nn.functional as F
+from torch import Tensor
 
-from ..interfaces import AbstractPlanner
-from ..models.world_model import RecurrentJEPA
-from ..models.heads import ObservationHead, OpponentPolicyHead, RewardHead, ValueHead
-from ..models.distributions import TwoHotSymlog
+from .search_model import SearchModel
 
 
 class MinMaxStats:
-    """
-    Tracks and normalizes scalar value bounds across MCTS search paths.
-    Maintains balanced PUCT exploration across dynamic return scales.
-    """
+    """Running minimum/maximum of Q values in one tree, for PUCT normalisation."""
 
     def __init__(self):
-        self.maximum = -float('inf')
-        self.minimum = float('inf')
+        self.maximum = -float("inf")
+        self.minimum = float("inf")
 
-    def update(self, value: float):
-        """Updates minimum and maximum observed return bounds."""
-        if value > self.maximum:
-            self.maximum = float(value)
-        if value < self.minimum:
-            self.minimum = float(value)
+    def update(self, value: float) -> None:
+        self.maximum = max(self.maximum, value)
+        self.minimum = min(self.minimum, value)
 
     def normalize(self, value: float) -> float:
-        """Normalizes an input scalar return into the range [0.0, 1.0]."""
+        """Maps value into [0, 1]; 0.5 until two distinct values have been seen."""
         if self.maximum > self.minimum:
-            return float((value - self.minimum) / (self.maximum - self.minimum))
+            return (value - self.minimum) / (self.maximum - self.minimum)
         return 0.5
 
 
-class LatentSearchNode:
-    """
-    Belief-latent node of the latent MCTS search tree.
-    """
+@dataclass
+class DecisionNode:
+    """A belief (or latent) node; `edges` is None until the node is expanded."""
+
+    state: Tensor
+    leaf_value: float
+    visits: int = 0
+    edges: list["Edge"] | None = None
+    cached_value: float | None = None
+
+    def value(self) -> float:
+        """V^: max_a Q(s, a) once expanded (cached, see refresh), else the leaf estimate."""
+        return self.leaf_value if self.cached_value is None else self.cached_value
+
+    def refresh(self, discount: float) -> None:
+        """Recomputes the cached max_a Q(s, a) from the edges' current children values."""
+        self.cached_value = max(edge.q(discount) for edge in self.edges)
+
+
+@dataclass
+class Edge:
+    """Action edge (s, a): expected reward, exact observation distribution, one child per o."""
+
+    reward: float
+    observation_probs: np.ndarray
+    children: list[DecisionNode]
+    visits: int = 0
+
+    def q(self, discount: float) -> float:
+        """R(s, a) + gamma * sum_o P(o | s, a) V^(child_o)."""
+        return self.reward + discount * float(np.dot(self.observation_probs, [c.value() for c in self.children]))
+
+
+@dataclass
+class SearchStatistics:
+    """Root-level results of the last search (one row per root)."""
+
+    visit_counts: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
+    q_values: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
+    mean_depth: float = 0.0
+    max_depth: int = 0
+
+
+class BeliefTreeSearch:
+    """Batched PUCT search over belief trees with exact observation branching."""
 
     def __init__(
         self,
-        belief: torch.Tensor,
-        action_taken: Optional[int] = None,
-        reward: float = 0.0,
-        prior: float = 1.0
+        model: SearchModel,
+        num_simulations: int,
+        c_puct: float,
+        dirichlet_alpha: float,
+        dirichlet_epsilon: float,
+        seed: int,
     ):
         """
-        Initializes latent search node.
-
         Args:
-            belief: Single-sample belief latent of shape (1, D).
-            action_taken: Discrete ego action leading to this node.
-            reward: Immediate step reward r_t emitted during arrival transition.
-            prior: Action selection prior probability P(s, a).
+            model: SearchModel providing expansions (exact or learned).
+            num_simulations: Simulations per root per search (>= 1).
+            c_puct: Exploration constant.
+            dirichlet_alpha: Concentration of the root prior noise.
+            dirichlet_epsilon: Weight of the root prior noise (0 disables it).
+            seed: Seed of the planner's random generator.
         """
-        self.belief = belief
-        self.action_taken = action_taken
-        self.reward = float(reward)
-        self.prior = float(prior)
-        self.children: Dict[int, List['LatentSearchNode']] = {}
-        self.visit_count = 0
-        self.value = 0.0
-        self.bootstrap_value = 0.0
+        if num_simulations < 1:
+            raise ValueError(f"num_simulations must be >= 1, got {num_simulations}.")
+        self.model = model
+        self.num_simulations = num_simulations
+        self.c_puct = c_puct
+        self.dirichlet_alpha = dirichlet_alpha
+        self.dirichlet_epsilon = dirichlet_epsilon
+        self.rng = np.random.default_rng(seed)
+        self.roots: list[DecisionNode] = []
+        self.statistics = SearchStatistics()
 
+    def _expand(self, nodes: list[DecisionNode], stats: list[MinMaxStats]) -> None:
+        """Expands all `nodes` with one batched model call and records their Q values."""
+        expansion = self.model.expand(torch.stack([node.state for node in nodes]))
+        rewards = expansion.rewards.double().cpu().numpy()
+        probs = expansion.observation_probs.double().cpu().numpy()
+        values = expansion.next_values.double().cpu().numpy()
+        next_states = expansion.next_states
+        for i, (node, node_stats) in enumerate(zip(nodes, stats)):
+            node.edges = [
+                Edge(reward=float(rewards[i, a]), observation_probs=probs[i, a],
+                     children=[DecisionNode(next_states[i, a, o], float(values[i, a, o]))
+                               for o in range(self.model.num_observations)])
+                for a in range(self.model.num_actions)
+            ]
+            for edge in node.edges:
+                node_stats.update(edge.q(self.model.discount))
+            node.refresh(self.model.discount)
 
-class LatentBeliefTreeSearch(AbstractPlanner):
-    """
-    Monte Carlo Tree Search over learned belief latents, branching on sampled observations.
-    """
-
-    def __init__(
-        self,
-        world_model: RecurrentJEPA,
-        value_head: ValueHead,
-        reward_head: RewardHead,
-        opponent_head: OpponentPolicyHead,
-        observation_head: ObservationHead,
-        codec: TwoHotSymlog,
-        action_dim_i: int,
-        action_dim_j: int,
-        num_simulations: int = 50,
-        num_observation_samples: int = 1,
-        discount: float = 0.99,
-        c_puct: float = 1.25,
-        dirichlet_alpha: float = 0.3,
-        dirichlet_epsilon: float = 0.25
-    ):
-        """
-        Initializes Discrete Latent MCTS Planner.
-
-        Args:
-            world_model: Recurrent JEPA world model (its online belief filter steps imagined latents).
-            value_head: Value distribution projection head.
-            reward_head: Immediate reward distribution projection head.
-            opponent_head: Opponent policy prediction head.
-            observation_head: Planning model P(o' | z, a, a^j).
-            codec: Two-hot codec shared with the trainer (decodes value/reward means).
-            action_dim_i: Ego action dimensionality.
-            action_dim_j: Opponent action dimensionality.
-            num_simulations: Number of search rollouts per decision step.
-            num_observation_samples: Observations sampled (children created) per action at each expansion.
-            discount: Discount factor gamma.
-            c_puct: PUCT exploration constant.
-            dirichlet_alpha: Alpha parameter for root Dirichlet noise (default: 0.3).
-            dirichlet_epsilon: Mixing weight for root Dirichlet noise (default: 0.25).
-        """
-        super().__init__()
-        self.world_model = world_model
-        self.observation_head = observation_head
-        self.value_head = value_head
-        self.reward_head = reward_head
-        self.opponent_head = opponent_head
-        self.action_dim_i = int(action_dim_i)
-        self.action_dim_j = int(action_dim_j)
-        self.num_simulations = int(num_simulations)
-        self.num_observation_samples = int(num_observation_samples)
-        self.discount = float(discount)
-        self.c_puct = float(c_puct)
-        self.dirichlet_alpha = float(dirichlet_alpha)
-        self.dirichlet_epsilon = float(dirichlet_epsilon)
-
-        self.device = next(self.value_head.parameters()).device
-        self.twohot = codec
-
-        # Multi-root references across parallel environment channels
-        self.roots: List[LatentSearchNode] = []
-        self.root: Optional[LatentSearchNode] = None
-
-        # Search telemetry diagnostics
-        self.last_avg_depth: float = 0.0
-        self.last_max_depth: float = 0.0
-        self.last_q_spread: float = 0.0
-        self.last_entropy: float = 0.0
+    def _select(self, node: DecisionNode, prior: np.ndarray, stats: MinMaxStats) -> int:
+        """PUCT action selection (module header, section 3)."""
+        total_visits = sum(edge.visits for edge in node.edges)
+        scores = [
+            stats.normalize(edge.q(self.model.discount))
+            + self.c_puct * prior[a] * np.sqrt(total_visits + 1) / (1 + edge.visits)
+            for a, edge in enumerate(node.edges)
+        ]
+        return int(np.argmax(scores))
 
     @torch.no_grad()
-    def search(self, root_state: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
+    def search(self, root_states: Tensor, temperature: float) -> Tensor:
         """
-        Executes parallel batched latent MCTS simulations across B environment channels.
+        Runs num_simulations simulations from every root.
 
         Args:
-            root_state: Root belief latents of shape (B, D).
-            temperature: Action selection sampling temperature.
+            root_states: States of shape (B, ...), as produced by the SearchModel.
+            temperature: 0 for a one-hot argmax of visit counts, > 0 for counts^(1/T).
 
         Returns:
-            Batched policy action probability tensor of shape (B, action_dim_i).
+            Action distributions of shape (B, |A|), float32 on the states' device.
         """
-        b_batch = root_state.size(0)
+        num_roots, num_a = root_states.shape[0], self.model.num_actions
+        roots = [DecisionNode(root_states[i], leaf_value=0.0) for i in range(num_roots)]
+        stats = [MinMaxStats() for _ in range(num_roots)]
+        self._expand(roots, stats)
+        uniform = np.full(num_a, 1.0 / num_a)
+        priors = [
+            (1.0 - self.dirichlet_epsilon) * uniform
+            + self.dirichlet_epsilon * self.rng.dirichlet([self.dirichlet_alpha] * num_a)
+            if self.dirichlet_epsilon > 0 else uniform
+            for _ in range(num_roots)
+        ]
 
-        roots = [LatentSearchNode(belief=root_state[i:i + 1].detach()) for i in range(b_batch)]
-        stats = [MinMaxStats() for _ in range(b_batch)]
+        depths = []
+        for _ in range(self.num_simulations):
+            paths, leaves = [], []
+            for root, prior, root_stats in zip(roots, priors, stats):
+                node, path = root, []
+                while node.edges is not None:
+                    edge = node.edges[self._select(node, prior if node is root else uniform, root_stats)]
+                    observation = self.rng.choice(len(edge.children),
+                                                  p=edge.observation_probs / edge.observation_probs.sum())
+                    path.append((node, edge))
+                    node = edge.children[observation]
+                paths.append(path)
+                leaves.append(node)
+                depths.append(len(path))
+            self._expand(leaves, stats)
+            for leaf, path, root_stats in zip(leaves, paths, stats):
+                leaf.visits += 1
+                for node, edge in reversed(path):
+                    root_stats.update(edge.q(self.model.discount))
+                    edge.visits += 1
+                    node.visits += 1
+                    node.refresh(self.model.discount)
 
         self.roots = roots
-        self.root = roots[0]
-
-        # Evaluate and expand initial root nodes with Dirichlet exploration noise
-        self._evaluate_and_expand_batched(roots, is_root=True)
-
-        all_search_depths = []
-        for _ in range(self.num_simulations):
-            search_paths = []
-            leaf_nodes = []
-
-            for b in range(b_batch):
-                node = roots[b]
-                path = [node]
-                while node.children:
-                    action = self._select_action(node, stats[b])
-                    children = node.children[action]
-                    node = children[0] if len(children) == 1 else random.choice(children)
-                    path.append(node)
-                search_paths.append(path)
-                leaf_nodes.append(node)
-                all_search_depths.append(len(path) - 1)
-
-            self._evaluate_and_expand_batched(leaf_nodes, is_root=False)
-
-            for b in range(b_batch):
-                self._backpropagate(search_paths[b], leaf_nodes[b].bootstrap_value, stats[b])
-
-        self.last_avg_depth = float(np.mean(all_search_depths)) if all_search_depths else 0.0
-        self.last_max_depth = float(np.max(all_search_depths)) if all_search_depths else 0.0
-
-        dists = [self._get_action_distribution(roots[b], temperature) for b in range(b_batch)]
-        return torch.tensor(dists, dtype=torch.float32, device=self.device)
-
-    def _select_action(self, node: LatentSearchNode, stats: MinMaxStats) -> int:
-        """
-        Selects ego action maximizing Bellman-integrated PUCT score:
-        Q(s, a) = (1 / |C(s, a)|) * sum_{c in C(s, a)} [ r_c + gamma * V_c ]
-        """
-        best_score = -float('inf')
-        best_action = -1
-
-        for action in range(self.action_dim_i):
-            if action not in node.children:
-                continue
-            children = node.children[action]
-            action_visits = sum(c.visit_count for c in children)
-            action_prior = children[0].prior if children else (1.0 / self.action_dim_i)
-
-            if action_visits == 0:
-                total_boot = sum(c.bootstrap_value for c in children) / max(len(children), 1)
-                q_init = stats.normalize(total_boot)
-                score = q_init + self.c_puct * action_prior * math.sqrt(node.visit_count + 1)
-            else:
-                total_q = 0.0
-                for c in children:
-                    v_next = c.value if c.visit_count > 0 else c.bootstrap_value
-                    total_q += (c.reward + self.discount * v_next)
-                expected_q = total_q / len(children)
-
-                normalized_q = stats.normalize(expected_q)
-                u = self.c_puct * action_prior * math.sqrt(node.visit_count) / (1 + action_visits)
-                score = normalized_q + u
-
-            if score > best_score:
-                best_score = score
-                best_action = action
-
-        return best_action if best_action != -1 else random.randint(0, self.action_dim_i - 1)
-
-    def _evaluate_and_expand_batched(self, nodes: List[LatentSearchNode], is_root: bool = False):
-        """
-        Evaluates neural heads and expands child branches across all leaf nodes.
-        Enforces bfloat16-safe multinomial sampling and CUDA Graph address safety via explicit .clone().
-        """
-        if not nodes:
-            return
-
-        batched_beliefs = torch.cat([n.belief for n in nodes], dim=0)
-        b_eval = batched_beliefs.size(0)
-        num_branches = self.action_dim_i * self.num_observation_samples
-
-        rep_beliefs = batched_beliefs.repeat_interleave(num_branches, dim=0)
-
-        action_indices = torch.arange(self.action_dim_i, device=self.device).repeat_interleave(self.num_observation_samples)
-        rep_ego_a = F.one_hot(action_indices.repeat(b_eval), num_classes=self.action_dim_i).float()
-
-        use_amp = (self.device.type == 'cuda')
-        with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=use_amp):
-            opp_logits = self.opponent_head(batched_beliefs).clone()
-
-            # Row-aligned opponent action sampling (float32 for multinomial): one opponent
-            # action per expanded branch, drawn from pi_j(. | z) of the branch's parent latent.
-            rep_opp_probs = F.softmax(opp_logits.float(), dim=-1).repeat_interleave(num_branches, dim=0)
-            opp_a_idx = torch.multinomial(rep_opp_probs, num_samples=1).squeeze(-1)
-            rep_opp_a = F.one_hot(opp_a_idx, num_classes=self.action_dim_j).float()
-
-            observation_probs = F.softmax(self.observation_head(rep_beliefs, rep_ego_a, rep_opp_a).float(), dim=-1)
-            observation = torch.multinomial(observation_probs, num_samples=1).squeeze(-1)
-            next_beliefs = self.world_model.belief_filter.step(
-                rep_beliefs, rep_ego_a, F.one_hot(observation, observation_probs.shape[-1]).to(rep_beliefs.dtype)).clone()
-            rewards_logits = self.reward_head(rep_beliefs, rep_ego_a, rep_opp_a).clone()
-            v_logits = self.value_head(next_beliefs).clone()
-
-        rewards = self.twohot.mean(rewards_logits).tolist()
-        next_values = self.twohot.mean(v_logits).tolist()
-
-        base_prior = 1.0 / self.action_dim_i
-        for b_idx, node in enumerate(nodes):
-            dirichlet_noise = (
-                np.random.dirichlet([self.dirichlet_alpha] * self.action_dim_i) if is_root else None
-            )
-            for a_idx in range(self.action_dim_i):
-                node.children[a_idx] = []
-                action_prior = (
-                    (1.0 - self.dirichlet_epsilon) * base_prior + self.dirichlet_epsilon * float(dirichlet_noise[a_idx])
-                ) if is_root else base_prior
-
-                for k_idx in range(self.num_observation_samples):
-                    flat_idx = (b_idx * num_branches) + (a_idx * self.num_observation_samples) + k_idx
-                    child_node = LatentSearchNode(
-                        belief=next_beliefs[flat_idx:flat_idx + 1].detach(),
-                        action_taken=a_idx,
-                        reward=rewards[flat_idx],
-                        prior=action_prior
-                    )
-                    child_node.bootstrap_value = next_values[flat_idx]
-                    node.children[a_idx].append(child_node)
-
-    def _backpropagate(self, search_path: List[LatentSearchNode], value: float, stats: MinMaxStats):
-        """Propagates target returns backward up the search path."""
-        for node in reversed(search_path):
-            node.visit_count += 1
-            node.value += (value - node.value) / node.visit_count
-            value = node.reward + (self.discount * value)
-            stats.update(node.value)
-            stats.update(value)
-
-    def _get_action_distribution(self, root: LatentSearchNode, temperature: float = 1.0) -> List[float]:
-        """Calculates policy probability distribution from root child visit counts and computes search telemetry."""
-        counts = [
-            sum(c.visit_count for c in root.children[i]) if i in root.children else 0
-            for i in range(self.action_dim_i)
-        ]
-        q_vals = [
-            sum(c.value for c in root.children[i]) / max(len(root.children[i]), 1)
-            if (i in root.children and sum(c.visit_count for c in root.children[i]) > 0) else 0.0
-            for i in range(self.action_dim_i)
-        ]
-        self.last_q_spread = float(max(q_vals) - min(q_vals)) if q_vals else 0.0
-
-        if sum(counts) == 0:
-            self.last_entropy = float(np.log(self.action_dim_i))
-            return [1.0 / self.action_dim_i] * self.action_dim_i
-
+        counts = np.array([[edge.visits for edge in root.edges] for root in roots], dtype=np.float64)
+        self.statistics = SearchStatistics(
+            visit_counts=counts,
+            q_values=np.array([[edge.q(self.model.discount) for edge in root.edges] for root in roots]),
+            mean_depth=float(np.mean(depths)),
+            max_depth=int(np.max(depths)),
+        )
         if temperature == 0.0:
-            best_idx = counts.index(max(counts))
-            self.last_entropy = 0.0
-            return [1.0 if i == best_idx else 0.0 for i in range(len(counts))]
-
-        max_count = max(counts)
-        adjusted = [(c / max_count) ** (1.0 / max(temperature, 1e-4)) for c in counts]
-        total_adj = sum(adjusted)
-        probs = [c / total_adj for c in adjusted]
-        self.last_entropy = float(-sum(p * np.log(max(p, 1e-8)) for p in probs))
-        return probs
+            policy = np.zeros_like(counts)
+            policy[np.arange(num_roots), self.statistics.q_values.argmax(axis=1)] = 1.0
+        else:
+            shaped = (counts / counts.max(axis=1, keepdims=True)) ** (1.0 / temperature)
+            policy = shaped / shaped.sum(axis=1, keepdims=True)
+        return torch.as_tensor(policy, dtype=torch.float32, device=root_states.device)
