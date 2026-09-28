@@ -101,6 +101,16 @@ class BatchedPOMDPEnv:
         """Draws one index per row of a (N, K) probability matrix."""
         return torch.multinomial(probabilities, num_samples=1, generator=self._generator).squeeze(-1)
 
+    def state_dict(self) -> dict:
+        """Everything needed to continue the simulation bit-for-bit (checkpointing)."""
+        return {"generator": self._generator.get_state(), "state": self._state.clone(), "elapsed": self._elapsed.clone()}
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restores a state produced by state_dict()."""
+        self._generator.set_state(state["generator"])
+        self._state = state["state"].to(self.device)
+        self._elapsed = state["elapsed"].to(self.device)
+
     def reset(self) -> None:
         """Starts a new episode in every row: s_0 ~ b0. Emits no observation."""
         self.reset_rows(torch.ones(self.batch_size, dtype=torch.bool, device=self.device))

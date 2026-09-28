@@ -21,8 +21,16 @@
 # 4. Thermal & Power Degradation Detection:
 #    - Evaluates GPU temperature against critical threshold (default 82.0°C) and power
 #      draw (Watts) to detect dynamic SM clock throttling before performance collapses.
+#
+# 5. Explicit Availability, Visible Failures:
+#    - GPU metrics are reported only when CUDA (allocator metrics) and nvidia-smi (physical
+#      metrics) exist; that is decided once at construction. psutil/allocator errors propagate.
+#      A failed or timed-out nvidia-smi poll is logged as a warning and that poll's physical GPU
+#      metrics are omitted: telemetry must not kill a multi-day run, but it must not fail
+#      silently either (the earlier version wrapped every probe in `except: pass`).
 # ==============================================================================
 
+import logging
 import os
 import shutil
 import subprocess
@@ -80,40 +88,30 @@ class SystemTelemetryMonitor:
         # ---------------------------------------------------------------------
         # 1. Process & Host OS Memory Metrics (psutil)
         # ---------------------------------------------------------------------
-        try:
-            mem_info = self._process.memory_info()
-            metrics["sys/process_rss_mb"] = float(mem_info.rss / (1024 * 1024))
-            metrics["sys/process_vms_mb"] = float(mem_info.vms / (1024 * 1024))
-            metrics["sys/process_cpu_pct"] = float(self._process.cpu_percent())
-            metrics["sys/process_threads"] = float(self._process.num_threads())
+        mem_info = self._process.memory_info()
+        metrics["sys/process_rss_mb"] = float(mem_info.rss / (1024 * 1024))
+        metrics["sys/process_vms_mb"] = float(mem_info.vms / (1024 * 1024))
+        metrics["sys/process_cpu_pct"] = float(self._process.cpu_percent())
+        metrics["sys/process_threads"] = float(self._process.num_threads())
 
-            sys_mem = psutil.virtual_memory()
-            metrics["sys/host_ram_used_mb"] = float((sys_mem.total - sys_mem.available) / (1024 * 1024))
-            metrics["sys/host_ram_avail_mb"] = float(sys_mem.available / (1024 * 1024))
-            metrics["sys/host_ram_pct"] = float(sys_mem.percent)
-
-            swap = psutil.swap_memory()
-            metrics["sys/host_swap_used_mb"] = float(swap.used / (1024 * 1024))
-        except Exception:
-            pass
+        sys_mem = psutil.virtual_memory()
+        metrics["sys/host_ram_used_mb"] = float((sys_mem.total - sys_mem.available) / (1024 * 1024))
+        metrics["sys/host_ram_avail_mb"] = float(sys_mem.available / (1024 * 1024))
+        metrics["sys/host_ram_pct"] = float(sys_mem.percent)
+        metrics["sys/host_swap_used_mb"] = float(psutil.swap_memory().used / (1024 * 1024))
 
         # ---------------------------------------------------------------------
         # 2. PyTorch CUDA Allocator Memory Metrics
         # ---------------------------------------------------------------------
         if self._has_cuda:
-            try:
-                allocated = torch.cuda.memory_allocated(self.gpu_device_idx) / (1024 * 1024)
-                reserved = torch.cuda.memory_reserved(self.gpu_device_idx) / (1024 * 1024)
-                max_allocated = torch.cuda.max_memory_allocated(self.gpu_device_idx) / (1024 * 1024)
-
-                metrics["gpu/vram_allocated_mb"] = float(allocated)
-                metrics["gpu/vram_reserved_mb"] = float(reserved)
-                metrics["gpu/vram_max_allocated_mb"] = float(max_allocated)
-                metrics["gpu/vram_fragmentation_pct"] = float(
-                    ((reserved - allocated) / max(reserved, 1.0)) * 100.0 if reserved > 0 else 0.0
-                )
-            except Exception:
-                pass
+            allocated = torch.cuda.memory_allocated(self.gpu_device_idx) / (1024 * 1024)
+            reserved = torch.cuda.memory_reserved(self.gpu_device_idx) / (1024 * 1024)
+            max_allocated = torch.cuda.max_memory_allocated(self.gpu_device_idx) / (1024 * 1024)
+            metrics["gpu/vram_allocated_mb"] = float(allocated)
+            metrics["gpu/vram_reserved_mb"] = float(reserved)
+            metrics["gpu/vram_max_allocated_mb"] = float(max_allocated)
+            metrics["gpu/vram_fragmentation_pct"] = float(
+                ((reserved - allocated) / reserved) * 100.0 if reserved > 0 else 0.0)
 
         # ---------------------------------------------------------------------
         # 3. Physical GPU Telemetry via nvidia-smi
@@ -136,34 +134,9 @@ class SystemTelemetryMonitor:
                     metrics["gpu/physical_vram_free_mb"] = float(parts[4])
                     metrics["gpu/physical_vram_used_mb"] = float(parts[5])
                     metrics["gpu/power_draw_watts"] = float(parts[6])
-            except Exception:
-                pass
+            except (subprocess.SubprocessError, OSError, ValueError) as error:
+                logging.getLogger(__name__).warning(f"nvidia-smi poll failed; physical GPU metrics omitted: {error}")
 
         self._last_poll_time = now
         self._cached_metrics = metrics
         return dict(metrics)
-
-    def is_thermally_throttled(self) -> bool:
-        """Evaluates whether GPU temperature exceeds the critical thermal guardrail threshold."""
-        metrics = self.get_metrics()
-        temp = metrics.get("gpu/temp_celsius", 0.0)
-        return temp >= self.thermal_threshold_c
-
-    def get_progress_string(self) -> str:
-        """
-        Formats core system metrics into a compact, human-readable summary
-        suitable for tqdm progress bar postfixes.
-        """
-        m = self.get_metrics()
-        temp = m.get("gpu/temp_celsius", 0.0)
-        pwr = m.get("gpu/power_draw_watts", 0.0)
-        vram_used = m.get("gpu/physical_vram_used_mb", m.get("gpu/vram_reserved_mb", 0.0)) / 1024.0
-        vram_total = m.get("gpu/physical_vram_total_mb", 16384.0) / 1024.0
-        rss = m.get("sys/process_rss_mb", 0.0) / 1024.0
-        cpu = m.get("sys/process_cpu_pct", 0.0)
-
-        gpu_str = f"GPU: {temp:.0f}°C ({pwr:.0f}W)" if temp > 0 else "GPU: Active"
-        vram_str = f"VRAM: {vram_used:.1f}/{vram_total:.1f}GB"
-        host_str = f"RSS: {rss:.1f}GB | CPU: {cpu:.0f}%"
-
-        return f"{gpu_str} | {vram_str} | {host_str}"

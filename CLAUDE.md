@@ -6,20 +6,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Research code for a model-based RL agent for partially observable (and eventually interactive, I-POMDP) domains. A recurrent JEPA belief filter (no observation decoder) keeps a latent belief `z_t ∈ R^D`. A belief-tree MCTS plans over those latents using learned reward, observation and value heads. README.md holds the original theory write-up and is partly superseded by the module headers. **README's "Repository Structure" section and HANDOFF.md are stale** (they describe the pre-review codebase and a deleted training run).
 
-The codebase is being reviewed bottom-up in phases (domain → JEPA filter → DreamerV3 parts → MCTS → training loop → interpretability → scripts/layout → holistic). Phases 1 (domain), 2 (JEPA belief filter), 3 (DreamerV3 components) and 4 (planner and agent) are done. Current scope is the **single-agent canonical Tiger only**; the learned agent must match the exact solver before anything larger is run.
+The codebase is being reviewed bottom-up in phases (domain → JEPA filter → DreamerV3 parts → MCTS → training loop → interpretability → scripts/layout → holistic). Phases 1–4 (domain, JEPA belief filter, DreamerV3 components, planner and agent) are done; Phase 5 (training loop) is in progress. Current scope is the **single-agent canonical Tiger only**; the learned agent must match the exact solver before anything larger is run.
 
 ## Commands
 
 The project uses `uv` with Python 3.12. Torch comes from the CUDA 12.8 index (`pytorch-cu128` in `pyproject.toml`). `recreate_venv.sh` rebuilds `.venv`.
 
 ```bash
-uv run main.py                                   # train (resumes from tiger_checkpoints/latest_checkpoint.pt if present)
-uv run main.py training.total_steps=400 mcts.num_simulations=10 seed=1   # any config key can be overridden
+uv run main.py                                   # train; artifacts in runs/<env>/<timestamp>_seed<seed>/
+uv run main.py training.total_episodes=512 mcts.num_simulations=20 seed=1   # any config key can be overridden
+uv run main.py resume=runs/tiger/<run>/checkpoints/latest.pt                # continue a run bit-for-bit
 
 uv run pytest                                    # fast suite (slow tests excluded via addopts)
-uv run pytest -m slow                            # certified infinite-horizon solve (~4 min) + world-model acceptance (~3 min, GPU)
+uv run pytest -m slow                            # certified V* solve, exact-model planner vs optimal, world-model acceptance (GPU)
 uv run pytest tests/test_domain.py::TestExactSolver::test_optimal_actions   # single test
-tensorboard --logdir tiger_tensorboard
+tensorboard --logdir runs
 ```
 
 The evaluation, probing and interactive scripts (`eval_*`, `probe_*`, `enjoy_*`) were removed in Phase 1 because they depended on the old environment API; they are rebuilt in Phases 6–7. Their previous logic is in commit `db269d3`.
@@ -38,10 +39,12 @@ The evaluation, probing and interactive scripts (`eval_*`, `probe_*`, `enjoy_*`)
 
 **Config.** Hydra: `conf/config.yaml` (`seed`, `training`, `agent`, `model`, `mcts`) plus `conf/env/tiger.yaml`, which holds only `name` and `max_steps`. `|A|`, `|O|`, action names and γ are derived from the `FinitePOMDP` in `main.py` (`DOMAIN_BUILDERS`) and passed explicitly to the planner and trainer. Hydra writes run directories to `outputs/`.
 
-**Pipeline wiring (`main.py`).** Episode-major collection:
-- Each collection starts `env_batch_size` episodes of `env.max_steps` steps (100 for Tiger) together, via `agent.reset()`. Every step: `a = agent.act()` (uniform during `warmup_episodes`) → `env.step(a)` → `agent.update(a, o')`.
-- Whole episodes go into `EpisodeBuffer`, which is on-device and sampled uniformly. `updates_per_collection` calls to `WorldModelTrainer.train_step` follow.
-- There is no opponent input anywhere. The agent models the POMDP it faces, with the opponent folded into the environment (Phase 4 decision); opponent knowledge is to be read out by probes.
+**Training run (`training/run.py`, `main.py`).**
+- `TrainingRun` owns every piece of state: networks, optimizer, `EpisodeBuffer`, the collection and evaluation simulators, the training and evaluation agents and planners, and all random-generator states.
+- `state_dict()`/`load_state_dict()` make resume bit-exact (tested). `main.py` is a thin Hydra shell around it that handles telemetry, evaluation, checkpoints, visualization and SIGINT.
+- Collection: `env_batch_size` whole episodes of `env.max_steps` (100 for Tiger). Actions are uniform during `warmup_episodes`, then come from the exploring planner (root Dirichlet noise, annealed temperature). `updates_per_collection` trainer steps follow.
+- Evaluation, every `eval_every` collections: a separate greedy planner (argmax Q) on a separate simulator. It reports the mean **discounted** return, comparable to V*(b₀) = 19.37. `best.pt` tracks the best evaluation and `latest.pt` holds the full state.
+- There is no opponent input anywhere. The agent models the POMDP it faces, with the opponent folded into the environment (Phase 4 decision).
 
 **World model (`models/world_model.py`).** One latent vector; there are no object slots.
 - `BeliefFilter`: learned `z_0`, `z_{t+1} = GRU([a_t, o_{t+1}], z_t)`, the counterpart of the exact `tau(b, a, o')`.
@@ -66,7 +69,7 @@ The evaluation, probing and interactive scripts (`eval_*`, `probe_*`, `enjoy_*`)
 - Greedy action choice (`temperature = 0`) takes argmax Q; exploration samples visit counts shaped by the temperature.
 - `PlanningAgent` tracks states with the model's own filter and plans over the same model. With the exact model and V* leaves it matches the optimal policy's return of 19.37 (slow test).
 
-**Telemetry (`ipomdp/telemetry/`).** Checkpointer (`tiger_checkpoints/`), TensorBoard logger, latent/MCTS/reward visualizers (`tiger_plots/`), system monitor, profiler and execution guardrail. SIGINT saves an interrupt checkpoint.
+**Telemetry (`ipomdp/telemetry/`).** Covers the TensorBoard writer, the latent, search-tree and reward visualizers, the system monitor, the profiler and the guardrail (thermal cooldown plus VRAM/RSS limits, which write `emergency.pt`). Logging goes through Hydra (console and `<run dir>/main.log`). Checkpoint files are written by `training/checkpointing.py`: atomic writes, always loaded on the CPU.
 
 ## Conventions and gotchas
 
@@ -80,4 +83,4 @@ The evaluation, probing and interactive scripts (`eval_*`, `probe_*`, `enjoy_*`)
 - Inference runs under `bfloat16` autocast. Non-finite losses or two-hot targets raise `FloatingPointError`; they are never skipped or sanitized.
 - Never copy CUDA tensors to the CPU with `non_blocking=True` and then read them without synchronizing. The result is stale memory, which silently corrupted every replay buffer before commit `c267482`.
 - Value/reward projection layers are zero-initialized on purpose.
-- Before launching training, check whether a run is already going (`pgrep -fl main.py`).
+- Before launching training, check whether a run is already going (`pgrep -fl main.py`). Another project on this machine (`~/projects/ipomcp`) sometimes runs CPU-heavy experiments, which inflates timings.

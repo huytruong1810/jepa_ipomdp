@@ -329,7 +329,7 @@ class MCTSGraphVisualizer:
             action_id = f"{node_id}_a{action}"
             G.add_node(action_id, depth=2 * depth + 1, type='action',
                        text=(f"<b>{action_names[action]}</b><br>Visits: {edge.visits}<br>"
-                             f"Q: {edge.q(discount):.3f}<br>R: {edge.reward:.3f}"))
+                             f"Q: {edge.q:.3f}<br>R: {edge.reward:.3f}"))
             G.add_edge(node_id, action_id)
             for observation, child in enumerate(edge.children):
                 self._add_nodes_edges(

@@ -26,8 +26,10 @@
 #      in; the search then preferred LISTEN over the optimal OPEN_RIGHT. MuZero tolerates mean
 #      backups only because a learned policy prior keeps exploration narrow; here the prior is
 #      uniform and the branch probabilities are exact, so expectimax is the principled choice.
-#    - Only nodes on the simulated path change, so V^ is cached per node and recomputed
-#      bottom-up along the path after each expansion.
+#    - Only nodes on the simulated path change, so both Q(s, a) per edge and V^ per node are
+#      cached and recomputed bottom-up along the path after each expansion. Selection then costs
+#      O(|A|) per node instead of recomputing every Q from its children (profiling: ~18k Q
+#      evaluations per 16-root, 50-simulation search before caching).
 #
 # 3. Selection (PUCT, AlphaZero/MuZero form):
 #      a* = argmax_a  Q_norm(s, a) + c_puct * P(a) * sqrt(N(s) + 1) / (1 + N(s, a))
@@ -96,9 +98,9 @@ class DecisionNode:
         """V^: max_a Q(s, a) once expanded (cached, see refresh), else the leaf estimate."""
         return self.leaf_value if self.cached_value is None else self.cached_value
 
-    def refresh(self, discount: float) -> None:
-        """Recomputes the cached max_a Q(s, a) from the edges' current children values."""
-        self.cached_value = max(edge.q(discount) for edge in self.edges)
+    def refresh(self) -> None:
+        """Recomputes the cached max_a Q(s, a) from the edges' cached Q values."""
+        self.cached_value = max(edge.q for edge in self.edges)
 
 
 @dataclass
@@ -109,10 +111,12 @@ class Edge:
     observation_probs: np.ndarray
     children: list[DecisionNode]
     visits: int = 0
+    q: float = 0.0
 
-    def q(self, discount: float) -> float:
-        """R(s, a) + gamma * sum_o P(o | s, a) V^(child_o)."""
-        return self.reward + discount * float(np.dot(self.observation_probs, [c.value() for c in self.children]))
+    def refresh(self, discount: float) -> float:
+        """Recomputes and caches Q = R(s, a) + gamma * sum_o P(o | s, a) V^(child_o)."""
+        self.q = self.reward + discount * sum(p * c.value() for p, c in zip(self.observation_probs, self.children))
+        return self.q
 
 
 @dataclass
@@ -157,6 +161,14 @@ class BeliefTreeSearch:
         self.roots: list[DecisionNode] = []
         self.statistics = SearchStatistics()
 
+    def state_dict(self) -> dict:
+        """Random-generator state (checkpointing); trees are rebuilt on every search."""
+        return {"rng": self.rng.bit_generator.state}
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restores a state produced by state_dict()."""
+        self.rng.bit_generator.state = state["rng"]
+
     def _expand(self, nodes: list[DecisionNode], stats: list[MinMaxStats]) -> None:
         """Expands all `nodes` with one batched model call and records their Q values."""
         expansion = self.model.expand(torch.stack([node.state for node in nodes]))
@@ -172,14 +184,14 @@ class BeliefTreeSearch:
                 for a in range(self.model.num_actions)
             ]
             for edge in node.edges:
-                node_stats.update(edge.q(self.model.discount))
-            node.refresh(self.model.discount)
+                node_stats.update(edge.refresh(self.model.discount))
+            node.refresh()
 
     def _select(self, node: DecisionNode, prior: np.ndarray, stats: MinMaxStats) -> int:
         """PUCT action selection (module header, section 3)."""
         total_visits = sum(edge.visits for edge in node.edges)
         scores = [
-            stats.normalize(edge.q(self.model.discount))
+            stats.normalize(edge.q)
             + self.c_puct * prior[a] * np.sqrt(total_visits + 1) / (1 + edge.visits)
             for a, edge in enumerate(node.edges)
         ]
@@ -216,8 +228,9 @@ class BeliefTreeSearch:
                 node, path = root, []
                 while node.edges is not None:
                     edge = node.edges[self._select(node, prior if node is root else uniform, root_stats)]
-                    observation = self.rng.choice(len(edge.children),
-                                                  p=edge.observation_probs / edge.observation_probs.sum())
+                    cumulative = np.cumsum(edge.observation_probs)
+                    observation = min(int(np.searchsorted(cumulative, self.rng.random() * cumulative[-1], side="right")),
+                                      len(edge.children) - 1)
                     path.append((node, edge))
                     node = edge.children[observation]
                 paths.append(path)
@@ -227,16 +240,16 @@ class BeliefTreeSearch:
             for leaf, path, root_stats in zip(leaves, paths, stats):
                 leaf.visits += 1
                 for node, edge in reversed(path):
-                    root_stats.update(edge.q(self.model.discount))
+                    root_stats.update(edge.refresh(self.model.discount))
                     edge.visits += 1
                     node.visits += 1
-                    node.refresh(self.model.discount)
+                    node.refresh()
 
         self.roots = roots
         counts = np.array([[edge.visits for edge in root.edges] for root in roots], dtype=np.float64)
         self.statistics = SearchStatistics(
             visit_counts=counts,
-            q_values=np.array([[edge.q(self.model.discount) for edge in root.edges] for root in roots]),
+            q_values=np.array([[edge.q for edge in root.edges] for root in roots]),
             mean_depth=float(np.mean(depths)),
             max_depth=int(np.max(depths)),
         )

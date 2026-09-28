@@ -96,7 +96,7 @@ class TestBeliefTreeSearch:
         for i, root in enumerate(planner.roots):
             for a, edge in enumerate(root.edges):
                 if all(child.edges is None for child in edge.children):
-                    assert edge.q(tiger.discount) == pytest.approx(float(expected[i, a]), abs=1e-9)
+                    assert edge.q == pytest.approx(float(expected[i, a]), abs=1e-9)
 
     def test_expanded_child_takes_exact_expectimax_value(self, tiger, value_functions):
         # A child expanded with V_h leaves must hold max_a Q = V_{h+1} at its belief exactly

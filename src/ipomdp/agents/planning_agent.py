@@ -52,6 +52,17 @@ class PlanningAgent:
         self._generator.manual_seed(seed)
         self.state = model.initial_states(batch_size)
 
+    def state_dict(self) -> dict:
+        """Temperature and action-sampling generator state (checkpointing)."""
+        return {"temperature": self.temperature, "generator": self._generator.get_state(),
+                "planner": self.planner.state_dict()}
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restores a state produced by state_dict()."""
+        self.temperature = state["temperature"]
+        self._generator.set_state(state["generator"])
+        self.planner.load_state_dict(state["planner"])
+
     def reset(self) -> None:
         """Starts new episodes in every row from the prior state."""
         self.state = self.model.initial_states(self.batch_size)

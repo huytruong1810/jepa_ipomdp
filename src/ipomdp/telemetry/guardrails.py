@@ -20,18 +20,20 @@
 #      on 16GB RTX 5080). Accounts for WSL2 D3D12 driver context overhead to prevent
 #      triggering WSL2 kernel OOM reaping.
 #
-# 4. Statistical Latency Anomaly Tripwire:
-#    - Flags execution stalls when step latency exceeds k * mu_rolling (default 5x),
-#      diagnosing OpenMP thread lock convoying or WSL2 paging across Windows host RAM.
+# 4. Scope:
+#    - Hardware and memory protection only. Latency "spike" alerts (noise under a shared CPU)
+#      and a hard-coded value-divergence bound (superseded by the two-hot codec, which raises
+#      on any target outside the domain's exact value bound) were removed in Phase 5.
+#    - A failing emergency save raises: it runs exactly when the process is in danger, so a
+#      swallowed failure would lose the run silently.
 # ==============================================================================
 
 import logging
 import time
-from typing import Dict, List, Optional, Any, Callable
+from typing import Callable, Dict
 import torch
 
 from .system_monitor import SystemTelemetryMonitor
-from .profiler import PipelineProfiler
 
 
 class ExecutionGuardrail:
@@ -43,14 +45,12 @@ class ExecutionGuardrail:
     def __init__(
         self,
         logger: logging.Logger,
-        system_monitor: Optional[SystemTelemetryMonitor] = None,
-        profiler: Optional[PipelineProfiler] = None,
-        thermal_trip_c: float = 82.0,
-        thermal_recovery_c: float = 72.0,
-        vram_trip_mb: float = 13500.0,
-        rss_trip_mb: float = 18000.0,
-        latency_spike_multiplier: float = 5.0,
-        emergency_save_fn: Optional[Callable[[], None]] = None
+        system_monitor: SystemTelemetryMonitor,
+        thermal_trip_c: float,
+        thermal_recovery_c: float,
+        vram_trip_mb: float,
+        rss_trip_mb: float,
+        emergency_save_fn: Callable[[], None],
     ):
         """
         Initializes Execution Guardrail.
@@ -58,30 +58,24 @@ class ExecutionGuardrail:
         Args:
             logger: Logging instance for structured alert dispatch.
             system_monitor: Hardware/OS metrics monitor instance.
-            profiler: Pipeline profiler instance.
             thermal_trip_c: GPU temperature in Celsius triggering thermal backoff.
             thermal_recovery_c: GPU temperature in Celsius allowing execution resumption.
             vram_trip_mb: VRAM usage in MB triggering memory compaction or emergency dump.
             rss_trip_mb: Process RSS memory in MB triggering memory leak tripwire.
-            latency_spike_multiplier: Ratio of current latency to rolling mean triggering latency alerts.
             emergency_save_fn: Callback function to serialize weights on critical failure.
         """
         self.logger = logger
-        self.system_monitor = system_monitor or SystemTelemetryMonitor(thermal_threshold_c=thermal_trip_c)
-        self.profiler = profiler
+        self.system_monitor = system_monitor
         self.thermal_trip_c = float(thermal_trip_c)
         self.thermal_recovery_c = float(thermal_recovery_c)
         self.vram_trip_mb = float(vram_trip_mb)
         self.rss_trip_mb = float(rss_trip_mb)
-        self.latency_spike_multiplier = float(latency_spike_multiplier)
         self.emergency_save_fn = emergency_save_fn
 
         self.incident_counts: Dict[str, int] = {
             "thermal_throttle_events": 0,
             "vram_pressure_events": 0,
             "rss_pressure_events": 0,
-            "latency_spike_events": 0,
-            "value_divergence_events": 0,
         }
 
     def check_system_health(self, step_idx: int) -> bool:
@@ -145,39 +139,6 @@ class ExecutionGuardrail:
 
         return True
 
-    def check_step_latency(self, step_idx: int, stage_name: str = "mcts_search") -> None:
-        """
-        Evaluates whether recent stage execution latency spiked anomalously.
-        """
-        if not self.profiler:
-            return
-
-        stats = self.profiler.get_stage_stats(stage_name)
-        if not stats:
-            return
-
-        mean_ms = stats.get(f"profiler/{stage_name}_mean_ms", 0.0)
-        p99_ms = stats.get(f"profiler/{stage_name}_p99_ms", 0.0)
-
-        if mean_ms > 0 and p99_ms >= (self.latency_spike_multiplier * mean_ms):
-            self.incident_counts["latency_spike_events"] += 1
-            self.logger.warning(
-                f"[LATENCY ALERT] Stage '{stage_name}' experienced tail latency spike "
-                f"(p99={p99_ms:.1f}ms vs mean={mean_ms:.1f}ms, ratio={p99_ms/mean_ms:.1f}x) at step {step_idx}."
-            )
-
-    def check_value_bounds(self, step_idx: int, predicted_value: float, min_bound: float = -3000.0, max_bound: float = 3000.0) -> None:
-        """
-        Evaluates whether value predictions diverged outside theoretical domain bounds.
-        """
-
-        if predicted_value < min_bound or predicted_value > max_bound:
-            self.incident_counts["value_divergence_events"] += 1
-            self.logger.warning(
-                f"[VALUE DIVERGENCE ALERT] Predicted value V(b)={predicted_value:+.2f} diverged outside "
-                f"expected bounds [{min_bound:.1f}, {max_bound:.1f}] at step {step_idx}."
-            )
-
     def _execute_thermal_cooldown(self, poll_interval_sec: float = 2.0, max_wait_sec: float = 60.0):
         """Pauses execution in adaptive backoff loop until GPU temperature subsides."""
         start_wait = time.perf_counter()
@@ -194,13 +155,9 @@ class ExecutionGuardrail:
         self.logger.warning("[THERMAL TIMEOUT] Maximum cooldown time elapsed; resuming execution.")
 
     def _trigger_emergency_save(self):
-        """Executes registered emergency save callback if available."""
-        if self.emergency_save_fn:
-            try:
-                self.emergency_save_fn()
-                self.logger.info("[GUARDRAIL] Emergency checkpoint successfully persisted.")
-            except Exception as e:
-                self.logger.error(f"[GUARDRAIL ERROR] Emergency save failed: {e}")
+        """Executes the emergency save callback (failures propagate, see module header)."""
+        self.emergency_save_fn()
+        self.logger.info("[GUARDRAIL] Emergency checkpoint successfully persisted.")
 
     def get_incident_metrics(self) -> Dict[str, float]:
         """Returns total counts of tripped guardrails for telemetry logging."""

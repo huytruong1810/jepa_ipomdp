@@ -43,23 +43,6 @@ class TestSystemTelemetryMonitor:
         m3 = monitor.get_metrics(force_refresh=True)
         assert "sys/test_cached_marker" not in m3
 
-    def test_thermal_check(self):
-        # Unreachable threshold should not trip
-        monitor_cold = SystemTelemetryMonitor(thermal_threshold_c=200.0)
-        assert not monitor_cold.is_thermally_throttled()
-
-        # Artificially low threshold should trip if GPU temp is reported > 0
-        monitor_hot = SystemTelemetryMonitor(thermal_threshold_c=-10.0)
-        metrics = monitor_hot.get_metrics()
-        if "gpu/temp_celsius" in metrics and metrics["gpu/temp_celsius"] > 0:
-            assert monitor_hot.is_thermally_throttled()
-
-    def test_progress_string_formatting(self):
-        monitor = SystemTelemetryMonitor()
-        progress_str = monitor.get_progress_string()
-        assert isinstance(progress_str, str)
-        assert "RSS:" in progress_str
-
 
 class TestPipelineProfiler:
     """Validates wall-clock timing, percentiles, and throughput metrics."""
@@ -86,78 +69,47 @@ class TestPipelineProfiler:
         assert metrics["profiler/total_train_steps"] == 2.0
         assert metrics["profiler/overall_tps"] > 0.0
 
-        progress_str = profiler.get_progress_string()
-        assert "TPS:" in progress_str
-
 
 class TestExecutionGuardrail:
-    """Validates autonomous circuit breakers and health supervisors."""
+    """Hardware and memory circuit breakers."""
+
+    @staticmethod
+    def _guardrail(metrics: dict, saved: list, **thresholds) -> ExecutionGuardrail:
+        monitor = SystemTelemetryMonitor()
+        monitor.get_metrics = lambda force_refresh=False: dict(metrics)
+        limits = dict(thermal_trip_c=120.0, thermal_recovery_c=100.0, vram_trip_mb=100000.0, rss_trip_mb=100000.0)
+        limits.update(thresholds)
+        return ExecutionGuardrail(logging.getLogger("TestGuardrail"), monitor,
+                                  emergency_save_fn=lambda: saved.append(True), **limits)
 
     def test_healthy_system_passes(self):
-        logger = logging.getLogger("TestGuardrail")
-        guardrail = ExecutionGuardrail(
-            logger=logger,
-            thermal_trip_c=120.0,
-            vram_trip_mb=100000.0,
-            rss_trip_mb=100000.0
-        )
-        is_healthy = guardrail.check_system_health(step_idx=1)
-        assert is_healthy
+        saved = []
+        guardrail = self._guardrail({"gpu/temp_celsius": 50.0, "sys/process_rss_mb": 500.0}, saved)
+        assert guardrail.check_system_health(step_idx=1)
+        assert not saved
 
-    def test_emergency_save_on_vram_tripwire(self):
-        logger = logging.getLogger("TestGuardrail")
-        saved_flag = [False]
+    def test_emergency_save_on_persistent_vram_pressure(self):
+        saved = []
+        guardrail = self._guardrail({"gpu/vram_reserved_mb": 20000.0, "gpu/physical_vram_used_mb": 20000.0},
+                                    saved, vram_trip_mb=10000.0)
+        assert not guardrail.check_system_health(step_idx=50)
+        assert saved and guardrail.incident_counts["vram_pressure_events"] == 1
 
-        def mock_emergency_save():
-            saved_flag[0] = True
+    def test_emergency_save_on_rss_pressure(self):
+        saved = []
+        guardrail = self._guardrail({"sys/process_rss_mb": 30000.0}, saved, rss_trip_mb=18000.0)
+        assert not guardrail.check_system_health(step_idx=3)
+        assert saved and guardrail.incident_counts["rss_pressure_events"] == 1
 
+    def test_failed_emergency_save_propagates(self):
         monitor = SystemTelemetryMonitor()
-        # Mock monitor metrics returning extreme VRAM
-        monitor.get_metrics = lambda force_refresh=False: {
-            "gpu/vram_reserved_mb": 20000.0,
-            "gpu/physical_vram_used_mb": 20000.0
-        }
+        monitor.get_metrics = lambda force_refresh=False: {"sys/process_rss_mb": 30000.0}
 
-        guardrail = ExecutionGuardrail(
-            logger=logger,
-            system_monitor=monitor,
-            vram_trip_mb=10000.0,
-            emergency_save_fn=mock_emergency_save
-        )
+        def failing_save():
+            raise OSError("disk full")
 
-        is_healthy = guardrail.check_system_health(step_idx=50)
-        assert not is_healthy
-        assert saved_flag[0]
-        assert guardrail.incident_counts["vram_pressure_events"] >= 1
-
-    def test_latency_spike_detection(self):
-        logger = logging.getLogger("TestGuardrail")
-        profiler = PipelineProfiler(window_size=50)
-
-        # Populate normal latencies (around 10ms)
-        for _ in range(20):
-            profiler._history.setdefault("mcts_search", []).append(10.0)
-
-        # Add an extreme 100ms latency spike
-        profiler._history["mcts_search"].append(100.0)
-
-        guardrail = ExecutionGuardrail(
-            logger=logger,
-            profiler=profiler,
-            latency_spike_multiplier=3.0
-        )
-        guardrail.check_step_latency(step_idx=10, stage_name="mcts_search")
-        assert guardrail.incident_counts["latency_spike_events"] == 1
-
-    def test_value_divergence_detection(self):
-        logger = logging.getLogger("TestGuardrail")
-        guardrail = ExecutionGuardrail(logger=logger)
-
-        # Within bounds [-150, 150]
-        guardrail.check_value_bounds(step_idx=1, predicted_value=5.0)
-        assert guardrail.incident_counts["value_divergence_events"] == 0
-
-        # Out of bounds
-        guardrail.check_value_bounds(step_idx=2, predicted_value=-9999.0)
-        assert guardrail.incident_counts["value_divergence_events"] == 1
-
+        guardrail = ExecutionGuardrail(logging.getLogger("TestGuardrail"), monitor, thermal_trip_c=120.0,
+                                       thermal_recovery_c=100.0, vram_trip_mb=1e5, rss_trip_mb=18000.0,
+                                       emergency_save_fn=failing_save)
+        with pytest.raises(OSError):
+            guardrail.check_system_health(step_idx=3)

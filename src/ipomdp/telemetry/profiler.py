@@ -53,8 +53,6 @@ class PipelineProfiler:
         self._total_transitions = 0
         self._total_train_steps = 0
         self._start_time = time.perf_counter()
-        self._last_tps_check = self._start_time
-        self._last_transition_count = 0
 
     @contextlib.contextmanager
     def profile(self, stage_name: str, sync_cuda: bool = False):
@@ -85,20 +83,6 @@ class PipelineProfiler:
         """Records throughput progression counts."""
         self._total_transitions += int(transitions)
         self._total_train_steps += int(train_steps)
-
-    def get_tps(self) -> float:
-        """Calculates instantaneous Transitions Per Second (TPS)."""
-        now = time.perf_counter()
-        dt = now - self._last_tps_check
-        if dt < 1e-4:
-            return 0.0
-
-        d_transitions = self._total_transitions - self._last_transition_count
-        tps = float(d_transitions / dt)
-
-        self._last_tps_check = now
-        self._last_transition_count = self._total_transitions
-        return tps
 
     def get_stage_stats(self, stage_name: str) -> Dict[str, float]:
         """
@@ -135,23 +119,3 @@ class PipelineProfiler:
         metrics["profiler/total_train_steps"] = float(self._total_train_steps)
 
         return metrics
-
-    def get_progress_string(self) -> str:
-        """
-        Formats core latency benchmarks into a compact progress bar string.
-        """
-        parts = []
-        for stage in ["mcts_search", "train_sequence", "env_step"]:
-            if stage in self._history and len(self._history[stage]) > 0:
-                short_name = stage.replace("_search", "").replace("_sequence", "").replace("_step", "")
-                mean_ms = np.mean(self._history[stage])
-                parts.append(f"{short_name}: {mean_ms:.1f}ms")
-
-        now = time.perf_counter()
-        elapsed = max(now - self._start_time, 1e-4)
-        tps = self._total_transitions / elapsed
-        tps_str = f"TPS: {tps:.0f}"
-
-        if parts:
-            return f"{tps_str} | " + " | ".join(parts)
-        return tps_str

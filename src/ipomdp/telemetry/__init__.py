@@ -1,35 +1,17 @@
-# ABSOLUTE PATH: src/ipomdp/telemetry/__init__.py
-"""Telemetry, structured logging, high-precision metrics, visualizers, and checkpointing for JEPA-IPOMDP."""
+"""Run telemetry: structured logging, TensorBoard metrics, visualisers, system monitoring, profiling, guardrails."""
 
-from .logger import JSONFormatter, setup_logger, log_telemetry
-from .metrics import (
-    MetricsLogger,
-    compute_distribution_kl_divergence,
-    compute_observation_accuracy_metrics,
-)
-from .visualizers import (
-    LatentSpaceVisualizer,
-    MCTSGraphVisualizer,
-    RewardTrajectoryVisualizer,
-)
-from .checkpointer import ModelCheckpointer
-from .system_monitor import SystemTelemetryMonitor
-from .profiler import PipelineProfiler
 from .guardrails import ExecutionGuardrail
+from .metrics import MetricsLogger
+from .profiler import PipelineProfiler
+from .system_monitor import SystemTelemetryMonitor
+from .visualizers import LatentSpaceVisualizer, MCTSGraphVisualizer, RewardTrajectoryVisualizer
 
 __all__ = [
-    "JSONFormatter",
-    "setup_logger",
-    "log_telemetry",
-    "MetricsLogger",
-    "compute_distribution_kl_divergence",
-    "compute_observation_accuracy_metrics",
+    "ExecutionGuardrail",
     "LatentSpaceVisualizer",
     "MCTSGraphVisualizer",
-    "RewardTrajectoryVisualizer",
-    "ModelCheckpointer",
-    "SystemTelemetryMonitor",
+    "MetricsLogger",
     "PipelineProfiler",
-    "ExecutionGuardrail",
+    "RewardTrajectoryVisualizer",
+    "SystemTelemetryMonitor",
 ]
-

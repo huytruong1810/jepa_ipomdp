@@ -76,6 +76,19 @@ class EpisodeBuffer:
         self._next = (self._next + count) % self.capacity
         self.size = min(self.size + count, self.capacity)
 
+    def state_dict(self) -> dict:
+        """Stored episodes, write position and sampling-generator state (checkpointing)."""
+        return {"actions": self._actions, "observations": self._observations, "rewards": self._rewards,
+                "next": self._next, "size": self.size, "generator": self._generator.get_state()}
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restores a state produced by state_dict()."""
+        self._actions = state["actions"].to(self.device)
+        self._observations = state["observations"].to(self.device)
+        self._rewards = state["rewards"].to(self.device)
+        self._next, self.size = state["next"], state["size"]
+        self._generator.set_state(state["generator"])
+
     def sample(self, batch_size: int) -> EpisodeBatch:
         """Uniformly samples `batch_size` stored episodes (with replacement)."""
         if self.size == 0:
