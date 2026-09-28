@@ -27,8 +27,10 @@
 # 4. World Model (see src/ipomdp/models/world_model.py and src/ipomdp/training/trainer.py):
 #    - A single belief latent of latent_dim features (no object slots).
 #    - JEPA self-prediction (deterministic predictor) against an EMA target filter
-#      (ema_momentum); grounding by two-hot reward and TD(lambda) value regression
-#      (num_bins bins, bounded by the domain's value bound).
+#      (ema_momentum) and two-hot reward regression shape the representation. The value head
+#      (on detached latents) regresses the Bellman optimality backup through the learned
+#      model with an EMA target value head (trainer.value_target_momentum). Two-hot bins
+#      (num_bins) are bounded by the domain's value bound.
 #    - Planning is a belief-tree search that branches exactly over observations, weighted by a
 #      learned observation head, and steps the belief filter (planning/mcts.py).
 # ==============================================================================
@@ -61,7 +63,7 @@ trainer:
   learning_rate: 3.0e-4
   weight_decay: 1.0e-4
   grad_clip_norm: 1.0
-  lambda_return: 0.95         # TD(lambda) mixing for value targets
+  value_target_momentum: 0.9  # EMA momentum of the target value head used in Bellman value targets
 
 agent:
   temperature: 1.0            # Initial MCTS visit-count sampling temperature

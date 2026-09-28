@@ -10,7 +10,7 @@ from ipomdp.training import EpisodeBatch, EpisodeBuffer, TrainerConfig, WorldMod
 
 CPU = torch.device("cpu")
 A, O, D, H, T = 3, 2, 16, 32, 6
-CONFIG = TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0, lambda_return=0.95)
+CONFIG = TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0, value_target_momentum=0.99)
 
 
 def _episodes(batch: int, seed: int, device: torch.device = CPU) -> EpisodeBatch:
@@ -66,13 +66,29 @@ class TestEpisodeBuffer:
 
 class TestWorldModelTrainer:
 
-    def test_lambda_returns_match_hand_computation(self):
+    def test_value_targets_are_bellman_optimality_backups(self):
+        # V_target(z) = max_a [R(z,a) + gamma sum_o P(o|z,a) V-bar(tau(z,a,o))], computed by hand.
         trainer = _trainer()
-        rewards = torch.tensor([[1.0, 2.0]])
-        values = torch.tensor([[0.5, 1.5, 3.0]])
-        g1 = 2.0 + 0.95 * 3.0                                     # G_1 bootstraps V(z_2) (truncation)
-        g0 = 1.0 + 0.95 * ((1 - 0.95) * 1.5 + 0.95 * g1)
-        assert torch.allclose(trainer.lambda_returns(rewards, values), torch.tensor([[g0, g1]]))
+        latents = torch.randn(5, D)
+        codec, filt = trainer.twohot, trainer.world_model.belief_filter
+        expected = []
+        with torch.no_grad():
+            for a in range(A):
+                action = torch.nn.functional.one_hot(torch.full((5,), a), A).float()
+                q = codec.mean(trainer.reward_head(latents, action))
+                probs = torch.softmax(trainer.observation_head(latents, action), -1)
+                for o in range(O):
+                    child = filt.step(latents, action, torch.nn.functional.one_hot(torch.full((5,), o), O).float())
+                    q = q + 0.95 * probs[:, o] * codec.mean(trainer.target_value_head(child))
+                expected.append(q)
+        assert torch.allclose(trainer.value_targets(latents), torch.stack(expected, -1).max(-1).values, atol=1e-4)
+
+    def test_target_value_head_tracks_online_head_by_ema(self):
+        trainer = _trainer()
+        before = [p.clone() for p in trainer.target_value_head.parameters()]
+        trainer.train_step(_episodes(4, 0))
+        for p, q, q0 in zip(trainer.value_head.parameters(), trainer.target_value_head.parameters(), before):
+            assert torch.allclose(q, 0.99 * q0 + 0.01 * p, atol=1e-6)
 
     def test_train_step_updates_parameters_and_target(self):
         trainer = _trainer()

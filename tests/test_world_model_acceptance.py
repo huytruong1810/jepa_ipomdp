@@ -1,37 +1,38 @@
 # ABSOLUTE PATH: tests/test_world_model_acceptance.py
 """
-Phase-2/3 acceptance tests: the world model trained by the real WorldModelTrainer on canonical
-Tiger must reproduce exact quantities computed from the FinitePOMDP.
+Phase-2/3/5 acceptance tests: the world model trained by the real WorldModelTrainer on canonical
+Tiger, from uniformly-random-policy data only (off-policy), must reproduce exact quantities
+computed from the FinitePOMDP and must plan optimally.
 
-Protocol (fixed seeds, GPU):
-    - 1000 updates, each on 64 fresh uniformly-random-policy episodes of 100 steps (no MCTS).
-      100-step episodes are required for the value check (conf/env/tiger.yaml, section 3).
-    - Held-out data: 1024 random-policy episodes of 100 steps; latents from the online filter
-      run from its learned z_0; exact posteriors b* from the batched Bayes filter.
+Protocol (fixed seeds, GPU, ~20 min):
+    - 3000 updates, each on 64 fresh random-policy episodes of 100 steps (no MCTS in training).
+      100-step episodes: conf/env/tiger.yaml, section 3. 3000 updates: the fitted value
+      iteration of the value head needs them (|V - V*| 26 after 1000 updates, 4.9 after 3000).
+    - Held-out data: 1024 random-policy episodes of 100 steps; latents from the online filter run
+      from its learned z_0; exact posteriors b* from the batched Bayes filter.
 
-Checked against exact references:
-    Belief (Phase 2)       probes of z_t vs b*(h_t)                   KL(b* || probe)
-    Reward (Phase 3)       decoded mean of R(z_t, a) vs b* . R[a]     absolute error
-    Observation (Phase 3)  P(o' | z_t, a) vs exact P(o' | b*, a)      KL
-    Value (Phase 3)        decoded V(z_t) vs V^pi = r_bar / (1 - gamma)
-                           For the uniform random policy on Tiger the expected immediate
-                           reward is (-1 + (-45) + (-45)) / 3 = -30.33 at EVERY belief, so
-                           V^pi(b) = -606.67 for all b. This checks that lambda-returns
-                           bootstrap correctly through truncation and that the bootstrap latent
-                           z_T is anchored (with 20-step episodes V was biased by 8%).
-Thresholds are set from measured runs with margin; see each test's docstring.
+Checked against exact references (measured at 3000 updates in brackets):
+    Belief       probes of z_t vs b*(h_t), KL(b* || probe)            [linear 0.0007, MLP 0.00004]
+    Reward       decoded R(z_t, a) vs b* . R[a]                        [doors 1.7-2.2, listen < 0.05]
+    Observation  P(o' | z_t, a) vs exact P(o' | b*, a), KL             [0.0005-0.01]
+    Value        decoded V(z_t) vs the exact optimum V*(b*)            [mean |V - V*| 4.9]
+                 (Bellman optimality targets aim at V*, not at the random behaviour policy.)
+    Planning     greedy agent over the LEARNED model (50 simulations), [21.19 +- 1.69 vs 19.28]
+                 256 episodes, discounted return vs V*(b0)
 """
 
 import pytest
 import torch
 import torch.nn.functional as F
 
-from ipomdp.domain import BatchedPOMDPEnv, build_tiger_pomdp, observation_distribution
+from ipomdp.agents import PlanningAgent
+from ipomdp.domain import BatchedPOMDPEnv, build_tiger_pomdp, observation_distribution, solve_infinite_horizon
+from ipomdp.planning import BeliefTreeSearch, LearnedSearchModel
 from ipomdp.interpretability import collect_probe_dataset, linear_probe, mlp_probe, uniform_random_policy
 from ipomdp.models import BeliefFilter, LatentPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueHead
-from ipomdp.training import EpisodeBatch, TrainerConfig, WorldModelTrainer
+from ipomdp.training import EpisodeBatch, TrainerConfig, WorldModelTrainer, discounted_returns, play_episodes
 
-UPDATES, BATCH, LENGTH, DIM, HIDDEN = 1000, 64, 100, 32, 64
+UPDATES, BATCH, LENGTH, DIM, HIDDEN = 3000, 64, 100, 32, 64
 
 
 def train_and_measure() -> dict:
@@ -48,7 +49,7 @@ def train_and_measure() -> dict:
     codec = TwoHotSymlog(255, pomdp.value_bound).to(device)
     trainer = WorldModelTrainer(
         world_model, value_head, reward_head, observation_head, codec, num_a, num_o, pomdp.discount,
-        TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0, lambda_return=0.95), device)
+        TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0, value_target_momentum=0.9), device)
 
     def probe_data():
         return collect_probe_dataset(pomdp, world_model.belief_filter, uniform_random_policy(num_a, 999, device),
@@ -71,10 +72,11 @@ def train_and_measure() -> dict:
     dataset = probe_data()
     latents, beliefs = dataset.latents, dataset.posteriors
     measured = {"untrained_linear": untrained_linear, "linear": linear_probe(dataset), "mlp": mlp_probe(dataset)}
+    solution = solve_infinite_horizon(pomdp, tolerance=0.1, prune_epsilon=1e-6)
     with torch.no_grad():
-        random_policy_value = float(torch.stack([beliefs @ pomdp.reward.to(device)[a] for a in range(num_a)]).mean(0)[0])
-        measured["random_policy_value"] = random_policy_value / (1.0 - pomdp.discount)
+        measured["optimal_value"] = solution.value_function.value(beliefs.cpu()).to(device)
         measured["value"] = codec.mean(value_head(latents)).double()
+        measured["posterior"] = beliefs[:, 0]
         for a in range(num_a):
             action = torch.full((len(latents),), a, device=device)
             onehot = F.one_hot(action, num_a).float()
@@ -83,6 +85,14 @@ def train_and_measure() -> dict:
             exact = observation_distribution(pomdp, beliefs, action)
             log_model = F.log_softmax(observation_head(latents, onehot).float(), -1).double()
             measured[f"observation_kl_{a}"] = (exact * (exact.clamp(min=1e-12).log() - log_model)).sum(-1)
+    # Greedy planning with the learned model (50 simulations, argmax Q), 256 episodes of 100 steps.
+    model = LearnedSearchModel(world_model.belief_filter, reward_head, observation_head, value_head, codec,
+                               num_a, num_o, pomdp.discount)
+    agent = PlanningAgent(model, BeliefTreeSearch(model, 50, 1.25, 0.3, 0.0, seed=0), 256, 0.0, 0, device)
+    episodes, _ = play_episodes(BatchedPOMDPEnv(pomdp, 256, LENGTH, seed=4242, device=device), agent, uniform=False)
+    returns = discounted_returns(episodes.rewards, pomdp.discount)
+    measured["planning_return"] = (float(returns.mean()), float(returns.std()) / 16.0)
+    measured["optimal_return"] = float(solution.value_function.value(pomdp.initial_belief.unsqueeze(0)))
     return measured
 
 
@@ -120,10 +130,13 @@ def test_observation_head_matches_exact_predictive(measured):
         assert float(measured[f"observation_kl_{a}"].mean()) < 0.002
 
 
-def test_value_head_matches_exact_random_policy_value(measured):
-    """V^pi(b) = -606.67 for every belief under the uniform random policy. Measured: -604 to -612."""
-    exact = measured["random_policy_value"]
-    assert exact == pytest.approx(-606.6667, abs=1e-3)
-    value = measured["value"]
-    assert abs(float(value.mean()) - exact) < 0.02 * abs(exact), float(value.mean())
-    assert float(value.std()) < 0.01 * abs(exact), float(value.std())  # flat across beliefs and time
+def test_value_head_approaches_optimal_value(measured):
+    """Fitted value iteration through the learned model; measured mean |V - V*| = 4.9."""
+    error = (measured["value"] - measured["optimal_value"]).abs()
+    assert float(error.mean()) < 8.0, float(error.mean())
+
+
+def test_learned_model_planner_is_near_optimal(measured):
+    """Greedy search over the learned model must match V*(b0) within sampling error (+1 slack)."""
+    mean, stderr = measured["planning_return"]
+    assert mean > measured["optimal_return"] - 3 * stderr - 1.0, (mean, stderr, measured["optimal_return"])

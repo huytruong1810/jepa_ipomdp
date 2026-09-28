@@ -108,7 +108,7 @@ class TrainingRun:
     @property
     def networks(self) -> dict[str, torch.nn.Module]:
         return {"world_model": self.world_model, "value": self.value_head, "reward": self.reward_head,
-                "observation": self.observation_head}
+                "observation": self.observation_head, "target_value": self.trainer.target_value_head}
 
     @property
     def in_warmup(self) -> bool:

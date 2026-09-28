@@ -37,7 +37,7 @@ The evaluation, probing and interactive scripts (`eval_*`, `probe_*`, `enjoy_*`)
   - Reference values: V*(b0) = 19.3713; V_h(b0) is −1, −1.95, 2.3098, 1.7955, 2.7631 for h = 1..5 and 6.6934 for h = 10.
 - Extending to I-POMDPs: fold a finite opponent-model set into T/O to get a `FinitePOMDP` over S × M_j; the same env, filter and solver then apply. Multi-agent Tiger tables are deliberately absent until they have been verified against Gmytrasiewicz & Doshi.
 
-**Config.** Hydra: `conf/config.yaml` (`seed`, `training`, `agent`, `model`, `mcts`) plus `conf/env/tiger.yaml`, which holds only `name` and `max_steps`. `|A|`, `|O|`, action names and γ are derived from the `FinitePOMDP` in `main.py` (`DOMAIN_BUILDERS`) and passed explicitly to the planner and trainer. Hydra writes run directories to `outputs/`.
+**Config.** Hydra: `conf/config.yaml` (`seed`, `training`, `agent`, `model`, `mcts`) plus `conf/env/tiger.yaml`, which holds only `name` and `max_steps`. `|A|`, `|O|`, action names and γ are derived from the `FinitePOMDP` in `main.py` (`DOMAIN_BUILDERS`) and passed explicitly to the planner and trainer. Hydra writes each run to `runs/<env>/<timestamp>_seed<seed>/`.
 
 **Training run (`training/run.py`, `main.py`).**
 - `TrainingRun` owns every piece of state: networks, optimizer, `EpisodeBuffer`, the collection and evaluation simulators, the training and evaluation agents and planners, and all random-generator states.
@@ -50,14 +50,21 @@ The evaluation, probing and interactive scripts (`eval_*`, `probe_*`, `enjoy_*`)
 - `BeliefFilter`: learned `z_0`, `z_{t+1} = GRU([a_t, o_{t+1}], z_t)`, the counterpart of the exact `tau(b, a, o')`.
 - `RecurrentJEPA` holds the online filter, an EMA `target_filter` and a deterministic `LatentPredictor`, which is JEPA self-prediction of the target latent and is used for representation learning only.
 - `WorldModelTrainer.train_step` (`training/trainer.py`) unrolls whole episodes and combines:
-  - JEPA mean-squared error;
-  - two-hot reward and TD(λ) value, bootstrapped at truncation;
-  - observation cross-entropy on **detached** latents.
+  - JEPA mean-squared error and two-hot reward, which are the only terms that shape the representation;
+  - two-hot value regressing the **Bellman optimality backup through the learned model**, `max_a [R + γ Σ_o P(o) V̄(τ)]`, computed with the planner's own `LearnedSearchModel.expand` and an EMA target value head;
+  - observation cross-entropy.
+
+  Value and observation heads read **detached** latents. Self-referential Bellman targets otherwise collapse the representation. TD(λ) targets were removed because they estimate the noisy exploring policy's value, which made the greedy agent listen forever.
 - The design follows from studies recorded in module headers. Pure JEPA gives no belief without reward grounding, and VICReg hurts (`world_model.py`, sections 3 and 5). The stochastic latent transition imagined biased beliefs and was removed.
 - **Planning imagines by observation branching:** sample `o' ~ ObservationHead(z, a)`, then `z' = BeliefFilter.step(z, a, o')`. Imagined latents stay on the filter's manifold.
 - Heads (`models/heads.py`): value, reward and observation. `TwoHotSymlog` (`models/distributions.py`) is one shared instance injected into trainer and planner. Its bins are symlog-spaced real values bounded by `FinitePOMDP.value_bound` = max|R|/(1−γ). Encoding and decoding are linear in real space, so means are unbiased. The old symlog-space decoding turned Tiger's −100/+10 door gamble (mean −45) into −2.9.
 
-**Interpretability (`src/ipomdp/interpretability/`).** `collect_probe_dataset` produces pairs of (filter latent, exact posterior). `linear_probe` and `mlp_probe` report KL(b* ‖ probe) overall, worst-case and per posterior value. R² is not used: an untrained GRU already reaches R² = 0.93. `tests/test_world_model_acceptance.py` (slow, GPU) is the acceptance gate. It checks the belief probes, the reward head against b·R[a], the observation head against the exact P(o′|b,a), and the value head against the exact random-policy value of −606.67.
+**Interpretability (`src/ipomdp/interpretability/`).** `collect_probe_dataset` produces pairs of (filter latent, exact posterior). `linear_probe` and `mlp_probe` report KL(b* ‖ probe) overall, worst-case and per posterior value. R² is not used: an untrained GRU already reaches R² = 0.93. `tests/test_world_model_acceptance.py` (slow, GPU) is the acceptance gate. It trains off-policy on random-policy data (3000 updates, about 24 min) and checks:
+- the belief probes;
+- the reward head against b·R[a];
+- the observation head against the exact P(o′|b,a);
+- the value head against V*(b) (mean error < 8);
+- the greedy learned-model planner against V*(b₀) = 19.28, where it measured 21.19 ± 1.69.
 
 **Planner and agent (`planning/`, `agents/`).**
 - `SearchModel` protocol (`search_model.py`) with two implementations:

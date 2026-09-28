@@ -28,7 +28,7 @@ def test_tiger_collection_and_training_cycle():
     codec = TwoHotSymlog(255, pomdp.value_bound).to(device)
     trainer = WorldModelTrainer(
         world_model, value_head, reward_head, observation_head, codec, num_actions, num_obs, pomdp.discount,
-        TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0, lambda_return=0.95), device)
+        TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0, value_target_momentum=0.99), device)
     model = LearnedSearchModel(world_model.belief_filter, reward_head, observation_head, value_head, codec,
                                num_actions, num_obs, pomdp.discount)
     agent = PlanningAgent(model, BeliefTreeSearch(model, 5, 1.25, 0.3, 0.25, seed=0), num_envs, temperature=1.0,

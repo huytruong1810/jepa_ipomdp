@@ -12,20 +12,40 @@
 # 2. Loss Terms (all averaged over the B x T transitions of the batch):
 #      JEPA         MSE( g(z_t, a_t), sg(z-bar_{t+1}) )      z-bar = EMA target filter
 #      Reward       TwoHot( R(z_t, a_t), r_t )
-#      Value        TwoHot( V(z_t), G^lambda_t )
+#      Value        TwoHot( V(sg(z_t)), sg(max_a [R(z_t,a) + gamma sum_o P(o|z_t,a) V-bar(tau(z_t,a,o))]) )
+#                   planning model, detached input, all latents z_0..z_T
 #      Observation  CE( P(o | sg(z_t), a_t), o_{t+1} )       planning model, detached input
 #    - No opponent terms: the model describes the POMDP the agent faces, with the opponent
 #      folded into the environment (models/heads.py, section 1).
-#    - Reward and value are the grounding that makes z_t a belief; JEPA self-prediction
-#      alone does not (Phase-2 study, models/world_model.py section 3). The observation head
-#      sees detached latents so it cannot change the representation (world_model.py section 6).
+#    - Only the JEPA and reward terms shape the representation; they are the terms grounded in
+#      real data. JEPA self-prediction alone does not make z_t a belief (Phase-2 study,
+#      models/world_model.py section 3); reward grounding does.
+#    - The value and observation heads read DETACHED latents. For the value head this is
+#      essential (Phase-5 finding): its Bellman target is computed from the model itself, so it
+#      carries no information from real rewards, and letting it shape the encoder is a
+#      representation-collapse pressure (making latents alike satisfies self-consistent
+#      targets). With gradients into the filter the belief probe degraded from KL 0.002 to
+#      0.045, the reward head lost its belief dependence (door-reward error 13) and the greedy
+#      agent listened forever (return -19.88). Detached, on the same random-policy data: probe
+#      KL 0.0008, door-reward error 1-2, and the learned-model greedy agent earns 17.8 +- 1.6
+#      (optimal 19.28).
 #    - Two-hot means are unbiased (models/distributions.py), so V and R decode to expected
 #      returns/rewards even for multimodal targets such as Tiger's -100/+10 door reward.
 #
-# 3. TD(lambda) Targets With Truncation Bootstrapping:
-#      G_{T} = V(z_T),   G_t = r_t + gamma * ((1 - lambda) V(z_{t+1}) + lambda G_{t+1})
-#    - Every episode ends by TRUNCATION (continuing task), so the final latent is always
-#      bootstrapped with V(z_T); there are no terminal states and no (1 - done) factors.
+# 3. Value Target: the Bellman Optimality Backup Through the Learned Model (Phase-5 decision):
+#      V_target(z) = max_a [ R(z, a) + gamma * sum_o P(o | z, a) * V-bar(tau(z, a, o)) ]
+#    - R and P(o | z, a) are the reward and observation heads, tau is the belief filter, and
+#      V-bar is a slow EMA copy of the value head (target network). The target is computed with
+#      LearnedSearchModel.expand -- literally the one-step backup the planner performs -- for
+#      EVERY latent z_0..z_T of the batch (no future data is needed), without gradients.
+#    - This is fitted value iteration over visited beliefs: off-policy, aiming at V* directly.
+#      On an exact model it is exact value iteration (checked against the solver in the tests).
+#    - Phase-5 finding that motivated it: TD(lambda) targets estimate the value of the policy
+#      that COLLECTED the data. The exploring collection policy (root Dirichlet noise and a
+#      visit-count temperature) opened doors at random ~9% of the time, so under it a confident
+#      belief was worth -215 and the post-opening prior -482; with such leaves listening always
+#      beat opening and the greedy agent listened forever (evaluation return -19.88, exactly the
+#      always-listen return, at every evaluation).
 #    - gamma is the domain's discount (0.95 for canonical Tiger), passed in by main.py.
 #
 # 4. No Imagination Losses:
@@ -42,6 +62,7 @@
 #    - The forward pass runs under bfloat16 autocast on CUDA; losses are computed in float32.
 # ==============================================================================
 
+import copy
 from dataclasses import dataclass
 
 import torch
@@ -51,6 +72,7 @@ from torch import Tensor
 from ..models.distributions import TwoHotSymlog
 from ..models.heads import ObservationHead, RewardHead, ValueHead
 from ..models.world_model import RecurrentJEPA
+from ..planning.search_model import LearnedSearchModel
 from .episode_buffer import EpisodeBatch
 
 
@@ -61,7 +83,7 @@ class TrainerConfig:
     learning_rate: float
     weight_decay: float
     grad_clip_norm: float
-    lambda_return: float
+    value_target_momentum: float
 
 
 class WorldModelTrainer:
@@ -98,25 +120,31 @@ class WorldModelTrainer:
             *observation_head.parameters(),
         ]
         self.optimizer = torch.optim.AdamW(self.parameters, lr=config.learning_rate, weight_decay=config.weight_decay)
+        self.target_value_head = copy.deepcopy(value_head).requires_grad_(False)
+        self.target_model = LearnedSearchModel(world_model.belief_filter, reward_head, observation_head,
+                                               self.target_value_head, codec, num_actions, num_observations, discount)
 
-    def lambda_returns(self, rewards: Tensor, values: Tensor) -> Tensor:
+    @torch.no_grad()
+    def value_targets(self, latents: Tensor) -> Tensor:
         """
-        TD(lambda) targets for truncated episodes.
+        Bellman optimality backup through the learned model (module header, section 3).
 
         Args:
-            rewards: r_0..r_{T-1}, shape (B, T).
-            values: V(z_0)..V(z_T), shape (B, T + 1).
+            latents: Belief latents of shape (N, D).
 
         Returns:
-            G_0..G_{T-1}, shape (B, T).
+            max_a [R + gamma sum_o P(o) V-bar(tau)], shape (N,), float32.
         """
-        lam = self.config.lambda_return
-        returns = torch.empty_like(rewards)
-        next_return = values[:, -1]
-        for t in reversed(range(rewards.shape[1])):
-            next_return = rewards[:, t] + self.discount * ((1.0 - lam) * values[:, t + 1] + lam * next_return)
-            returns[:, t] = next_return
-        return returns
+        with torch.autocast(self.device.type, enabled=False):
+            expansion = self.target_model.expand(latents.float())
+            q = expansion.rewards + self.discount * (expansion.observation_probs * expansion.next_values).sum(-1)
+        return q.max(dim=-1).values
+
+    @torch.no_grad()
+    def _update_target_value_head(self) -> None:
+        momentum = self.config.value_target_momentum
+        for target, online in zip(self.target_value_head.parameters(), self.value_head.parameters()):
+            target.mul_(momentum).add_(online, alpha=1.0 - momentum)
 
     def train_step(self, episodes: EpisodeBatch) -> dict[str, float]:
         """
@@ -145,11 +173,10 @@ class WorldModelTrainer:
             loss_reward = self.twohot.loss(self.reward_head(current, action_flat),
                                            episodes.rewards.reshape(-1)).mean()
 
-            with torch.no_grad():
-                values = self.twohot.mean(self.value_head(latents.reshape(batch * (steps + 1), -1)))
-                returns = self.lambda_returns(episodes.rewards, values.view(batch, steps + 1))
-            value_logits = self.value_head(current)
-            loss_value = self.twohot.loss(value_logits, returns.reshape(-1)).mean()
+            all_latents = latents.reshape(batch * (steps + 1), -1)
+            targets_value = self.value_targets(all_latents.detach())
+            value_logits = self.value_head(all_latents.detach())
+            loss_value = self.twohot.loss(value_logits, targets_value).mean()
 
             loss_observation = F.cross_entropy(
                 self.observation_head(current.detach(), action_flat).float(),
@@ -167,11 +194,10 @@ class WorldModelTrainer:
         torch.nn.utils.clip_grad_norm_(self.parameters, self.config.grad_clip_norm)
         self.optimizer.step()
         self.world_model.update_target()
+        self._update_target_value_head()
 
         with torch.no_grad():
-            predicted_values = self.twohot.mean(value_logits)
-            target_values = returns.reshape(-1)
-            explained_variance = 1.0 - (target_values - predicted_values).var() / target_values.var().clamp(min=1e-8)
+            value_error = (self.twohot.mean(value_logits) - targets_value).abs().mean()
 
         return {
             "loss_total": total.item(),
@@ -179,5 +205,6 @@ class WorldModelTrainer:
             "loss_reward": loss_reward.item(),
             "loss_value": loss_value.item(),
             "loss_observation": loss_observation.item(),
-            "value_explained_variance": explained_variance.item(),
+            "value_target_mean": targets_value.mean().item(),
+            "value_abs_error": value_error.item(),
         }

@@ -17,7 +17,7 @@ def _config(**overrides) -> RunConfig:
         seed=7, episode_length=8, env_batch_size=4, warmup_episodes=4, buffer_capacity=64, batch_size=4,
         updates_per_collection=2, eval_episodes=4, latent_dim=8, hidden_dim=16, num_blocks=1, ema_momentum=0.99,
         num_bins=255, trainer=TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0,
-                                            lambda_return=0.95),
+                                            value_target_momentum=0.99),
         num_simulations=4, c_puct=1.25, dirichlet_alpha=0.3, dirichlet_epsilon=0.25, temperature=1.0,
         temperature_min=0.1, temperature_decay=0.5)
     values.update(overrides)
