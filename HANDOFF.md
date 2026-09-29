@@ -20,7 +20,7 @@ The user asked for a rigorous, phased, bottom-up review:
 | 5 | training loop | done |
 | 6 | interpretability / error bounds | done |
 | 7 | scripts, configs, results layout | done |
-| 8 | holistic review | todo |
+| 8 | holistic review | in progress |
 
 Rules the user set:
 - **Scope:**
@@ -38,8 +38,9 @@ Rules the user set:
 
 ## 2. Current git state
 
-- `7a16fea` (Phase 6) is pushed. Phase 7 is the commit after it, on `main`; ask before pushing it.
-- Verification at the Phase 7 commit: fast suite (including `tests/test_experiments.py`) passes; a 2-seed smoke `sweep.py` with tiny overrides trained, analysed and aggregated end to end, and re-running it continued without retraining. The slow acceptance suite last passed at Phase 6 (5 passed); Phase 7 does not touch the code it exercises.
+- Pushed through `01bbe62` (Phase 7). Phase 8 commits `fd4d628` (seeding fix) and `e2620c4` (consistency pass) are local; ask before pushing.
+- Fast suite: 121 passed at `e2620c4`. The slow acceptance suite last passed at Phase 6; Phase 8 changed only seeding and comments in the code it exercises, so its numbers will differ slightly from section 4 but it has not been rerun.
+- **Running:** `uv run sweep.py default --seeds 0,1,2,3,4` (default config, new seed streams), started 2026-09-28 22:09, log `runs/sweep_default.log`, results `runs/sweeps/default/aggregate.json`. About 45-60 min per seed. Re-running the same command continues it if it is interrupted. Avoid CPU-heavy work (e.g. pytest) while it runs: search is CPU-bound and slows down.
 
 ## 3. What was done (commit, then the gist)
 
@@ -89,6 +90,11 @@ Rules the user set:
   - `main.py` exits non-zero on SIGINT (130) and guardrail aborts (1), so only completed runs are analysed.
   - Deleted `BACKLOG.md`, `plot_rewards.py`, `src/__init__.py`. Dropped `torchvision`, `torchaudio`, `scikit-learn`; `pytest` moved to the `dev` dependency group. `.gitignore` pruned. `recreate_venv.sh` now just `uv sync` + CUDA check. README rewritten.
 
+- `fd4d628`, `e2620c4`, **Phase 8 (holistic review), part 1.** Every module re-read end to end against its header and the others.
+  - **Seed streams were shared across runs** (user decision: stop, fix, restart the sweep). `cfg.seed + offset` made run k's collection env replay run k-1's evaluation env, and run k's buffer share run k+2's env stream, so sweep replicates were coupled. Now `training/seeding.py` hashes `(seed, stream)` with numpy `SeedSequence` for every consumer, in training and analysis. Tested (the cross-run test fails under the old scheme). Consequence: runs made before `fd4d628` (including `phase5_ratio64_seed0`) are not reproducible from their seed any more; section 4 numbers were produced with the old streams.
+  - Verified with no change needed: the solver's ε-pruning accounting (2|O|ε per backup) and certified bound; expectimax/PUCT search; the Bellman value target through `LearnedSearchModel.expand`; the error-bound derivations (span-Hölder, 2 L_Q ε regret, performance-difference form of (c)); resume state coverage.
+  - Stale comments fixed (see the `e2620c4` message) and dead code removed (`symlog`/`symexp`, silent `None` skipping in `MetricsLogger`, cwd-relative visualizer defaults).
+
 ## 4. Key measured results (all seed 0; cite from the module headers)
 
 - **Exact references:** V_h(b0) for h = 1..5 is −1, −1.95, 2.3098, 1.7955, 2.7631; V*(b0) = 19.37.
@@ -131,9 +137,9 @@ Rules the user set:
 
 ## 6. Next actions (in order)
 
-1. **Push Phase 7** once the user approves.
-2. **First multi-seed result** (ask before launching; about 45 min per seed with the default config, so 5 seeds is roughly 4 h): `uv run sweep.py default --seeds 0,1,2,3,4`. It turns every seed-0 number in section 4 into an interval.
-3. **Phase 8 (holistic):** end-to-end consistency review, plus a plan for progressively larger experiments. Proposed order:
+1. **Read the sweep** (`runs/sweeps/default/aggregate.json`) when it finishes: cite the paired gaps (learned planner − optimal, decoded MLP − optimal) with their 95% intervals, check every seed escaped always-listen, and replace the seed-0 numbers of section 4 and README with the intervals.
+2. **Ask before pushing** `fd4d628`, `e2620c4` and later Phase 8 commits.
+3. **Phase 8 (holistic), remaining:** a plan for progressively larger experiments, informed by the sweep. Proposed order:
    1. multi-seed canonical Tiger;
    2. a baseline comparison;
    3. multi-agent Tiger, whose exact tables must first be verified against Gmytrasiewicz & Doshi;
