@@ -1,5 +1,5 @@
 # ABSOLUTE PATH: tests/test_models.py
-"""Unit tests for the model layer: building blocks, two-hot symlog, belief filter, transition, heads."""
+"""Unit tests for the model layer: building blocks, two-hot codec, belief filter, heads."""
 
 import pytest
 import torch
@@ -16,8 +16,6 @@ from ipomdp.models import (
     TwoHotSymlog,
     ValueHead,
     build_residual_stack,
-    symexp,
-    symlog,
 )
 
 A, O, D, H = 3, 2, 16, 32
@@ -41,10 +39,6 @@ class TestBuildingBlocks:
 
 
 class TestTwoHotSymlog:
-
-    def test_symlog_symexp_are_inverse(self):
-        x = torch.tensor([-100.0, -10.0, -1.0, 0.0, 1.0, 10.0, 100.0])
-        assert torch.allclose(symexp(symlog(x)), x, atol=1e-4)
 
     def test_bins_are_symmetric_and_include_zero(self):
         bins = TwoHotSymlog(255, 2000.0).bins

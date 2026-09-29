@@ -12,9 +12,9 @@
 # 2. Interaction Protocol (canonical POMDP timing):
 #    - reset() samples s_0 and returns NOTHING observable: the agent's first decision is
 #      made from b0 alone. step(a_t) returns (o_{t+1}, r_t, truncated_{t+1}).
-#    - The learned agent encodes "no observation yet" as an all-zero observation vector
-#      at the start of each episode (see src/ipomdp/agents/jepa_agent.py). That encoding is
-#      an agent-side representation of the empty history; the domain emits no such signal.
+#    - The learned agent represents the empty history by the belief filter's learned initial
+#      latent z_0 (models/world_model.py, section 1); no placeholder observation exists on
+#      either side.
 #
 # 3. Continuing Task, Artificial Truncation:
 #    - A FinitePOMDP has no terminal states. `max_steps` only cuts the infinite interaction
@@ -31,8 +31,9 @@
 #      on a given device.
 #
 # 5. Privileged Diagnostics:
-#    - `state` exposes the hidden state for evaluation and probing only (e.g. linear probes
-#      against the true tiger position). It must never be fed to the agent or its losses.
+#    - `state` exposes the hidden state for diagnostics only (training/rollout.py returns it
+#      next to the episodes). It must never be fed to the agent or its losses; the probes of
+#      ipomdp.interpretability target the exact posterior, not the hidden state.
 # ==============================================================================
 
 from dataclasses import dataclass

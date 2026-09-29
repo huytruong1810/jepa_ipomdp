@@ -111,7 +111,7 @@ class ExactSearchModel:
         return self.leaf_values.value(beliefs.reshape(-1, beliefs.shape[-1])).view(beliefs.shape[:-1])
 
     def expand(self, states: Tensor) -> Expansion:
-        n, num_a, num_o = states.shape[0], self.num_actions, self.num_observations
+        num_o = self.num_observations
         rewards = states @ self._reward.T                                              # (N, A)
         predicted = torch.einsum("ns,ast->nat", states, self._transition)              # (N, A, S')
         joint = predicted.unsqueeze(2) * self._observation.transpose(1, 2).unsqueeze(0)  # (N, A, O, S')

@@ -8,8 +8,9 @@
 #      b'(s') = O(o | s', a) * sum_s T(s' | s, a) b(s)  /  P(o | b, a)
 #      P(o | b, a) = sum_s' O(o | s', a) * sum_s T(s' | s, a) b(s)
 #    - This is the ground truth the learned JEPA belief filter is measured against:
-#      probes decode the latent into b(s), and the observation-probe head is scored
-#      against P(o | b, a) (KL, NLL, Brier).
+#      probes decode the latent into b(s) (interpretability/belief_probe.py), and the
+#      learned observation head is scored against P(o | b, a) by KL
+#      (tests/test_world_model_acceptance.py).
 #
 # 2. Batched, Stateless Functions:
 #    - Plain functions over (B, S) tensors, not a stateful "oracle" object. Callers keep

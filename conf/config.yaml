@@ -51,7 +51,7 @@ defaults:
   - env: tiger
   - _self_
 
-# Every artifact of a run (checkpoints, TensorBoard, plots, JSONL log, resolved config) goes here.
+# Every artifact of a run (checkpoints, TensorBoard, plots, main.log, resolved config) goes here.
 hydra:
   run:
     dir: runs/${env.name}/${now:%Y-%m-%d_%H-%M-%S}_seed${seed}

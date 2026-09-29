@@ -9,7 +9,7 @@
 #      z_0, exactly as the agent runs it online. The former chunked buffer started mid-episode
 #      chunks from a zero belief with a short burn-in, so the trained filter saw histories the
 #      online filter never sees (and lost evidence older than the burn-in window). Canonical
-#      Tiger episodes are max_steps long (20), so whole-episode storage is exact and cheap.
+#      Tiger episodes are env.max_steps = 100 steps long, so whole-episode storage is exact and cheap.
 #
 # 2. Storage on the Training Device, Uniform Sampling:
 #    - Episodes are stored as dense int64/float32 tensors on the same device as the model:

@@ -46,7 +46,7 @@
 #      belief was worth -215 and the post-opening prior -482; with such leaves listening always
 #      beat opening and the greedy agent listened forever (evaluation return -19.88, exactly the
 #      always-listen return, at every evaluation).
-#    - gamma is the domain's discount (0.95 for canonical Tiger), passed in by main.py.
+#    - gamma is the domain's discount (0.95 for canonical Tiger), passed in by TrainingRun.
 #
 # 4. No Imagination Losses:
 #    - An earlier version also trained V on latents imagined by a stochastic latent
@@ -60,6 +60,8 @@
 #
 # 6. Mixed Precision:
 #    - The forward pass runs under bfloat16 autocast on CUDA; losses are computed in float32.
+#      The value targets are computed with autocast disabled, in float32, exactly as the planner
+#      evaluates the same backup (planning/search_model.py, section 4).
 # ==============================================================================
 
 import copy
@@ -151,7 +153,7 @@ class WorldModelTrainer:
         One optimiser step on a batch of complete episodes.
 
         Returns:
-            Scalar diagnostics (losses and value explained variance).
+            Scalar diagnostics (losses, mean value target and mean |V - V_target|).
         """
         self.world_model.train()
         actions = F.one_hot(episodes.actions, self.num_actions).float()

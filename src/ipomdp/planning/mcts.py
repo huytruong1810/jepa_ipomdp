@@ -204,7 +204,7 @@ class BeliefTreeSearch:
 
         Args:
             root_states: States of shape (B, ...), as produced by the SearchModel.
-            temperature: 0 for a one-hot argmax of visit counts, > 0 for counts^(1/T).
+            temperature: 0 for a one-hot on argmax_a Q(root, a), > 0 for visit counts^(1/T).
 
         Returns:
             Action distributions of shape (B, |A|), float32 on the states' device.

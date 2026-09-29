@@ -105,7 +105,7 @@ The three scripts are thin shells over `ipomdp.experiments`; no script imports a
   - Work on `main`.
 - Source files start with a `# ABSOLUTE PATH: <repo-relative path>` line and a `DESIGN DECISIONS & THEORETICAL FOUNDATIONS` comment block.
 - Anything used as ground truth (domain tensors, filter, solver) is float64. Statistical tests use fixed seeds and a 5-standard-error tolerance.
-- Inference runs under `bfloat16` autocast. Non-finite losses or two-hot targets raise `FloatingPointError`; they are never skipped or sanitized.
+- Training forward passes run under `bfloat16` autocast on CUDA; planning, value targets and analysis run in float32 without autocast. Non-finite losses or two-hot targets raise `FloatingPointError`; they are never skipped or sanitized.
 - Never copy CUDA tensors to the CPU with `non_blocking=True` and then read them without synchronizing. The result is stale memory, which silently corrupted every replay buffer before commit `c267482`.
 - Value/reward projection layers are zero-initialized on purpose.
 - Before launching training, check whether a run is already going (`pgrep -fl main.py`). Another project on this machine (`~/projects/ipomcp`) sometimes runs CPU-heavy experiments, which inflates timings.

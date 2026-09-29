@@ -3,14 +3,15 @@
 # NEURAL BUILDING BLOCKS: RMSNorm AND SwiGLU RESIDUAL MLPs
 # ==============================================================================
 #
-# DESIGN DECISIONS & ARCHITECTURAL HIGHLIGHTS:
-# 1. Root Mean Square Normalization (RMSNorm):
-#    - Float32 precision invariance with epsilon=1e-6 to ensure robust normalization
-#      across large transformer/ResMLP representations without mean-centering overhead.
+# DESIGN DECISIONS & THEORETICAL FOUNDATIONS:
+# 1. RMSNorm:
+#    - Scale-only normalisation (no mean centring), computed in float32 with eps = 1e-6 so it
+#      is stable under bfloat16 autocast.
 #
-# 2. SwiGLU Gated Multi-Layer Perceptrons:
-#    - Employs gated linear unit activation: SwiGLU(x) = (w1(x) * swish(w2(x))) @ w3
-#    - Zero-initialized final projection w3 ensures residual identity mapping at step 0.
+# 2. SwiGLU Residual Blocks:
+#    - x + w3( silu(w1(RMSNorm(x))) * w2(RMSNorm(x)) ).
+#    - w3 is zero-initialised, so every block is the identity at initialisation and a stack
+#      starts as its input and output projections.
 #
 # 3. Scope:
 #    - Attention poolers, swarm action encoders and 2D positional encodings belonged to the
@@ -79,7 +80,7 @@ def build_residual_stack(
     num_blocks: int = 2
 ) -> nn.Sequential:
     """
-    Constructs a SOTA SwiGLU Gated ResMLP network.
+    Input projection + RMSNorm, num_blocks SwiGLU residual blocks, output projection.
 
     Args:
         input_dim: Input feature dimensionality.

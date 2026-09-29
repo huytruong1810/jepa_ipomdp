@@ -6,7 +6,7 @@
 # DESIGN DECISIONS & THEORETICAL FOUNDATIONS:
 # 1. Purpose:
 #    - Value and reward heads predict a categorical distribution over K fixed bins; the
-#      prediction used by the planner and the TD targets is the distribution's MEAN. The
+#      prediction used by the planner and the Bellman value targets is the distribution's MEAN. The
 #      categorical cross-entropy is scale-free, so rewards of -100 and -1 train equally
 #      well without return normalisation (DreamerV3, Hafner et al. 2023).
 #
@@ -46,17 +46,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-
-def symlog(x: Tensor) -> Tensor:
-    """sign(x) * ln(1 + |x|), computed in float32."""
-    x = x.float()
-    return torch.sign(x) * torch.log1p(x.abs())
-
-
-def symexp(x: Tensor) -> Tensor:
-    """sign(x) * (exp(|x|) - 1), the inverse of symlog, computed in float32."""
-    x = x.float()
-    return torch.sign(x) * torch.expm1(x.abs())
 
 
 class TwoHotSymlog(nn.Module):

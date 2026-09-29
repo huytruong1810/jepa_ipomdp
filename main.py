@@ -10,7 +10,7 @@
 #      schedules evaluation / checkpointing / visualisation, and handles SIGINT.
 #
 # 2. One Directory per Run:
-#    - Every artifact of a run (checkpoints, TensorBoard events, plots, JSONL log) is written
+#    - Every artifact of a run (checkpoints, TensorBoard events, plots, main.log) is written
 #      under Hydra's run output directory, so runs never overwrite each other. A run is
 #      continued bit-for-bit with `resume=<run dir>/checkpoints/latest.pt` (which restores the
 #      replay buffer and every random generator, see training/run.py).

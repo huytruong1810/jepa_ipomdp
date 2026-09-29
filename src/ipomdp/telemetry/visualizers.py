@@ -60,7 +60,7 @@ class BeliefGeometryVisualizer:
 class MCTSGraphVisualizer:
     """Renders belief-tree searches (planning/mcts.py) into interactive Plotly HTML graphs."""
 
-    def __init__(self, save_dir: str = "plots/trees"):
+    def __init__(self, save_dir: str):
         """Initializes plot output directory."""
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
@@ -157,7 +157,7 @@ class RewardTrajectoryVisualizer:
     confidence bounds, and action-annotated rollout histories.
     """
 
-    def __init__(self, save_dir: str = "plots/rewards"):
+    def __init__(self, save_dir: str):
         """Initializes plot output directory."""
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)

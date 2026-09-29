@@ -22,7 +22,8 @@
 # 3. Training Signal (see src/ipomdp/training/trainer.py):
 #    - JEPA self-prediction: the predictor predicts the EMA target filter's next latent
 #      z-bar_{t+1} from (z_t, a_t), in latent space, with no observation reconstruction.
-#    - Grounding: reward prediction from (z_t, a_t) (plus the value/TD targets).
+#    - Grounding: reward prediction from (z_t, a_t). The value and observation heads read
+#      detached latents and do not shape the representation (training/trainer.py, section 2).
 #    - Measured on canonical Tiger (Phase-2 isolated study, random-policy data): JEPA
 #      self-prediction ALONE leaves the latent no more belief-like than an untrained network
 #      (probe KL 0.018 vs 0.024 nats); reward grounding brings it to 0.0015 (linear probe) /

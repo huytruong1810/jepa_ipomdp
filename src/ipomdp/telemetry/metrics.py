@@ -26,8 +26,6 @@ class MetricsLogger:
     def log_metrics(self, metrics_dict: Dict[str, Union[float, int]], step: int, prefix: str = ""):
         """Logs a dictionary of scalar metrics with optional UI category prefix."""
         for key, value in metrics_dict.items():
-            if value is None:
-                continue
             tag = f"{prefix}/{key}" if prefix else key
             self.writer.add_scalar(tag, float(value), int(step))
 
