@@ -17,9 +17,9 @@
 #         a_t = act()  ->  environment returns o_{t+1}  ->  update(a_t, o_{t+1}).
 #
 # 3. Exploration:
-#    - act() samples from the visit-count distribution shaped by `temperature` (0 = greedy);
-#      act_uniformly() is used to fill the replay buffer before planning starts. Root
-#      Dirichlet noise is a property of the planner (training vs evaluation planners).
+#    - act() samples from the visit-count distribution shaped by `temperature` (0 = greedy). Root
+#      Dirichlet noise is a property of the planner (training vs evaluation planners). Replay
+#      warm-up uses UniformRandomAgent (agents/uniform_agent.py), not this class.
 # ==============================================================================
 
 import torch
@@ -76,7 +76,3 @@ class PlanningAgent:
         policy = self.planner.search(self.state, self.temperature)
         return torch.multinomial(policy, num_samples=1, generator=self._generator).squeeze(-1)
 
-    def act_uniformly(self) -> Tensor:
-        """Uniformly random a_t (replay warm-up); returns int64 shape (B,)."""
-        return torch.randint(0, self.model.num_actions, (self.batch_size,), generator=self._generator,
-                             device=self.device)

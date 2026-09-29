@@ -1,12 +1,14 @@
 # ABSOLUTE PATH: src/ipomdp/telemetry/visualizers.py
 # ==============================================================================
-# LATENT VISUALIZERS, MCTS GRAPH RENDERERS & SEMANTIC PROBES
+# BELIEF-GEOMETRY, SEARCH-TREE AND REWARD-TRAJECTORY FIGURES
 # ==============================================================================
 #
 # DESIGN DECISIONS & THEORETICAL FOUNDATIONS:
-# 1. Vector Beliefs:
-#    - Belief latents are single vectors (models/world_model.py, section 2); trajectories
-#      of shape (T, D) are projected with PCA directly (reviewed in Phase 6).
+# 1. Belief Geometry, Not Per-Episode Trajectories:
+#    - BeliefGeometryVisualizer projects the latents of MANY histories onto one shared PCA plane
+#      and colours them by the exact posterior (interpretability/analysis.py). The earlier
+#      latent plot fitted a separate PCA per episode (axes not comparable across plots) and
+#      coloured by the hidden state, which the belief cannot know.
 #
 # 2. Discrete Integer Layer Indexing for MCTS Tree Layouts:
 #    - Uses discrete integer layer keys (2*d for state nodes, 2*d + 1 for action nodes)
@@ -15,232 +17,44 @@
 
 from pathlib import Path
 from typing import List, Dict, Optional, Any
-import matplotlib as mpl
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import plotly.graph_objects as go
-from sklearn.decomposition import PCA
 import torch
 
 
-class LatentSpaceVisualizer:
-    """Visualizes high-dimensional latent belief trajectories using Permutation-Invariant PCA."""
+class BeliefGeometryVisualizer:
+    """Latents of many histories in one shared PCA plane, coloured by the exact posterior."""
 
-    def __init__(self, save_dir: str = "plots/latent"):
-        """Initializes plot output directory."""
+    def __init__(self, save_dir: str):
         self.save_dir = Path(save_dir)
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
-    def _pool_belief(self, b_seq: torch.Tensor, value_head: Optional[torch.nn.Module] = None) -> np.ndarray:
-        """Belief latents (T, D) as a NumPy matrix for PCA."""
-        if b_seq.dim() != 2:
-            raise ValueError(f"Expected belief latents of shape (T, D), got {tuple(b_seq.shape)}.")
-        return b_seq.detach().float().cpu().numpy()
+    def plot(self, latents: torch.Tensor, posteriors: torch.Tensor, state_name: str, filename: str) -> plt.Figure:
+        """
+        Scatter of latents (N, D) in their first two principal components, coloured by the exact
+        posterior of state 0 (N,). One PCA is fitted over all N latents, so axes are comparable
+        across the whole data set (an earlier version fitted a new PCA per episode).
 
-    def plot_trajectory(
-        self,
-        beliefs: List[torch.Tensor],
-        true_states: List[torch.Tensor],
-        actions: List[int],
-        filename: str = "latent_trajectory",
-        value_head: Optional[torch.nn.Module] = None,
-        action_map: Optional[Dict[int, str]] = None,
-        n_components: int = 2
-    ):
-        """Plots a single episodic trajectory in 1D (vs Time) or 2D PCA space."""
-        if len(beliefs) < 2:
-            return
-
-        b_seq = torch.cat(beliefs, dim=0)
-        belief_matrix_np = self._pool_belief(b_seq, value_head)
-
-        n_samples, n_features = belief_matrix_np.shape
-        n_comp = min(n_components, n_samples, n_features)
-        if n_comp < 1:
-            return
-
-        pca = PCA(n_components=n_comp)
-        coords = pca.fit_transform(belief_matrix_np)
-        labels = [int(s.view(-1)[0].item()) if torch.is_tensor(s) else int(s) for s in true_states]
-
-        cmap = mpl.colormaps['tab10']
-        colors = [cmap(l % 10) for l in labels]
-
-        plt.figure(figsize=(12, 9 if n_comp >= 2 else 6))
-
-        if n_comp == 1:
-            timesteps = np.arange(len(coords))
-            coords_1d = coords[:, 0]
-
-            plt.plot(timesteps, coords_1d, color='gray', alpha=0.5, linewidth=2, zorder=1)
-            plt.scatter(timesteps, coords_1d, c=colors, s=120, edgecolors='white', zorder=2)
-
-            for i in range(len(coords_1d)):
-                if i < len(actions):
-                    act_idx = actions[i]
-                    act_str = action_map[act_idx] if (action_map and act_idx in action_map) else f"A:{act_idx}"
-                else:
-                    act_str = "Terminal"
-
-                plt.annotate(
-                    act_str,
-                    (timesteps[i], coords_1d[i]),
-                    xytext=(0, 10),
-                    textcoords='offset points',
-                    ha='center',
-                    fontsize=9,
-                    bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.7, ec="none")
-                )
-
-            plt.scatter(timesteps[0], coords_1d[0], marker='*', color='gold', s=400, edgecolors='black', zorder=3, label='Start')
-            plt.scatter(timesteps[-1], coords_1d[-1], marker='X', color='black', s=250, zorder=3, label='End')
-
-            plt.title("Permutation-Invariant Latent Belief Trajectory (1D PCA vs Time)", fontsize=14, pad=15)
-            plt.xlabel("Timestep (t)")
-            plt.ylabel(f"PC1 ({pca.explained_variance_ratio_[0]:.2%} Variance)")
-        else:
-            coords_2d = coords
-            plt.plot(coords_2d[:, 0], coords_2d[:, 1], color='gray', alpha=0.5, linewidth=2, zorder=1)
-            plt.scatter(coords_2d[:, 0], coords_2d[:, 1], c=colors, s=120, edgecolors='white', zorder=2)
-
-            for i in range(len(coords_2d)):
-                if i < len(actions):
-                    act_idx = actions[i]
-                    act_str = action_map[act_idx] if (action_map and act_idx in action_map) else f"A:{act_idx}"
-                else:
-                    act_str = "Terminal"
-
-                plt.annotate(
-                    act_str,
-                    (coords_2d[i, 0], coords_2d[i, 1]),
-                    xytext=(8, 8),
-                    textcoords='offset points',
-                    fontsize=9,
-                    bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.7, ec="none")
-                )
-
-            plt.scatter(coords_2d[0, 0], coords_2d[0, 1], marker='*', color='gold', s=500, edgecolors='black', zorder=3, label='Start')
-            plt.scatter(coords_2d[-1, 0], coords_2d[-1, 1], marker='X', color='black', s=300, zorder=3, label='End')
-
-            plt.title("Permutation-Invariant Latent Belief Trajectory (2D PCA)", fontsize=14, pad=15)
-            plt.xlabel(f"PC1 ({pca.explained_variance_ratio_[0]:.2%} Variance)")
-            plt.ylabel(f"PC2 ({pca.explained_variance_ratio_[1]:.2%} Variance)")
-
-        plt.grid(True, alpha=0.3, linestyle='--')
-        plt.tight_layout()
-        plt.savefig(self.save_dir / f"{filename}.png", dpi=300, bbox_inches='tight')
-        plt.close()
-
-    def plot_multiple_trajectories(
-        self,
-        trajectories: List[Dict[str, Any]],
-        filename: str = "holistic_latent_space",
-        value_head: Optional[torch.nn.Module] = None,
-        n_components: int = 2
-    ):
-        """Fits a universal PCA space across multiple trajectories in 1D or 2D."""
-        if not trajectories:
-            return
-
-        all_beliefs = []
-        lengths = []
-        for traj in trajectories:
-            b_seq = torch.cat(traj["beliefs"], dim=0)
-            all_beliefs.append(b_seq)
-            lengths.append(b_seq.size(0))
-
-        global_b_seq = torch.cat(all_beliefs, dim=0)
-        global_matrix_np = self._pool_belief(global_b_seq, value_head)
-
-        n_samples, n_features = global_matrix_np.shape
-        n_comp = min(n_components, n_samples, n_features)
-        if n_comp < 1:
-            return
-
-        pca = PCA(n_components=n_comp)
-        global_coords = pca.fit_transform(global_matrix_np)
-
-        plt.figure(figsize=(14, 10 if n_comp >= 2 else 6))
-        start_idx = 0
-
-        for idx, traj in enumerate(trajectories):
-            end_idx = start_idx + lengths[idx]
-            color = traj.get('color', 'gray')
-            name = traj.get('name', f'Trajectory {idx}')
-
-            if n_comp == 1:
-                traj_y = global_coords[start_idx:end_idx, 0]
-                timesteps = np.arange(len(traj_y))
-
-                plt.plot(timesteps, traj_y, color=color, alpha=0.7, linewidth=2.5, marker='o', label=name, zorder=2)
-                plt.scatter(timesteps[0], traj_y[0], color=color, marker='*', s=300, edgecolor='black', zorder=4)
-                plt.scatter(timesteps[-1], traj_y[-1], color=color, marker='s', s=100, edgecolor='black', zorder=4)
-            else:
-                traj_x = global_coords[start_idx:end_idx, 0]
-                traj_y = global_coords[start_idx:end_idx, 1]
-
-                plt.plot(traj_x, traj_y, color=color, alpha=0.6, linewidth=3, label=name, zorder=2)
-                plt.scatter(traj_x[0], traj_y[0], color=color, marker='*', s=400, edgecolor='black', zorder=4)
-                plt.scatter(traj_x[-1], traj_y[-1], color=color, marker='o', s=100, edgecolor='black', zorder=4)
-
-            start_idx = end_idx
-
-        if n_comp == 1:
-            plt.title("Holistic Latent Space Divergence (1D Universal PCA vs Time)", fontsize=16, pad=15)
-            plt.xlabel("Timestep (t)")
-            plt.ylabel(f"PC1 ({pca.explained_variance_ratio_[0]:.2%} Variance)")
-        else:
-            plt.title("Holistic Latent Space Divergence (2D Universal PCA)", fontsize=16, pad=15)
-            plt.xlabel(f"PC1 ({pca.explained_variance_ratio_[0]:.2%} Variance)")
-            plt.ylabel(f"PC2 ({pca.explained_variance_ratio_[1]:.2%} Variance)")
-
-        plt.legend(loc='best', fontsize=10, framealpha=0.9)
-        plt.grid(True, alpha=0.3, linestyle='--')
-        plt.tight_layout()
-        plt.savefig(self.save_dir / f"{filename}.png", dpi=300, bbox_inches='tight')
-        plt.close()
-
-    def plot_interactive(
-        self,
-        beliefs: List[torch.Tensor],
-        filename: str = "interactive_latent.html",
-        value_head: Optional[torch.nn.Module] = None
-    ):
-        """Generates an interactive Plotly HTML visualizer."""
-        if len(beliefs) < 2:
-            return
-
-        b_seq = torch.cat(beliefs, dim=0)
-        belief_matrix_np = self._pool_belief(b_seq, value_head)
-
-        n_samples, n_features = belief_matrix_np.shape
-        n_components = min(3, n_samples, n_features)
-        if n_components < 1:
-            return
-
-        pca = PCA(n_components=n_components)
-        coords = pca.fit_transform(belief_matrix_np)
-        time_steps = np.arange(len(coords))
-
-        if n_components >= 3:
-            fig = go.Figure(data=[go.Scatter3d(
-                x=coords[:, 0], y=coords[:, 1], z=coords[:, 2],
-                mode='lines+markers',
-                marker=dict(size=6, color=time_steps, colorscale='Viridis', opacity=0.8, colorbar=dict(title="Time")),
-                line=dict(color='gray', width=2)
-            )])
-            fig.update_layout(title="Interactive 3D Latent Trajectory")
-        else:
-            fig = go.Figure(data=[go.Scatter(
-                x=coords[:, 0], y=coords[:, 1],
-                mode='lines+markers',
-                marker=dict(size=10, color=time_steps, colorscale='Viridis', showscale=True),
-                line=dict(color='gray', width=2)
-            )])
-            fig.update_layout(title="Interactive 2D Latent Trajectory")
-
-        fig.write_html(str(self.save_dir / filename))
+        Returns:
+            The figure (also saved as <filename>.png), for TensorBoard.
+        """
+        centred = latents.double() - latents.double().mean(0)
+        _, singular_values, vh = torch.linalg.svd(centred, full_matrices=False)
+        coords = (centred @ vh[:2].T).cpu().numpy()
+        ratios = (singular_values ** 2 / (singular_values ** 2).sum())[:2].tolist()
+        fig, ax = plt.subplots(figsize=(8, 6), dpi=150)
+        points = ax.scatter(coords[:, 0], coords[:, 1], c=posteriors.cpu().numpy(), cmap="coolwarm", vmin=0.0,
+                            vmax=1.0, s=6, alpha=0.6)
+        fig.colorbar(points, ax=ax, label=f"exact posterior P({state_name} | history)")
+        ax.set_xlabel(f"PC1 ({ratios[0]:.1%} of variance)")
+        ax.set_ylabel(f"PC2 ({ratios[1]:.1%} of variance)")
+        ax.set_title("Belief-filter latents coloured by the exact Bayes posterior")
+        ax.grid(True, alpha=0.3, linestyle="--")
+        fig.tight_layout()
+        fig.savefig(self.save_dir / f"{filename}.png")
+        return fig
 
 
 class MCTSGraphVisualizer:
@@ -373,9 +187,7 @@ class RewardTrajectoryVisualizer:
             Matplotlib Figure object for TensorBoard summary logging.
         """
         if not trajectories:
-            fig, ax = plt.subplots(figsize=(6, 4))
-            ax.text(0.5, 0.5, "No Trajectories Available", ha="center", va="center")
-            return fig
+            raise ValueError("plot_cumulative_rewards needs at least one trajectory.")
 
         # Determine uniform max length across trajectories
         max_t = max(len(t["cum_rewards"]) for t in trajectories)
@@ -467,7 +279,6 @@ class RewardTrajectoryVisualizer:
         ax2.set_xlabel("Episode Timestep ($t$)", fontsize=12, fontweight="bold")
         ax2.set_ylabel("Cumulative Reward", fontsize=12, fontweight="bold")
         ax2.set_title("Sample Episode Rollouts (with Action Markers)", fontsize=12, fontweight="bold")
-        ax2.set_xticks(timesteps)
         ax2.grid(True, linestyle="--", alpha=0.5)
         ax2.legend(loc="lower left", framealpha=0.9, fontsize=9)
 

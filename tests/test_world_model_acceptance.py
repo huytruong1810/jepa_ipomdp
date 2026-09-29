@@ -8,8 +8,9 @@ Protocol (fixed seeds, GPU, ~20 min):
     - 3000 updates, each on 64 fresh random-policy episodes of 100 steps (no MCTS in training).
       100-step episodes: conf/env/tiger.yaml, section 3. 3000 updates: the fitted value
       iteration of the value head needs them (|V - V*| 26 after 1000 updates, 4.9 after 3000).
-    - Held-out data: 1024 random-policy episodes of 100 steps; latents from the online filter run
-      from its learned z_0; exact posteriors b* from the batched Bayes filter.
+    - Probe data: two disjoint sets of 1024 random-policy episodes of 100 steps (fit / held-out);
+      latents from the online filter run from its learned z_0; exact posteriors b* from the
+      batched Bayes filter.
 
 Checked against exact references (measured at 3000 updates in brackets):
     Belief       probes of z_t vs b*(h_t), KL(b* || probe)            [linear 0.0007, MLP 0.00004]
@@ -25,12 +26,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from ipomdp.agents import PlanningAgent
+from ipomdp.agents import PlanningAgent, UniformRandomAgent
 from ipomdp.domain import BatchedPOMDPEnv, build_tiger_pomdp, observation_distribution, solve_infinite_horizon
 from ipomdp.planning import BeliefTreeSearch, LearnedSearchModel
-from ipomdp.interpretability import collect_probe_dataset, linear_probe, mlp_probe, uniform_random_policy
+from ipomdp.interpretability import build_probe_dataset, evaluate_probe, fit_linear_probe, fit_mlp_probe
 from ipomdp.models import BeliefFilter, LatentPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueHead
-from ipomdp.training import EpisodeBatch, TrainerConfig, WorldModelTrainer, discounted_returns, play_episodes
+from ipomdp.training import TrainerConfig, WorldModelTrainer, discounted_returns, play_episodes
 
 UPDATES, BATCH, LENGTH, DIM, HIDDEN = 3000, 64, 100, 32, 64
 
@@ -51,27 +52,22 @@ def train_and_measure() -> dict:
         world_model, value_head, reward_head, observation_head, codec, num_a, num_o, pomdp.discount,
         TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0, value_target_momentum=0.9), device)
 
-    def probe_data():
-        return collect_probe_dataset(pomdp, world_model.belief_filter, uniform_random_policy(num_a, 999, device),
-                                     1024, LENGTH, seed=999, device=device)
+    def probe_data(seed):
+        episodes, _ = play_episodes(BatchedPOMDPEnv(pomdp, 1024, LENGTH, seed, device),
+                                    UniformRandomAgent(num_a, 1024, seed, device))
+        return build_probe_dataset(pomdp, world_model.belief_filter, episodes)
 
-    untrained_linear = linear_probe(probe_data())
-    behaviour = uniform_random_policy(num_a, 123, device)
+    untrained_linear = evaluate_probe(fit_linear_probe(probe_data(998)), probe_data(999))
+    behaviour = UniformRandomAgent(num_a, BATCH, 123, device)
     for update in range(UPDATES):
-        env = BatchedPOMDPEnv(pomdp, BATCH, LENGTH, seed=update, device=device)
-        actions, observations, rewards = [], [], []
-        for t in range(LENGTH):
-            action = behaviour(t, torch.empty(BATCH, pomdp.num_states, device=device))
-            out = env.step(action)
-            actions.append(action)
-            observations.append(out.observation)
-            rewards.append(out.reward)
-        trainer.train_step(EpisodeBatch(torch.stack(actions, 1), torch.stack(observations, 1),
-                                        torch.stack(rewards, 1)))
+        episodes, _ = play_episodes(BatchedPOMDPEnv(pomdp, BATCH, LENGTH, seed=update, device=device), behaviour)
+        trainer.train_step(episodes)
 
-    dataset = probe_data()
+    fit_set, dataset = probe_data(998), probe_data(999)
     latents, beliefs = dataset.latents, dataset.posteriors
-    measured = {"untrained_linear": untrained_linear, "linear": linear_probe(dataset), "mlp": mlp_probe(dataset)}
+    measured = {"untrained_linear": untrained_linear,
+                "linear": evaluate_probe(fit_linear_probe(fit_set), dataset),
+                "mlp": evaluate_probe(fit_mlp_probe(fit_set), dataset)}
     solution = solve_infinite_horizon(pomdp, tolerance=0.1, prune_epsilon=1e-6)
     with torch.no_grad():
         measured["optimal_value"] = solution.value_function.value(beliefs.cpu()).to(device)
@@ -89,7 +85,7 @@ def train_and_measure() -> dict:
     model = LearnedSearchModel(world_model.belief_filter, reward_head, observation_head, value_head, codec,
                                num_a, num_o, pomdp.discount)
     agent = PlanningAgent(model, BeliefTreeSearch(model, 50, 1.25, 0.3, 0.0, seed=0), 256, 0.0, 0, device)
-    episodes, _ = play_episodes(BatchedPOMDPEnv(pomdp, 256, LENGTH, seed=4242, device=device), agent, uniform=False)
+    episodes, _ = play_episodes(BatchedPOMDPEnv(pomdp, 256, LENGTH, seed=4242, device=device), agent)
     returns = discounted_returns(episodes.rewards, pomdp.discount)
     measured["planning_return"] = (float(returns.mean()), float(returns.std()) / 16.0)
     measured["optimal_return"] = float(solution.value_function.value(pomdp.initial_belief.unsqueeze(0)))
@@ -109,11 +105,11 @@ pytestmark = pytest.mark.slow
 def test_belief_filter_encodes_exact_posterior(measured):
     """Measured: linear 0.0013-0.0023, MLP 0.0001-0.0003, worst belief 0.002-0.007; untrained linear 0.022."""
     linear, nonlinear = measured["linear"], measured["mlp"]
-    worst_belief = max(kl for _, kl in nonlinear.mean_kl_by_posterior.values())
+    worst_belief = max(kl for _, kl, _ in nonlinear.by_posterior.values())
     assert linear.mean_kl < 0.005, linear
     assert linear.mean_kl * 4 < measured["untrained_linear"].mean_kl
     assert nonlinear.mean_kl < 0.001, nonlinear
-    assert worst_belief < 0.02, nonlinear.mean_kl_by_posterior
+    assert worst_belief < 0.02, nonlinear.by_posterior
 
 
 def test_reward_head_decodes_expected_reward(measured):

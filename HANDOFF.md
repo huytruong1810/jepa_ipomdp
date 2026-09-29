@@ -1,149 +1,150 @@
-# JEPA I-POMDP: Project State, Incident Recovery & Agent Handoff
+# HANDOFF — JEPA I-POMDP phased review (as of 2026-09-28)
 
-**Handoff Date**: September 14, 2026  
-**Repository**: `https://github.com/huytruong1810/jepa_ipomdp`  
-**Current Branch**: `main` (commit `2686306` + checkpointer guard)  
-**Test Suite Status**: **60 / 60 Passing** (`uv run pytest tests/ -v`, execution ~47s)  
-**Hardware Baseline**: NVIDIA GeForce RTX 5080 Laptop GPU (16 GB VRAM, `sm_120`), Intel Core Ultra 9 275HX, Linux x86_64 (WSL2)
+Read `CLAUDE.md` first: it describes the current architecture and conventions. This file covers the review's state, history and next steps. The module headers (`DESIGN DECISIONS & THEORETICAL FOUNDATIONS` blocks) record the evidence behind every design choice. Read the relevant header before changing a module.
 
----
+## 1. Goal and ground rules
 
-## 1. Incident Records: System Restarts & State Retrieval
+The research code has three contributions:
+1. A JEPA-style recurrent **belief filter** learned while the agent learns the dynamics.
+2. **MCTS planning** over that filter, for POMDPs and later I-POMDPs.
+3. **Interpretability** that maps the latent to the (interactive) belief with quantified error bounds.
 
-### 1.1 Incident 1: Unexpected System Reboot (Sep 11, 2026)
-* **Incident Timeline**:
-  * **September 9, 2026, 21:45**: A 1,000,000-step training experiment on the Tiger domain was launched (`uv run main.py`) following complete resolution of theoretical defects P0–P4 (commit `2686306`).
-  * **September 11, 2026, 06:29**: Host machine underwent an unexpected reboot (uptime log: `reboot system boot 6.18.33.2-micros Fri Sep 11 12:34 / 06:29`).
-  * Continuous training ran uninterrupted for **~32.5 hours**, logging steps 0 through 141,500 before the shutdown.
-  * **September 11, 2026, 12:50**: Session restored; agent resumed training from Step 141,500.
+The user asked for a rigorous, phased, bottom-up review:
 
-### 1.2 Incident 2: WSL Hang & Restart (Sep 14, 2026)
-* **Incident Timeline**:
-  * **September 11, 2026, 12:50**: Training resumed seamlessly from Step 141,500 (`uv run main.py`).
-  * **September 14, 2026, 09:06**: Training ran continuously for **~68 hours** (reaching Step 383,475), when WSL became unresponsive, requiring a restart.
-  * **September 14, 2026, 13:55**: Session restored; agent verified process/GPU state, validated checkpoint integrity, and resumed training from Step 383,000.
+| Phase | Scope | Status |
+|---|---|---|
+| 1 | domain | done |
+| 2 | JEPA filter | done |
+| 3 | DreamerV3 parts | done |
+| 4 | MCTS/agent | done |
+| 5 | training loop | done |
+| 6 | interpretability / error bounds | done |
+| 7 | scripts, configs, results layout | todo |
+| 8 | holistic review | todo |
 
-### 1.3 Preservation of Weights & Data (as of Sep 14, 2026)
-No training progress or code changes were lost:
-1. **Historical Best Model**: [`tiger_checkpoints/best_model.pt`](file:///home/andyj1810/projects/jepa_ipomdp/tiger_checkpoints/best_model.pt) preserved at **Step 191,500** with loss **`0.00308`** (timestamp: Sep 12 00:31).
-2. **Latest Checkpoint**: [`tiger_checkpoints/latest_checkpoint.pt`](file:///home/andyj1810/projects/jepa_ipomdp/tiger_checkpoints/latest_checkpoint.pt) preserved at **Step 383,000** with loss **`0.39161`** (timestamp: Sep 14 08:54, ~12 min before hang).
-3. **Telemetry Logs**: TensorBoard event streams in [`tiger_tensorboard/jepa_ipomdp_20260909-214505/`](file:///home/andyj1810/projects/jepa_ipomdp/tiger_tensorboard/jepa_ipomdp_20260909-214505/) (122 MB) and [`tiger_tensorboard/jepa_ipomdp_20260911-125003/`](file:///home/andyj1810/projects/jepa_ipomdp/tiger_tensorboard/jepa_ipomdp_20260911-125003/) (219 MB) remain fully intact.
+Rules the user set:
+- **Scope:**
+  - Canonical single-agent Tiger only (`tiger.95.POMDP`, γ = 0.95). Never add non-canonical elements to Tiger.
+  - The learned agent must match the exact solver at small scale before anything larger is run.
+- **Code quality:**
+  - No fallback paths, no deprecated code, no backward compatibility, no schema versions. Fail loudly.
+  - Code should read as if written from scratch. Keep comments and docstrings verbose about design decisions.
+  - Follow DDD/DRY/KISS/SOLID. Restructure, rename or delete freely when it improves the design.
+- **Workflow:**
+  - Commit on `main` (remote `github.com/huytruong1810/jepa_ipomdp`). Ask before pushing.
+  - Ask the user whenever a research or design decision is genuinely theirs. So far they have picked the recommended option each time, but they still want to be asked.
+  - Every phase needs a small-scale check against exact references before any larger run.
+- **Environment:** WSL2 Ubuntu, RTX 5080, `uv`, Python 3.12, cu128. Another project (`~/projects/ipomcp`) sometimes runs CPU-heavy experiments on the same machine, which inflates timings. Check `uptime`, and check `pgrep -fl main.py` before launching training.
 
+## 2. Current git state
 
----
+- Last pushed commit: `80ee623` (end of Phase 5).
+- Phase 6 is committed on `main` but not yet pushed.
+- Verification at the Phase 6 commit: fast suite 115 passed; slow `tests/test_world_model_acceptance.py` 5 passed (21:43).
 
-## 2. Theoretical Remediation Prior to Interruption
+## 3. What was done (commit, then the gist)
 
-As documented in [`BACKLOG.md`](file:///home/andyj1810/projects/jepa_ipomdp/BACKLOG.md), commit `2686306` resolved all critical theoretical defects:
+- `db269d3`: baseline snapshot. Old run artifacts deleted (user's decision).
+- `ba1d3fc`, **Phase 1 (domain).**
+  - The old Tiger was not canonical: it emitted a free observation at t = 0, the growl stayed informative after a door opened, and γ was 0.99.
+  - Built `src/ipomdp/domain/`:
+    - `FinitePOMDP`, the single source of truth;
+    - an exact batched Bayes filter;
+    - an exact alpha-vector value iteration (incremental pruning plus a certified infinite-horizon bound; V*(b0) = 19.3713);
+    - a seeded batched env.
+  - Wumpus, UAV and the old scripts deleted.
+- `c267482`, **critical bug.** Non-blocking device-to-host copies stored stale memory in the replay buffer (477 of 500 reads stale). That silently corrupted every earlier GPU run.
+- `ccc985b`, **Phase 2 (JEPA filter).**
+  - The old world model's latent was no more belief-like than a random network's.
+  - Now: `BeliefFilter` with a learned z0, a single latent vector (no slots), whole-episode training, and VICReg removed.
+  - Decision: **filter objective = reward grounding + JEPA self-prediction.**
+- `94c4b1e` and `2191999`, **Phase 3 (DreamerV3 parts).**
+  - Two-hot decoding was Jensen-biased: the −100/+10 door gamble (mean −45) decoded to −2.9. Replaced with an unbiased real-space codec bounded by `FinitePOMDP.value_bound`.
+  - The prior never trained because free bits were swallowing the KL.
+  - Stochastic latent imagination was biased.
+  - Decision: **observation-branching imagination.** A learned `ObservationHead` predicts P(o′|z,a) and the real `BeliefFilter.step` produces the child latents. The JEPA predictor became deterministic and is used for representation learning only.
+  - Tiger episodes are 100 steps. A 20-step truncation left the bootstrap latent unanchored and biased values by 8%.
+- `d110ad9`, **Phase 4 (planner/agent).**
+  - Decision: **no opponent inputs anywhere.** The opponent is folded into the env.
+  - `SearchModel` protocol with `ExactSearchModel` and `LearnedSearchModel`.
+  - `BeliefTreeSearch`: exact branching over observations, **expectimax backups** (mean backups got worse with more search), argmax-Q greedy actions, seeded RNG.
+  - The exact-model agent matches the optimal return (slow test).
+- `682060a`, `db625d9`, `80ee623`, **Phase 5 (training loop).**
+  - `TrainingRun` gives bit-exact resume, including buffer and RNG states.
+  - Greedy evaluation of the discounted return; `best.pt` chosen by evaluation.
+  - Decision: **value target = Bellman optimality backup through the learned model** (EMA target value head, momentum 0.9), with the value head on **detached** latents.
+  - The full loop reaches roughly V*: greedy returns about 12.6–22.4 once learning starts. Default config: 64 episodes × 40 collections with 64 updates each, about 40 min.
+  - Learning is gated by roughly 1000 gradient updates, not by collected data.
+- The commit after `80ee623`, **Phase 6 (interpretability).**
+  - Probes: `build_probe_dataset` from any recorded episodes, fitted `BeliefProbe`s that decode latents, evaluation on held-out episodes.
+  - `error_bounds.py`: span-Hölder bounds (value, one-step regret, discounted loss) in worst-case and expected form.
+  - `analysis.py`: decoded-belief agent versus optimal versus the learned planner on common seeds, plus a geometry report.
+  - Solver: `action_value_functions` (per-action Q* sets).
+  - Agents: `UniformRandomAgent`, and an `Agent` protocol for `play_episodes`.
+  - `BeliefGeometryVisualizer`.
+  - `analyze.py <run_dir>` writes `analysis/report.json` and `geometry.png`.
 
-* **T1 (VICReg Normalization)**: Normalized temporal VICReg variance and covariance penalties by the active sequence length (`vicreg_loss_accum / max(vicreg_steps, 1)`), eliminating the 10x gradient inflation.
-* **T2 & T3 (Episodic Termination Discounting)**: Enforced $\gamma \cdot (1 - d_t)$ discounting across both multi-step dream rollouts and prioritized sequence buffer TD($\lambda$) returns to prevent value leakage across episode horizons.
-* **T4 & T6 (Canonical Open-Loop MCTS & Dirichlet Noise)**: Fixed search to single latent observation mode (`num_latent_obs: 1`) and added Dirichlet exploration noise ($\alpha=0.3, \epsilon=0.25$) at root to break initial symmetry.
-* **T5 (Zero-Initialized Distributional Heads)**: Initialized TwoHot value and reward projection layers to zero weights/biases to guarantee exact $0.0$ expected initial returns.
-* **E1 & E2 (Exploration Annealing & Warmup)**: Integrated 100-episode buffer warmup and temperature annealing from 1.0 to 0.1.
+## 4. Key measured results (all seed 0; cite from the module headers)
 
----
+- **Exact references:** V_h(b0) for h = 1..5 is −1, −1.95, 2.3098, 1.7955, 2.7631; V*(b0) = 19.37.
+- **Off-policy acceptance** (random data, 3000 updates):
 
-## 3. Critical Fix Applied During Recovery: Checkpointer Guard
+  | Check | Result |
+  |---|---|
+  | Belief probe KL, linear / MLP | 0.0007 / 0.00004 |
+  | Door-reward error | about 2 |
+  | Mean \|V − V*\| | 4.9 |
+  | Learned planner return | 21.19 ± 1.69 (V* = 19.28) |
 
-### Root Cause
-During diagnosis of [`src/ipomdp/telemetry/checkpointer.py`](file:///home/andyj1810/projects/jepa_ipomdp/src/ipomdp/telemetry/checkpointer.py), an edge-case bug was identified:
-* `ModelCheckpointer.__init__` initialized `self.best_loss = float('inf')`.
-* When resuming from `tiger_checkpoints/latest_checkpoint.pt`, `self.best_loss` remained `float('inf')` because the filename did not contain `"best"`.
-* Consequently, during subsequent periodic saves, any loss $< \infty$ (e.g. 0.20) would overwrite `best_model.pt`, clobbering the true historical minimum loss (`0.00567`).
+- **Phase 6 analysis** of `runs/tiger/phase5_ratio64_seed0` (`analysis/report.json` exists there):
 
-### Solution Implemented
-In [`src/ipomdp/telemetry/checkpointer.py`](file:///home/andyj1810/projects/jepa_ipomdp/src/ipomdp/telemetry/checkpointer.py):
-```python
-# Guard: Restore existing best_loss from best_model.pt if present on disk
-best_path = self.save_dir / "best_model.pt"
-if best_path.exists():
-    try:
-        best_ckpt = torch.load(best_path, map_location='cpu', weights_only=False)
-        if 'loss' in best_ckpt and not torch.isinf(torch.tensor(best_ckpt['loss'])):
-            self.best_loss = float(best_ckpt['loss'])
-            self.logger.info(f"Initialized best_loss to {self.best_loss:.4f} from existing best_model.pt")
-    except Exception as e:
-        self.logger.warning(f"Failed to read existing best_loss from {best_path}: {e}")
-```
-This guarantees that whenever `main.py` is resumed, `best_model.pt` is strictly protected against regression.
+  | Agent | Discounted return |
+  |---|---|
+  | Optimal | 19.54 ± 1.35 |
+  | Decoded-belief, MLP probe | **19.37 ± 1.32** (the latent is Bayes-sufficient for decisions) |
+  | Decoded-belief, linear probe | 8.38 ± 0.60 (not linearly sufficient: 2.4% wrong decisions) |
+  | Learned planner | 17.14 ± 1.17 |
 
-### 3.2 CUDA Graph & Non-Finite Loss Safeguards (Sep 14, 2026)
-* **CUDAGraph Mark Guard**: In [`main.py`](file:///home/andyj1810/projects/jepa_ipomdp/main.py), guarded `torch.compiler.cudagraph_mark_step_begin()` with `if use_compile and device.type == "cuda":` (preventing spurious calls to `currentStreamCaptureStatusMayInitCtx` when `compile: false`).
-* **TwoHot Target Sanitization**: In [`src/ipomdp/models/distributions.py`](file:///home/andyj1810/projects/jepa_ipomdp/src/ipomdp/models/distributions.py), sanitized `targets_symlog` using `torch.nan_to_num(targets_symlog, nan=0.0, posinf=self.max_val, neginf=self.min_val)` before bin projection to eliminate NaN index overflow into scatter operations.
-* **Loss Finiteness Check**: In [`src/ipomdp/training/trainer.py`](file:///home/andyj1810/projects/jepa_ipomdp/src/ipomdp/training/trainer.py), added an explicit `torch.isfinite(combined_loss)` guard before `combined_loss.backward()` to log and skip any corrupted updates, protecting CUDA memory state.
+  - Geometry: PC1 (68% of variance) is confidence (|Spearman| with |log-odds| 0.755); PC2 (19%) is side (0.816 with log-odds). Minimality ratio 0.283, so the latent is sufficient but not minimal.
+  - Bounds: the expected-form value-error bound is 0.33 against a measured 0.067. Worst-case bounds are loose (for example 55 against 0.70) because of a few rare latents.
 
----
+## 5. Approaches that failed — do not repeat
 
-## 4. Current Execution Status
+- **VICReg**: in any placement it made the latent less belief-like. Pure JEPA self-prediction without reward grounding learns no belief.
+- **Stochastic latent transition** (DreamerV3 discrete z) for MCTS imagination:
+  - The EMA-target latent space differs from the online space the heads read.
+  - Predicting the online target collapses the representation.
+  - The discrete z learned even the two-outcome growl poorly.
+- **Free bits on the balanced KL**: the prior never trained.
+- **Symlog-space two-hot decoding**: biased. **Unbounded bins (±4.85e8)**: tail mass wrecks real-space means.
+- **Mean (MuZero-style) backups with a uniform prior**: estimates degrade with more search.
+- **TD(λ) value targets**: they learn the exploring policy's value, and the greedy agent listens forever (return −19.88 = Σγ^t·(−1)).
+- **Bellman value targets with gradients into the filter**: the representation collapses to the always-listen fixed point.
+- **20-step episodes**: the value is biased because the bootstrap latent is unanchored.
+- **Using R² as the probe metric**: an untrained GRU already reaches R² = 0.93. Use KL and L1.
+- **Chunked PER replay with a zero-initialized belief mid-episode**: replaced by uniform whole-episode replay. PER was not reintroduced for lack of demonstrated benefit.
 
-* **Status**: **Paused by User Request** (Clean Graceful Shutdown via SIGINT)
-* **Paused At**: **Step 400,513 / 1,000,000** (September 14, 2026, 20:07:58)
-* **Command to Resume**: `uv run main.py`
-* **Telemetry & Artifacts**:
-  * Checkpoints: [`tiger_checkpoints/latest_checkpoint.pt`](file:///home/andyj1810/projects/jepa_ipomdp/tiger_checkpoints/latest_checkpoint.pt) (synced to **Step 400,513**, loss `0.57307`).
-  * Interrupt Checkpoint: [`tiger_checkpoints/interrupt_checkpoint.pt`](file:///home/andyj1810/projects/jepa_ipomdp/tiger_checkpoints/interrupt_checkpoint.pt) (saved at **Step 400,513**).
-  * Best Model: [`tiger_checkpoints/best_model.pt`](file:///home/andyj1810/projects/jepa_ipomdp/tiger_checkpoints/best_model.pt) (preserved at step 191,500 with loss `0.00308`).
-  * Live TensorBoard: [`tiger_tensorboard/`](file:///home/andyj1810/projects/jepa_ipomdp/tiger_tensorboard/)
-  * Diagnostic Plots: [`tiger_plots/`](file:///home/andyj1810/projects/jepa_ipomdp/tiger_plots/)
+## 6. Next actions (in order)
 
-
-
-
----
-
-## 5. Standard Operating Procedures (SOP) for Future Agents
-
-If the machine reboots, crashes, or the session restarts again, future agents must follow these exact steps:
-
-### Step 1: Verify Hardware & Process State
-Check whether training is currently running:
-```bash
-pgrep -fl "main.py"
-```
-Check GPU status and VRAM allocation:
-```bash
-nvidia-smi
-```
-
-### Step 2: Check Checkpoint Timestamps & Steps
-Inspect the step count and loss values without loading entire tensor state dicts:
-```bash
-uv run python -c "
-import torch
-for name in ['latest_checkpoint.pt', 'best_model.pt']:
-    try:
-        c = torch.load(f'tiger_checkpoints/{name}', map_location='cpu')
-        print(f'{name}: Step {c.get(\"step\")} | Loss {c.get(\"loss\"):.5f}')
-    except Exception as e:
-        print(f'{name}: {e}')
-"
-```
-
-### Step 3: Run Fast Verification Tests
-Verify regression test suite passes before resuming:
-```bash
-uv run pytest tests/test_core_utils.py -v
-```
-
-### Step 4: Resume Training
-To resume training seamlessly, execute:
-```bash
-uv run main.py
-```
-*Note*: `main.py` is configured by default to check `tiger_checkpoints/latest_checkpoint.pt`. It automatically loads all model weights, optimizer state, and step offsets, and safely initializes `best_loss` from `best_model.pt`.
-
-### Step 5: Probing & Evaluation (Optional)
-To evaluate checkpoints against Bayesian oracle bounds:
-* **Representational Probing**:
-  ```bash
-  uv run probe_tiger.py --checkpoint tiger_checkpoints/best_model.pt
-  ```
-* **KL Divergence Evaluation**:
-  ```bash
-  uv run eval_kl_tiger.py --checkpoint tiger_checkpoints/best_model.pt
-  ```
-* **Visualizing Agent Gameplay**:
-  ```bash
-  uv run enjoy_tiger.py --checkpoint tiger_checkpoints/best_model.pt
-  ```
+1. **Push Phase 6** once the user approves.
+2. **Phase 7 (scripts, configs, results layout):**
+   - Decide one CLI layout. Today there are two styles: `main.py` (Hydra) and `analyze.py` (argparse, imports `main.py`).
+   - Delete or rewrite `plot_rewards.py`, which still points at `tiger_tensorboard/`.
+   - Rewrite `README.md`: its structure section and theory are stale (VICReg, slots, λ-returns, SumTree).
+   - Delete or refresh `BACKLOG.md`.
+   - `pyproject.toml`: check whether `scikit-learn`, `plotly`, `networkx`, `torchvision` and `torchaudio` are still needed; `pytest` belongs in dev dependencies.
+   - Remove the stray `src/__init__.py` and `__pycache__/` at the repo root.
+   - Update `.gitignore`: the old `*_checkpoints` / `*_tensorboard` patterns are obsolete, and `runs/` holds the Phase 5 runs.
+   - **Add multi-seed experiment tooling**: every result so far is seed 0, and rigorous claims need confidence intervals over seeds.
+3. **Phase 8 (holistic):** end-to-end consistency review, plus a plan for progressively larger experiments. Proposed order:
+   1. multi-seed canonical Tiger;
+   2. a baseline comparison;
+   3. multi-agent Tiger, whose exact tables must first be verified against Gmytrasiewicz & Doshi;
+   4. I-POMDP levels via the S × M_j reduction.
+4. **Known open issues to raise with the user:**
+   - The learned planner (17.1) trails the decoded-belief agent (19.4); the gap comes from the learned heads, not the representation.
+   - Late-run evaluation dips (5.5 at one point).
+   - Slow value convergence (|V − V*| was still 4.9 after 3000 updates).
+   - The latent is not linearly sufficient.
+   - Worst-case bounds are loose.
+   - Search throughput is about 220 transitions/s at B = 256 and is Python-bound.

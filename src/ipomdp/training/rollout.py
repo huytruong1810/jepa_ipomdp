@@ -22,22 +22,34 @@
 #      episode sum logged by an earlier version is not comparable to V*.
 # ==============================================================================
 
+from typing import Protocol
+
 import torch
 from torch import Tensor
 
-from ..agents import PlanningAgent
 from ..domain import BatchedPOMDPEnv
 from .episode_buffer import EpisodeBatch
 
 
-def play_episodes(env: BatchedPOMDPEnv, agent: PlanningAgent, uniform: bool) -> tuple[EpisodeBatch, Tensor]:
+class Agent(Protocol):
+    """What play_episodes needs: PlanningAgent, UniformRandomAgent and analysis agents implement it."""
+
+    batch_size: int
+
+    def reset(self) -> None: ...
+
+    def act(self) -> Tensor: ...
+
+    def update(self, action: Tensor, observation: Tensor) -> None: ...
+
+
+def play_episodes(env: BatchedPOMDPEnv, agent: Agent) -> tuple[EpisodeBatch, Tensor]:
     """
     Plays env.batch_size complete episodes.
 
     Args:
         env: Simulator (its batch size must equal the agent's).
-        agent: Planning agent (its temperature and planner decide exploration).
-        uniform: Choose actions uniformly at random instead of planning (replay warm-up).
+        agent: Any Agent (its own settings decide exploration).
 
     Returns:
         (EpisodeBatch of shape (B, T), hidden states s_0..s_T of shape (B, T + 1)).
@@ -48,7 +60,7 @@ def play_episodes(env: BatchedPOMDPEnv, agent: PlanningAgent, uniform: bool) -> 
     agent.reset()
     actions, observations, rewards, states = [], [], [], [env.state]
     for _ in range(env.max_steps):
-        action = agent.act_uniformly() if uniform else agent.act()
+        action = agent.act()
         out = env.step(action)
         agent.update(action, out.observation)
         actions.append(action)

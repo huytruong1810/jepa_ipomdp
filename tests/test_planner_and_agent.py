@@ -175,6 +175,17 @@ class TestLearnedSearchModel:
         assert stepped.shape == (4, dim)
 
 
+class TestUniformRandomAgent:
+
+    def test_actions_are_uniform_and_seeded(self):
+        from ipomdp.agents import UniformRandomAgent
+        first = UniformRandomAgent(3, 30000, seed=1, device=CPU).act()
+        again = UniformRandomAgent(3, 30000, seed=1, device=CPU).act()
+        assert torch.equal(first, again)
+        counts = torch.bincount(first, minlength=3).double() / 30000
+        assert torch.allclose(counts, torch.full((3,), 1 / 3, dtype=torch.float64), atol=0.02)
+
+
 class TestPlanningAgent:
 
     def test_tracks_exact_beliefs_with_canonical_timing(self, tiger, value_functions):
@@ -189,8 +200,6 @@ class TestPlanningAgent:
         assert torch.allclose(agent.state, belief_update(tiger, model.initial_states(3), action, observation))
         agent.reset()
         assert torch.equal(agent.state, model.initial_states(3))
-        uniform = agent.act_uniformly()
-        assert ((uniform >= 0) & (uniform < 3)).all()
 
 
 def _discounted_returns(tiger, agent, steps, seed):

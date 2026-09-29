@@ -34,13 +34,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 from omegaconf import DictConfig
 import torch
-import torch.nn.functional as F
 from tqdm import tqdm
 
 from ipomdp.domain import FinitePOMDP, build_tiger_pomdp
+from ipomdp.interpretability import build_probe_dataset
 from ipomdp.telemetry import (
+    BeliefGeometryVisualizer,
     ExecutionGuardrail,
-    LatentSpaceVisualizer,
     MCTSGraphVisualizer,
     MetricsLogger,
     PipelineProfiler,
@@ -70,18 +70,17 @@ def build_run_config(cfg: DictConfig) -> RunConfig:
 
 
 def visualize(run: TrainingRun, pomdp: FinitePOMDP, collection: int, plots: Path, metrics_logger: MetricsLogger) -> None:
-    """Latent trajectory, search tree and cumulative rewards of greedy evaluation episodes."""
-    episodes, states = play_episodes(run.eval_env, run.eval_agent, uniform=False)
-    with torch.no_grad():
-        latents = run.world_model.belief_filter.unroll(F.one_hot(episodes.actions[:1], pomdp.num_actions).float(),
-                                                       F.one_hot(episodes.observations[:1], pomdp.num_observations).float())
-    action_map = dict(enumerate(pomdp.action_names))
-    LatentSpaceVisualizer(save_dir=str(plots / "latent")).plot_trajectory(
-        beliefs=list(latents[0, :-1].unsqueeze(1)), true_states=list(states[0, :-1].unsqueeze(1)),
-        actions=episodes.actions[0].tolist(), filename=f"trajectory_c{collection}", action_map=action_map)
+    """Belief geometry, search tree and cumulative rewards of greedy evaluation episodes."""
+    episodes, _ = play_episodes(run.eval_env, run.eval_agent)
+    dataset = build_probe_dataset(pomdp, run.world_model.belief_filter, episodes)
+    figure = BeliefGeometryVisualizer(save_dir=str(plots / "geometry")).plot(
+        dataset.latents, dataset.posteriors[:, 0], pomdp.state_names[0], filename=f"geometry_c{collection}")
+    metrics_logger.log_figure("Visuals/belief_geometry", figure, collection)
+    plt.close(figure)
     MCTSGraphVisualizer(save_dir=str(plots / "trees")).visualize(
         run.eval_agent.planner.roots[0], pomdp.discount, pomdp.action_names, pomdp.observation_names,
         filename=f"mcts_tree_c{collection}")
+    action_map = dict(enumerate(pomdp.action_names))
     trajectories = [{"actions": acts, "rewards": rews, "cum_rewards": np.concatenate([[0.0], np.cumsum(rews)]).tolist()}
                     for acts, rews in zip(episodes.actions[:16].tolist(), episodes.rewards[:16].tolist())]
     figure = RewardTrajectoryVisualizer(save_dir=str(plots)).plot_cumulative_rewards(

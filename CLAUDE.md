@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Research code for a model-based RL agent for partially observable (and eventually interactive, I-POMDP) domains. A recurrent JEPA belief filter (no observation decoder) keeps a latent belief `z_t ∈ R^D`. A belief-tree MCTS plans over those latents using learned reward, observation and value heads. README.md holds the original theory write-up and is partly superseded by the module headers. **README's "Repository Structure" section and HANDOFF.md are stale** (they describe the pre-review codebase and a deleted training run).
 
-The codebase is being reviewed bottom-up in phases (domain → JEPA filter → DreamerV3 parts → MCTS → training loop → interpretability → scripts/layout → holistic). Phases 1–5 (domain, JEPA belief filter, DreamerV3 components, planner and agent, training loop) are done. The full learning loop reaches near-optimal play on canonical Tiger with the default config (about 40 minutes); see `conf/config.yaml` section 1b. Current scope is the **single-agent canonical Tiger only**; the learned agent must match the exact solver before anything larger is run.
+The codebase is being reviewed bottom-up in phases (domain → JEPA filter → DreamerV3 parts → MCTS → training loop → interpretability → scripts/layout → holistic). Phases 1–5 (domain, JEPA belief filter, DreamerV3 components, planner and agent, training loop) are done; Phase 6 (interpretability) is in progress. The full learning loop reaches near-optimal play on canonical Tiger with the default config (about 40 minutes); see `conf/config.yaml` section 1b. Current scope is the **single-agent canonical Tiger only**; the learned agent must match the exact solver before anything larger is run.
 
 ## Commands
 
@@ -59,12 +59,27 @@ The evaluation, probing and interactive scripts (`eval_*`, `probe_*`, `enjoy_*`)
 - **Planning imagines by observation branching:** sample `o' ~ ObservationHead(z, a)`, then `z' = BeliefFilter.step(z, a, o')`. Imagined latents stay on the filter's manifold.
 - Heads (`models/heads.py`): value, reward and observation. `TwoHotSymlog` (`models/distributions.py`) is one shared instance injected into trainer and planner. Its bins are symlog-spaced real values bounded by `FinitePOMDP.value_bound` = max|R|/(1−γ). Encoding and decoding are linear in real space, so means are unbiased. The old symlog-space decoding turned Tiger's −100/+10 door gamble (mean −45) into −2.9.
 
-**Interpretability (`src/ipomdp/interpretability/`).** `collect_probe_dataset` produces pairs of (filter latent, exact posterior). `linear_probe` and `mlp_probe` report KL(b* ‖ probe) overall, worst-case and per posterior value. R² is not used: an untrained GRU already reaches R² = 0.93. `tests/test_world_model_acceptance.py` (slow, GPU) is the acceptance gate. It trains off-policy on random-policy data (3000 updates, about 24 min) and checks:
-- the belief probes;
-- the reward head against b·R[a];
-- the observation head against the exact P(o′|b,a);
-- the value head against V*(b) (mean error < 8);
-- the greedy learned-model planner against V*(b₀) = 19.28, where it measured 21.19 ± 1.69.
+**Interpretability (`src/ipomdp/interpretability/`, `analyze.py`).** This is contribution (3): the learned latent maps to the exact belief with quantified guarantees.
+- `belief_probe.py`: `build_probe_dataset(model, filter, episodes)` replays recorded episodes (random or the agent's own) through the exact Bayes filter and the learned filter. `fit_linear_probe`/`fit_mlp_probe` return a `BeliefProbe` that decodes latents into beliefs. `evaluate_probe` reports KL and L1 on held-out episodes. R² is not used: an untrained GRU already reaches R² = 0.93.
+- `error_bounds.py`: the span-Hölder lemma |α·(b−b′)| ≤ span(α)/2·‖b−b′‖₁ turns the decoding error ε into bounds, each reported next to its measured value:
+  - value error ≤ L_V·ε;
+  - one-step regret ≤ 2·L_Q·ε;
+  - discounted policy loss ≤ 2·L_Q·ε/(1−γ).
+
+  Both worst-case and expected (E[ε]) forms are reported. The per-action Q* sets come from `domain.solver.action_value_functions`.
+- `analysis.py` (`analyze_beliefs`) compares returns on common simulator seeds:
+  - the optimal agent (exact beliefs, argmax Q*);
+  - the **decoded-belief agent** (learned filter plus probe, then argmax Q*), which isolates the representation;
+  - the trained learned-model planner.
+
+  It also reports geometry: the PCA spectrum, per-component rank correlation with log-odds (side) and |log-odds| (confidence), and a minimality ratio.
+- `uv run analyze.py runs/tiger/<run>` writes `<run>/analysis/report.json` and `geometry.png`.
+- `tests/test_world_model_acceptance.py` (slow, GPU) is the acceptance gate. It trains off-policy on random-policy data (3000 updates, about 24 min) and checks:
+  - the belief probes;
+  - the reward head against b·R[a];
+  - the observation head against the exact P(o′|b,a);
+  - the value head against V*(b) (mean error < 8);
+  - the greedy learned-model planner against V*(b₀) = 19.28.
 
 **Planner and agent (`planning/`, `agents/`).**
 - `SearchModel` protocol (`search_model.py`) with two implementations:
@@ -76,7 +91,7 @@ The evaluation, probing and interactive scripts (`eval_*`, `probe_*`, `enjoy_*`)
 - Greedy action choice (`temperature = 0`) takes argmax Q; exploration samples visit counts shaped by the temperature.
 - `PlanningAgent` tracks states with the model's own filter and plans over the same model. With the exact model and V* leaves it matches the optimal policy's return of 19.37 (slow test).
 
-**Telemetry (`ipomdp/telemetry/`).** Covers the TensorBoard writer, the latent, search-tree and reward visualizers, the system monitor, the profiler and the guardrail (thermal cooldown plus VRAM/RSS limits, which write `emergency.pt`). Logging goes through Hydra (console and `<run dir>/main.log`). Checkpoint files are written by `training/checkpointing.py`: atomic writes, always loaded on the CPU.
+**Telemetry (`ipomdp/telemetry/`).** Covers the TensorBoard writer, the belief-geometry, search-tree and reward visualizers, the system monitor, the profiler and the guardrail (thermal cooldown plus VRAM/RSS limits, which write `emergency.pt`). Logging goes through Hydra (console and `<run dir>/main.log`). Checkpoint files are written by `training/checkpointing.py`: atomic writes, always loaded on the CPU.
 
 ## Conventions and gotchas
 

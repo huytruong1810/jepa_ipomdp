@@ -32,7 +32,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from ..agents import PlanningAgent
+from ..agents import PlanningAgent, UniformRandomAgent
 from ..domain import BatchedPOMDPEnv, FinitePOMDP
 from ..models import BeliefFilter, LatentPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueHead
 from ..planning import BeliefTreeSearch, LearnedSearchModel
@@ -41,7 +41,8 @@ from .rollout import discounted_returns, play_episodes
 from .trainer import TrainerConfig, WorldModelTrainer
 
 # Offsets that give every random stream its own seed (section 3).
-_SEED_EVAL_ENV, _SEED_BUFFER, _SEED_TRAIN_PLANNER, _SEED_EVAL_PLANNER, _SEED_TRAIN_AGENT, _SEED_EVAL_AGENT = range(1, 7)
+(_SEED_EVAL_ENV, _SEED_BUFFER, _SEED_TRAIN_PLANNER, _SEED_EVAL_PLANNER, _SEED_TRAIN_AGENT, _SEED_EVAL_AGENT,
+ _SEED_WARMUP_AGENT) = range(1, 8)
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,7 @@ class TrainingRun:
             model, BeliefTreeSearch(model, cfg.num_simulations, cfg.c_puct, cfg.dirichlet_alpha, dirichlet_epsilon=0.0,
                                     seed=cfg.seed + _SEED_EVAL_PLANNER),
             cfg.eval_episodes, temperature=0.0, seed=cfg.seed + _SEED_EVAL_AGENT, device=device)
+        self.warmup_agent = UniformRandomAgent(num_a, cfg.env_batch_size, cfg.seed + _SEED_WARMUP_AGENT, device)
         self.env = BatchedPOMDPEnv(pomdp, cfg.env_batch_size, cfg.episode_length, cfg.seed, device)
         self.eval_env = BatchedPOMDPEnv(pomdp, cfg.eval_episodes, cfg.episode_length, cfg.seed + _SEED_EVAL_ENV, device)
         self.buffer = EpisodeBuffer(cfg.buffer_capacity, cfg.episode_length, device, cfg.seed + _SEED_BUFFER)
@@ -117,7 +119,7 @@ class TrainingRun:
     def collect_and_train(self) -> dict[str, float]:
         """One collection of env_batch_size episodes followed by the gradient updates."""
         warmup = self.in_warmup
-        episodes, _ = play_episodes(self.env, self.train_agent, uniform=warmup)
+        episodes, _ = play_episodes(self.env, self.warmup_agent if warmup else self.train_agent)
         self.buffer.add(episodes)
         metrics: dict[str, float] = {}
         for _ in range(self.cfg.updates_per_collection):
@@ -136,7 +138,7 @@ class TrainingRun:
 
     def evaluate(self) -> dict[str, float]:
         """Greedy evaluation (section 2); updates best_eval_return."""
-        episodes, _ = play_episodes(self.eval_env, self.eval_agent, uniform=False)
+        episodes, _ = play_episodes(self.eval_env, self.eval_agent)
         returns = discounted_returns(episodes.rewards, self.pomdp.discount)
         mean, stderr = float(returns.mean()), float(returns.std()) / np.sqrt(len(returns))
         self.best_eval_return = max(self.best_eval_return, mean)
@@ -155,6 +157,7 @@ class TrainingRun:
             "buffer": self.buffer.state_dict(),
             "env": self.env.state_dict(),
             "eval_env": self.eval_env.state_dict(),
+            "warmup_agent": self.warmup_agent.state_dict(),
             "train_agent": self.train_agent.state_dict(),
             "eval_agent": self.eval_agent.state_dict(),
             "torch_rng": torch.get_rng_state(),
@@ -171,6 +174,7 @@ class TrainingRun:
         self.buffer.load_state_dict(state["buffer"])
         self.env.load_state_dict(state["env"])
         self.eval_env.load_state_dict(state["eval_env"])
+        self.warmup_agent.load_state_dict(state["warmup_agent"])
         self.train_agent.load_state_dict(state["train_agent"])
         self.eval_agent.load_state_dict(state["eval_agent"])
         torch.set_rng_state(state["torch_rng"])

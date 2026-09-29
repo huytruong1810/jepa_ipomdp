@@ -209,22 +209,25 @@ def _initial_value_function(model: FinitePOMDP, epsilon: float) -> AlphaVectorSe
     return AlphaVectorSet(*prune(model.reward.clone(), torch.arange(model.num_actions), epsilon))
 
 
-def backup(model: FinitePOMDP, value_function: AlphaVectorSet, epsilon: float) -> AlphaVectorSet:
+def action_value_functions(model: FinitePOMDP, value_function: AlphaVectorSet, epsilon: float) -> list[AlphaVectorSet]:
     """
-    One dynamic-programming backup Gamma_h -> Gamma_{h+1} by incremental pruning.
+    Per-action backups: Q(b, a) = max over Gamma_a of alpha . b, with
+    Q(b, a) = b . R[a] + gamma * sum_o P(o | b, a) V(tau(b, a, o)) for V given by `value_function`.
+
+    Used by backup() (V_{h+1} = max_a Q) and by the interpretability error bounds, which need the
+    Lipschitz constants of each Q(., a) (src/ipomdp/interpretability/error_bounds.py).
 
     Args:
         model: Exact POMDP specification (CPU tensors).
-        value_function: Gamma_h.
-        epsilon: Pruning epsilon; the result is within 2|O| epsilon of the exact backup.
+        value_function: Alpha vectors of V.
+        epsilon: Pruning epsilon; each Q(., a) is within (2|O| - 1) epsilon of the exact backup.
 
     Returns:
-        Gamma_{h+1}.
+        [Gamma_{a=0}, ..., Gamma_{a=|A|-1}], every vector tagged with its action.
     """
     gamma = model.discount
     num_o = model.num_observations
-    per_action_vectors, per_action_actions = [], []
-
+    result = []
     for a in range(model.num_actions):
         tag = lambda n: torch.full((n,), a)  # noqa: E731 - every vector here starts with action a
         cross_sum = None
@@ -238,10 +241,25 @@ def backup(model: FinitePOMDP, value_function: AlphaVectorSet, epsilon: float) -
             else:
                 combined = (cross_sum.unsqueeze(1) + projected.unsqueeze(0)).reshape(-1, model.num_states)
                 cross_sum, _ = prune(combined, tag(combined.shape[0]), epsilon)
-        per_action_vectors.append(cross_sum)
-        per_action_actions.append(tag(cross_sum.shape[0]))
+        result.append(AlphaVectorSet(cross_sum, tag(cross_sum.shape[0])))
+    return result
 
-    return AlphaVectorSet(*prune(torch.cat(per_action_vectors), torch.cat(per_action_actions), epsilon))
+
+def backup(model: FinitePOMDP, value_function: AlphaVectorSet, epsilon: float) -> AlphaVectorSet:
+    """
+    One dynamic-programming backup Gamma_h -> Gamma_{h+1} by incremental pruning.
+
+    Args:
+        model: Exact POMDP specification (CPU tensors).
+        value_function: Gamma_h.
+        epsilon: Pruning epsilon; the result is within 2|O| epsilon of the exact backup.
+
+    Returns:
+        Gamma_{h+1} = prune(union_a Gamma_a).
+    """
+    per_action = action_value_functions(model, value_function, epsilon)
+    return AlphaVectorSet(*prune(torch.cat([q.vectors for q in per_action]),
+                                 torch.cat([q.actions for q in per_action]), epsilon))
 
 
 def solve_finite_horizon(model: FinitePOMDP, horizon: int) -> list[AlphaVectorSet]:

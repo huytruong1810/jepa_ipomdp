@@ -1,5 +1,6 @@
-"""Batched planning agent: belief tracking with a SearchModel, action selection by BeliefTreeSearch."""
+"""Agents: belief-tracking planning agent and a uniformly random agent (warm-up, probe data)."""
 
 from .planning_agent import PlanningAgent
+from .uniform_agent import UniformRandomAgent
 
-__all__ = ["PlanningAgent"]
+__all__ = ["PlanningAgent", "UniformRandomAgent"]

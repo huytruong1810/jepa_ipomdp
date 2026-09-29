@@ -4,11 +4,11 @@ from .guardrails import ExecutionGuardrail
 from .metrics import MetricsLogger
 from .profiler import PipelineProfiler
 from .system_monitor import SystemTelemetryMonitor
-from .visualizers import LatentSpaceVisualizer, MCTSGraphVisualizer, RewardTrajectoryVisualizer
+from .visualizers import BeliefGeometryVisualizer, MCTSGraphVisualizer, RewardTrajectoryVisualizer
 
 __all__ = [
+    "BeliefGeometryVisualizer",
     "ExecutionGuardrail",
-    "LatentSpaceVisualizer",
     "MCTSGraphVisualizer",
     "MetricsLogger",
     "PipelineProfiler",
