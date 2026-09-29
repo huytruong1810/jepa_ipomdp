@@ -19,7 +19,7 @@ The user asked for a rigorous, phased, bottom-up review:
 | 4 | MCTS/agent | done |
 | 5 | training loop | done |
 | 6 | interpretability / error bounds | done |
-| 7 | scripts, configs, results layout | todo |
+| 7 | scripts, configs, results layout | done |
 | 8 | holistic review | todo |
 
 Rules the user set:
@@ -38,9 +38,8 @@ Rules the user set:
 
 ## 2. Current git state
 
-- Last pushed commit: `80ee623` (end of Phase 5).
-- Phase 6 is committed on `main` but not yet pushed.
-- Verification at the Phase 6 commit: fast suite 115 passed; slow `tests/test_world_model_acceptance.py` 5 passed (21:43).
+- `7a16fea` (Phase 6) is pushed. Phase 7 is the commit after it, on `main`; ask before pushing it.
+- Verification at the Phase 7 commit: fast suite (including `tests/test_experiments.py`) passes; a 2-seed smoke `sweep.py` with tiny overrides trained, analysed and aggregated end to end, and re-running it continued without retraining. The slow acceptance suite last passed at Phase 6 (5 passed); Phase 7 does not touch the code it exercises.
 
 ## 3. What was done (commit, then the gist)
 
@@ -75,7 +74,7 @@ Rules the user set:
   - Decision: **value target = Bellman optimality backup through the learned model** (EMA target value head, momentum 0.9), with the value head on **detached** latents.
   - The full loop reaches roughly V*: greedy returns about 12.6–22.4 once learning starts. Default config: 64 episodes × 40 collections with 64 updates each, about 40 min.
   - Learning is gated by roughly 1000 gradient updates, not by collected data.
-- The commit after `80ee623`, **Phase 6 (interpretability).**
+- `7a16fea`, **Phase 6 (interpretability).**
   - Probes: `build_probe_dataset` from any recorded episodes, fitted `BeliefProbe`s that decode latents, evaluation on held-out episodes.
   - `error_bounds.py`: span-Hölder bounds (value, one-step regret, discounted loss) in worst-case and expected form.
   - `analysis.py`: decoded-belief agent versus optimal versus the learned planner on common seeds, plus a geometry report.
@@ -83,6 +82,12 @@ Rules the user set:
   - Agents: `UniformRandomAgent`, and an `Agent` protocol for `play_episodes`.
   - `BeliefGeometryVisualizer`.
   - `analyze.py <run_dir>` writes `analysis/report.json` and `geometry.png`.
+
+- Phase 7 commit, **Phase 7 (scripts, configs, results layout).** User decisions: thin scripts over a library package; delete stale files; sequential multi-seed runner with aggregation.
+  - `src/ipomdp/experiments/`: `runs.py` (`DOMAIN_BUILDERS`, `build_run_config`, `build_training_run`, `load_trained_run`, `analyze_run`) and `aggregate.py` (Student-t 95% intervals over seeds, paired within-seed gaps). No script imports another any more.
+  - `sweep.py <name> --seeds ... [overrides]`: one `main.py` process per seed into `runs/sweeps/<name>/seed<k>/`, then `analyze_run`, then `aggregate.json`. Continues an interrupted sweep; a changed condition raises.
+  - `main.py` exits non-zero on SIGINT (130) and guardrail aborts (1), so only completed runs are analysed.
+  - Deleted `BACKLOG.md`, `plot_rewards.py`, `src/__init__.py`. Dropped `torchvision`, `torchaudio`, `scikit-learn`; `pytest` moved to the `dev` dependency group. `.gitignore` pruned. `recreate_venv.sh` now just `uv sync` + CUDA check. README rewritten.
 
 ## 4. Key measured results (all seed 0; cite from the module headers)
 
@@ -96,17 +101,17 @@ Rules the user set:
   | Mean \|V − V*\| | 4.9 |
   | Learned planner return | 21.19 ± 1.69 (V* = 19.28) |
 
-- **Phase 6 analysis** of `runs/tiger/phase5_ratio64_seed0` (`analysis/report.json` exists there):
+- **Phase 6 analysis** of `runs/tiger/phase5_ratio64_seed0` (`analysis/report.json` there, regenerated at Phase 7 with deterministic latents; the pre-fix Phase 6 report differed by < 1 stderr):
 
   | Agent | Discounted return |
   |---|---|
   | Optimal | 19.54 ± 1.35 |
-  | Decoded-belief, MLP probe | **19.37 ± 1.32** (the latent is Bayes-sufficient for decisions) |
-  | Decoded-belief, linear probe | 8.38 ± 0.60 (not linearly sufficient: 2.4% wrong decisions) |
-  | Learned planner | 17.14 ± 1.17 |
+  | Decoded-belief, MLP probe | **19.46 ± 1.31** (the latent is Bayes-sufficient for decisions) |
+  | Decoded-belief, linear probe | 8.59 ± 0.64 (not linearly sufficient: 2.1% wrong decisions) |
+  | Learned planner | 17.08 ± 1.20 |
 
   - Geometry: PC1 (68% of variance) is confidence (|Spearman| with |log-odds| 0.755); PC2 (19%) is side (0.816 with log-odds). Minimality ratio 0.283, so the latent is sufficient but not minimal.
-  - Bounds: the expected-form value-error bound is 0.33 against a measured 0.067. Worst-case bounds are loose (for example 55 against 0.70) because of a few rare latents.
+  - Bounds: the expected-form value-error bound is 0.33 against a measured 0.068. Worst-case bounds are loose (for example 55 against 0.70) because of a few rare latents.
 
 ## 5. Approaches that failed — do not repeat
 
@@ -126,23 +131,15 @@ Rules the user set:
 
 ## 6. Next actions (in order)
 
-1. **Push Phase 6** once the user approves.
-2. **Phase 7 (scripts, configs, results layout):**
-   - Decide one CLI layout. Today there are two styles: `main.py` (Hydra) and `analyze.py` (argparse, imports `main.py`).
-   - Delete or rewrite `plot_rewards.py`, which still points at `tiger_tensorboard/`.
-   - Rewrite `README.md`: its structure section and theory are stale (VICReg, slots, λ-returns, SumTree).
-   - Delete or refresh `BACKLOG.md`.
-   - `pyproject.toml`: check whether `scikit-learn`, `plotly`, `networkx`, `torchvision` and `torchaudio` are still needed; `pytest` belongs in dev dependencies.
-   - Remove the stray `src/__init__.py` and `__pycache__/` at the repo root.
-   - Update `.gitignore`: the old `*_checkpoints` / `*_tensorboard` patterns are obsolete, and `runs/` holds the Phase 5 runs.
-   - **Add multi-seed experiment tooling**: every result so far is seed 0, and rigorous claims need confidence intervals over seeds.
+1. **Push Phase 7** once the user approves.
+2. **First multi-seed result** (ask before launching; about 45 min per seed with the default config, so 5 seeds is roughly 4 h): `uv run sweep.py default --seeds 0,1,2,3,4`. It turns every seed-0 number in section 4 into an interval.
 3. **Phase 8 (holistic):** end-to-end consistency review, plus a plan for progressively larger experiments. Proposed order:
    1. multi-seed canonical Tiger;
    2. a baseline comparison;
    3. multi-agent Tiger, whose exact tables must first be verified against Gmytrasiewicz & Doshi;
    4. I-POMDP levels via the S × M_j reduction.
 4. **Known open issues to raise with the user:**
-   - The learned planner (17.1) trails the decoded-belief agent (19.4); the gap comes from the learned heads, not the representation.
+   - The learned planner (17.1) trails the decoded-belief agent (19.5); the gap comes from the learned heads, not the representation.
    - Late-run evaluation dips (5.5 at one point).
    - Slow value convergence (|V − V*| was still 4.9 after 3000 updates).
    - The latent is not linearly sufficient.

@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Research code for a model-based RL agent for partially observable (and eventually interactive, I-POMDP) domains. A recurrent JEPA belief filter (no observation decoder) keeps a latent belief `z_t ∈ R^D`. A belief-tree MCTS plans over those latents using learned reward, observation and value heads. README.md holds the original theory write-up and is partly superseded by the module headers. **README's "Repository Structure" section and HANDOFF.md are stale** (they describe the pre-review codebase and a deleted training run).
+Research code for a model-based RL agent for partially observable (and eventually interactive, I-POMDP) domains. A recurrent JEPA belief filter (no observation decoder) keeps a latent belief `z_t ∈ R^D`. A belief-tree MCTS plans over those latents using learned reward, observation and value heads. README.md gives the current overview; the module headers hold the detailed design evidence. HANDOFF.md records the review's state, history, failed approaches and next steps.
 
-The codebase is being reviewed bottom-up in phases (domain → JEPA filter → DreamerV3 parts → MCTS → training loop → interpretability → scripts/layout → holistic). Phases 1–5 (domain, JEPA belief filter, DreamerV3 components, planner and agent, training loop) are done; Phase 6 (interpretability) is in progress. The full learning loop reaches near-optimal play on canonical Tiger with the default config (about 40 minutes); see `conf/config.yaml` section 1b. Current scope is the **single-agent canonical Tiger only**; the learned agent must match the exact solver before anything larger is run.
+The codebase is being reviewed bottom-up in phases (domain → JEPA filter → DreamerV3 parts → MCTS → training loop → interpretability → scripts/layout → holistic). Phases 1–7 (domain, JEPA belief filter, DreamerV3 components, planner and agent, training loop, interpretability, scripts/layout) are done; Phase 8 (holistic review, starting with multi-seed results) is next. The full learning loop reaches near-optimal play on canonical Tiger with the default config (about 40 minutes); see `conf/config.yaml` section 1b. Current scope is the **single-agent canonical Tiger only**; the learned agent must match the exact solver before anything larger is run.
 
 ## Commands
 
@@ -20,10 +20,12 @@ uv run main.py resume=runs/tiger/<run>/checkpoints/latest.pt                # co
 uv run pytest                                    # fast suite (slow tests excluded via addopts)
 uv run pytest -m slow                            # certified V* solve, exact-model planner vs optimal, world-model acceptance (GPU)
 uv run pytest tests/test_domain.py::TestExactSolver::test_optimal_actions   # single test
+uv run analyze.py runs/tiger/<run>               # belief analysis of best.pt -> <run>/analysis/
+uv run sweep.py <name> --seeds 0,1,2,3,4 [hydra overrides]   # train + analyse each seed, Student-t 95% CIs -> runs/sweeps/<name>/
 tensorboard --logdir runs
 ```
 
-The evaluation, probing and interactive scripts (`eval_*`, `probe_*`, `enjoy_*`) were removed in Phase 1 because they depended on the old environment API; they are rebuilt in Phases 6–7. Their previous logic is in commit `db269d3`.
+The three scripts are thin shells over `ipomdp.experiments`; no script imports another. `main.py` exits 0 only when every collection completed (130 on SIGINT, 1 on a guardrail abort), which `sweep.py` relies on. `sweep.py` runs seeds sequentially, one `main.py` process each, records its condition in `runs/sweeps/<name>/sweep.json`, and re-running the same command continues an interrupted sweep (different overrides raise).
 
 ## Architecture
 
@@ -37,7 +39,7 @@ The evaluation, probing and interactive scripts (`eval_*`, `probe_*`, `enjoy_*`)
   - Reference values: V*(b0) = 19.3713; V_h(b0) is −1, −1.95, 2.3098, 1.7955, 2.7631 for h = 1..5 and 6.6934 for h = 10.
 - Extending to I-POMDPs: fold a finite opponent-model set into T/O to get a `FinitePOMDP` over S × M_j; the same env, filter and solver then apply. Multi-agent Tiger tables are deliberately absent until they have been verified against Gmytrasiewicz & Doshi.
 
-**Config.** Hydra: `conf/config.yaml` (`seed`, `training`, `agent`, `model`, `mcts`) plus `conf/env/tiger.yaml`, which holds only `name` and `max_steps`. `|A|`, `|O|`, action names and γ are derived from the `FinitePOMDP` in `main.py` (`DOMAIN_BUILDERS`) and passed explicitly to the planner and trainer. Hydra writes each run to `runs/<env>/<timestamp>_seed<seed>/`.
+**Config.** Hydra: `conf/config.yaml` (`seed`, `training`, `agent`, `model`, `mcts`) plus `conf/env/tiger.yaml`, which holds only `name` and `max_steps`. `|A|`, `|O|`, action names and γ are derived from the `FinitePOMDP` built by `ipomdp.experiments` (`DOMAIN_BUILDERS`, `build_run_config`, `build_training_run`) and passed explicitly to the planner and trainer. Hydra writes each run to `runs/<env>/<timestamp>_seed<seed>/`.
 
 **Training run (`training/run.py`, `main.py`).**
 - `TrainingRun` owns every piece of state: networks, optimizer, `EpisodeBuffer`, the collection and evaluation simulators, the training and evaluation agents and planners, and all random-generator states.
@@ -73,7 +75,8 @@ The evaluation, probing and interactive scripts (`eval_*`, `probe_*`, `enjoy_*`)
   - the trained learned-model planner.
 
   It also reports geometry: the PCA spectrum, per-component rank correlation with log-odds (side) and |log-odds| (confidence), and a minimality ratio.
-- `uv run analyze.py runs/tiger/<run>` writes `<run>/analysis/report.json` and `geometry.png`.
+- `experiments/runs.py` (`analyze_run`) reloads a run directory (`.hydra/config.yaml` + `checkpoints/best.pt`), re-estimates every return on fresh simulator seeds (the training `best.pt` score is a biased max) and writes `<run>/analysis/report.json` and `geometry.png`; `uv run analyze.py runs/tiger/<run>` calls it.
+- `experiments/aggregate.py` aggregates one report per seed: Student-t 95% intervals, with paired within-seed gaps (planner − optimal, etc.) as the quantities to cite, since all seeds share one analysis seed.
 - `tests/test_world_model_acceptance.py` (slow, GPU) is the acceptance gate. It trains off-policy on random-policy data (3000 updates, about 24 min) and checks:
   - the belief probes;
   - the reward head against b·R[a];

@@ -17,11 +17,16 @@
 #
 # 3. Single Source of Truth for the Domain:
 #    - The FinitePOMDP supplies |A|, |O|, action/observation names, the discount and the
-#      value bound; nothing domain-specific is configured here.
+#      value bound; nothing domain-specific is configured here. The config -> run mapping
+#      (domain builders, typed RunConfig) lives in ipomdp.experiments, shared with analyze.py
+#      and sweep.py.
 #
 # 4. Failure Is Loud, Shutdown Is Graceful:
 #    - Errors (including non-finite losses) propagate and stop the run. SIGINT writes
-#      latest.pt and closes the TensorBoard writer.
+#      latest.pt, closes the TensorBoard writer and exits with status 130; a guardrail abort
+#      writes latest.pt (the guardrail itself writes emergency.pt) and exits with status 1.
+#      Only a run that completed every collection exits with 0, which is what sweep.py relies
+#      on before analysing a run.
 # ==============================================================================
 
 import logging
@@ -36,7 +41,8 @@ from omegaconf import DictConfig
 import torch
 from tqdm import tqdm
 
-from ipomdp.domain import FinitePOMDP, build_tiger_pomdp
+from ipomdp.domain import FinitePOMDP
+from ipomdp.experiments import build_training_run
 from ipomdp.interpretability import build_probe_dataset
 from ipomdp.telemetry import (
     BeliefGeometryVisualizer,
@@ -47,27 +53,9 @@ from ipomdp.telemetry import (
     RewardTrajectoryVisualizer,
     SystemTelemetryMonitor,
 )
-from ipomdp.training import (RunConfig, TrainerConfig, TrainingRun, load_checkpoint, play_episodes,
-                             save_checkpoint)
+from ipomdp.training import TrainingRun, load_checkpoint, play_episodes, save_checkpoint
 
 torch.set_float32_matmul_precision('high')
-
-# Domains selectable through conf/env/<name>.yaml. Each builder returns the exact model.
-DOMAIN_BUILDERS = {"tiger": build_tiger_pomdp}
-
-
-def build_run_config(cfg: DictConfig) -> RunConfig:
-    """Flattens the Hydra config into the typed RunConfig."""
-    t, m, a, s = cfg.training, cfg.model, cfg.agent, cfg.mcts
-    return RunConfig(
-        seed=cfg.seed, episode_length=cfg.env.max_steps, env_batch_size=t.env_batch_size,
-        warmup_episodes=t.warmup_episodes, buffer_capacity=t.buffer_capacity, batch_size=t.batch_size,
-        updates_per_collection=t.updates_per_collection, eval_episodes=t.eval_episodes,
-        latent_dim=m.latent_dim, hidden_dim=m.hidden_dim, num_blocks=m.num_blocks, ema_momentum=m.ema_momentum,
-        num_bins=m.num_bins, trainer=TrainerConfig(**cfg.trainer), num_simulations=s.num_simulations,
-        c_puct=s.c_puct, dirichlet_alpha=s.dirichlet_alpha, dirichlet_epsilon=s.dirichlet_epsilon,
-        temperature=a.temperature, temperature_min=a.temperature_min, temperature_decay=a.temperature_decay)
-
 
 def visualize(run: TrainingRun, pomdp: FinitePOMDP, collection: int, plots: Path, metrics_logger: MetricsLogger) -> None:
     """Belief geometry, search tree and cumulative rewards of greedy evaluation episodes."""
@@ -95,8 +83,7 @@ def main(cfg: DictConfig):
     run_dir = Path(HydraConfig.get().runtime.output_dir)
     logger = logging.getLogger("ipomdp")  # Hydra writes it to the console and <run dir>/main.log
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    pomdp = DOMAIN_BUILDERS[cfg.env.name]()
-    run = TrainingRun(pomdp, build_run_config(cfg), device)
+    pomdp, run = build_training_run(cfg, device)
     if cfg.resume is not None:
         run.load_state_dict(load_checkpoint(Path(cfg.resume)))
         logger.info(f"Resumed from {cfg.resume} at collection {run.collection}")
@@ -147,14 +134,16 @@ def main(cfg: DictConfig):
             metrics_logger.log_metrics(guardrail.get_incident_metrics(), collection, prefix="Guardrail")
             if not guardrail.check_system_health(collection):
                 logger.critical("[!] ExecutionGuardrail triggered emergency abort. Halting training.")
-                break
+                save_checkpoint(checkpoints / "latest.pt", run.state_dict())
+                metrics_logger.close()
+                sys.exit(1)
             pbar.update(1)
         save_checkpoint(checkpoints / "latest.pt", run.state_dict())
     except KeyboardInterrupt:
         logger.info("KeyboardInterrupt: saving latest.pt and shutting down.")
         save_checkpoint(checkpoints / "latest.pt", run.state_dict())
         metrics_logger.close()
-        sys.exit(0)
+        sys.exit(130)
     metrics_logger.close()
 
 
