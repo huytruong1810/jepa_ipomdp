@@ -59,18 +59,29 @@ Findings that shaped this design are recorded in the module headers. For example
   Each is reported in worst-case and expected form, next to its measured value.
 - A **decoded-belief agent** (learned filter, then probe, then argmax Q*) isolates the representation. Its gap to the optimal agent can only come from the latent.
 
-## Results so far (canonical Tiger, seed 0)
+## Results (canonical Tiger, 5 training seeds)
 
-| Agent | Discounted return |
-|---|---|
-| Optimal (exact belief, argmax Q*) | 19.54 ± 1.35 |
-| Decoded-belief, MLP probe | 19.46 ± 1.31 |
-| Decoded-belief, linear probe | 8.59 ± 0.64 |
-| Learned-model planner | 17.08 ± 1.20 |
+These are from `uv run sweep.py default --seeds 0,1,2,3,4` with the default config (about 57 min per seed). Every agent is evaluated on the same 512 held-out episodes. The paired gaps to the optimal agent on those episodes are the numbers to cite. Intervals are Student-t 95% intervals over seeds.
 
-- The latent is Bayes-sufficient for decisions but not linearly sufficient.
-- The learned planner's gap comes from the learned heads, not the representation.
-- These are single-seed numbers. The multi-seed sweep (`sweep.py`) exists to put confidence intervals on them.
+| Agent | Gap to optimal (discounted return) | Per seed |
+|---|---|---|
+| Decoded-belief, MLP probe | **−0.08 ± 0.44** | +0.03, −0.21, −0.06, +0.40, −0.56 |
+| Learned-model planner | **−0.51 ± 1.02** | −0.27, −1.97, −0.04, −0.25, −0.03 |
+| Decoded-belief, linear probe | −6.16 ± 7.00 | −3.37, −5.56, −2.99, −16.06, −2.83 |
+
+For reference, the optimal agent earns 18.48 on these episodes (V*(b₀) = 19.36).
+
+- **The latent is Bayes-sufficient for decisions.**
+  - The MLP-decoded belief acting on the exact Q* matches the optimal agent: the interval contains 0.
+  - The probe's KL to the exact posterior is below 10⁻⁴ nats.
+  - 0.17% of its decisions are suboptimal.
+- **The latent is not linearly sufficient.**
+  - About 2% of linear-probe decisions are suboptimal.
+  - The linear decoded agent's return varies widely between seeds.
+- **The learned planner is near-optimal in 4 of 5 seeds** (gap ≥ −0.27). Seed 1 lost 1.97.
+  - Any shortfall comes from the learned reward, observation and value heads, not from the representation.
+- **All 5 seeds stopped listening forever** by collection 10–15.
+- **The training-time best evaluation overstates performance** (winner's curse). It scored 22.01 ± 2.26, against an unbiased 17.96 ± 1.02 re-estimated for the same checkpoints.
 
 ## Usage
 

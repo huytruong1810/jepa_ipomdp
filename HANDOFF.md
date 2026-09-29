@@ -95,7 +95,24 @@ Rules the user set:
   - Verified with no change needed: the solver's ε-pruning accounting (2|O|ε per backup) and certified bound; expectimax/PUCT search; the Bellman value target through `LearnedSearchModel.expand`; the error-bound derivations (span-Hölder, 2 L_Q ε regret, performance-difference form of (c)); resume state coverage.
   - Stale comments fixed (see the `e2620c4` message) and dead code removed (`symlog`/`symexp`, silent `None` skipping in `MetricsLogger`, cwd-relative visualizer defaults).
 
-## 4. Key measured results (all seed 0; cite from the module headers)
+## 4. Key measured results (cite from the module headers)
+
+- **Multi-seed result (Phase 8, the numbers to cite):** `runs/sweeps/default/aggregate.json`, 5 seeds, default config, new seed streams, about 57 min per seed.
+  - Paired gaps to the optimal agent on common analysis episodes (Student-t 95% over seeds):
+
+    | Agent | Gap |
+    |---|---|
+    | Decoded-belief, MLP probe | −0.08 ± 0.44 |
+    | Learned planner | −0.51 ± 1.02 (seed 1: −1.97; others ≥ −0.27) |
+    | Decoded-belief, linear probe | −6.16 ± 7.00 (seed 3: −16.06) |
+
+  - The optimal agent earns 18.48 on those 512 episodes (V*(b0) = 19.36).
+  - Probe KL: MLP < 1e-4, linear 0.0009. Suboptimal decisions: MLP 0.17%, linear 2.1%. Minimality ratio 0.27 ± 0.03.
+  - Every seed escaped always-listen by collection 10 (seed 4: 15).
+  - The biased training selection score was 22.01 ± 2.26, against an unbiased 17.96 ± 1.02 for the same checkpoints.
+  - Late-run evaluation dips persist: seed 1 scored 11.40 at collection 30, seed 2 scored 14.58 at collection 40. The final checkpoint is not the best one.
+- The seed-0 numbers below predate the seeding fix and are kept for history.
+
 
 - **Exact references:** V_h(b0) for h = 1..5 is −1, −1.95, 2.3098, 1.7955, 2.7631; V*(b0) = 19.37.
 - **Off-policy acceptance** (random data, 3000 updates):
@@ -137,7 +154,7 @@ Rules the user set:
 
 ## 6. Next actions (in order)
 
-1. **Read the sweep** (`runs/sweeps/default/aggregate.json`) when it finishes: cite the paired gaps (learned planner − optimal, decoded MLP − optimal) with their 95% intervals, check every seed escaped always-listen, and replace the seed-0 numbers of section 4 and README with the intervals.
+1. **Done:** the sweep was read (section 4) and README updated.
 2. **Ask before pushing** `fd4d628`, `e2620c4` and later Phase 8 commits.
 3. **Phase 8 (holistic), remaining:** a plan for progressively larger experiments, informed by the sweep. Proposed order:
    1. multi-seed canonical Tiger;
