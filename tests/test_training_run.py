@@ -7,7 +7,8 @@ import pytest
 import torch
 
 from ipomdp.domain import build_tiger_pomdp
-from ipomdp.training import RunConfig, TrainerConfig, TrainingRun, load_checkpoint, save_checkpoint
+from ipomdp.training import (RunConfig, RunStream, TrainerConfig, TrainingRun, load_checkpoint, save_checkpoint,
+                             stream_seed)
 
 CPU = torch.device("cpu")
 
@@ -90,3 +91,22 @@ class TestCheckpointFiles:
     def test_missing_checkpoint_raises(self, tmp_path: Path):
         with pytest.raises(FileNotFoundError):
             load_checkpoint(tmp_path / "absent.pt")
+
+
+class TestSeedStreams:
+    """Phase-8 finding: base + offset seeds made neighbouring runs of a sweep share streams."""
+
+    def test_stream_seeds_are_distinct_across_bases_and_streams(self):
+        seeds = [stream_seed(base, stream) for base in range(200) for stream in RunStream]
+        assert len(set(seeds)) == len(seeds)
+        assert all(0 <= s < 2 ** 63 for s in seeds)
+
+    def test_neighbouring_runs_do_not_share_simulator_streams(self):
+        # Under base + offset seeding, run 1's collection env replayed run 0's evaluation env.
+        run_0 = TrainingRun(build_tiger_pomdp(), _config(seed=0), CPU)
+        run_1 = TrainingRun(build_tiger_pomdp(), _config(seed=1), CPU)
+        generators = [run_0.env.state_dict()["generator"], run_0.eval_env.state_dict()["generator"],
+                      run_1.env.state_dict()["generator"], run_1.eval_env.state_dict()["generator"]]
+        for i, first in enumerate(generators):
+            for second in generators[i + 1:]:
+                assert not torch.equal(first, second)

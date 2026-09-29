@@ -22,9 +22,10 @@
 #      return is the number compared with the exact optimum V*(b0) (training/rollout.py).
 #
 # 3. Seeds:
-#    - cfg.seed seeds torch (network initialisation), and fixed offsets of it seed each
-#      independent random stream (collection env, evaluation env, replay sampling, planners,
-#      agents), so no two components share a generator.
+#    - Every random consumer (network initialisation, collection env, evaluation env, replay
+#      sampling, planners, agents) is seeded with stream_seed(cfg.seed, RunStream.<consumer>),
+#      a hash of the pair (training/seeding.py). No two consumers share a generator, within a
+#      run or across the runs of a seed sweep.
 # ==============================================================================
 
 from dataclasses import dataclass
@@ -38,16 +39,14 @@ from ..models import BeliefFilter, LatentPredictor, ObservationHead, RecurrentJE
 from ..planning import BeliefTreeSearch, LearnedSearchModel
 from .episode_buffer import EpisodeBuffer
 from .rollout import discounted_returns, play_episodes
+from .seeding import RunStream, stream_seed
 from .trainer import TrainerConfig, WorldModelTrainer
 
-# Offsets that give every random stream its own seed (section 3).
-(_SEED_EVAL_ENV, _SEED_BUFFER, _SEED_TRAIN_PLANNER, _SEED_EVAL_PLANNER, _SEED_TRAIN_AGENT, _SEED_EVAL_AGENT,
- _SEED_WARMUP_AGENT) = range(1, 8)
 
 
 @dataclass(frozen=True)
 class RunConfig:
-    """Everything that defines a run (built from conf/config.yaml by main.py)."""
+    """Everything that defines a run (built from conf/config.yaml by ipomdp.experiments.build_run_config)."""
 
     seed: int
     episode_length: int
@@ -77,7 +76,8 @@ class TrainingRun:
 
     def __init__(self, pomdp: FinitePOMDP, cfg: RunConfig, device: torch.device):
         self.pomdp, self.cfg, self.device = pomdp, cfg, device
-        torch.manual_seed(cfg.seed)
+        seed = lambda stream: stream_seed(cfg.seed, stream)  # noqa: E731
+        torch.manual_seed(seed(RunStream.NETWORK_INIT))
         num_a, num_o = pomdp.num_actions, pomdp.num_observations
 
         self.world_model = RecurrentJEPA(
@@ -94,16 +94,16 @@ class TrainingRun:
                                    self.value_head, self.codec, num_a, num_o, pomdp.discount)
         self.train_agent = PlanningAgent(
             model, BeliefTreeSearch(model, cfg.num_simulations, cfg.c_puct, cfg.dirichlet_alpha, cfg.dirichlet_epsilon,
-                                    seed=cfg.seed + _SEED_TRAIN_PLANNER),
-            cfg.env_batch_size, cfg.temperature, cfg.seed + _SEED_TRAIN_AGENT, device)
+                                    seed=seed(RunStream.TRAIN_PLANNER)),
+            cfg.env_batch_size, cfg.temperature, seed(RunStream.TRAIN_AGENT), device)
         self.eval_agent = PlanningAgent(
             model, BeliefTreeSearch(model, cfg.num_simulations, cfg.c_puct, cfg.dirichlet_alpha, dirichlet_epsilon=0.0,
-                                    seed=cfg.seed + _SEED_EVAL_PLANNER),
-            cfg.eval_episodes, temperature=0.0, seed=cfg.seed + _SEED_EVAL_AGENT, device=device)
-        self.warmup_agent = UniformRandomAgent(num_a, cfg.env_batch_size, cfg.seed + _SEED_WARMUP_AGENT, device)
-        self.env = BatchedPOMDPEnv(pomdp, cfg.env_batch_size, cfg.episode_length, cfg.seed, device)
-        self.eval_env = BatchedPOMDPEnv(pomdp, cfg.eval_episodes, cfg.episode_length, cfg.seed + _SEED_EVAL_ENV, device)
-        self.buffer = EpisodeBuffer(cfg.buffer_capacity, cfg.episode_length, device, cfg.seed + _SEED_BUFFER)
+                                    seed=seed(RunStream.EVAL_PLANNER)),
+            cfg.eval_episodes, temperature=0.0, seed=seed(RunStream.EVAL_AGENT), device=device)
+        self.warmup_agent = UniformRandomAgent(num_a, cfg.env_batch_size, seed(RunStream.WARMUP_AGENT), device)
+        self.env = BatchedPOMDPEnv(pomdp, cfg.env_batch_size, cfg.episode_length, seed(RunStream.COLLECTION_ENV), device)
+        self.eval_env = BatchedPOMDPEnv(pomdp, cfg.eval_episodes, cfg.episode_length, seed(RunStream.EVAL_ENV), device)
+        self.buffer = EpisodeBuffer(cfg.buffer_capacity, cfg.episode_length, device, seed(RunStream.BUFFER))
         self.collection = 0
         self.best_eval_return = -float("inf")
 

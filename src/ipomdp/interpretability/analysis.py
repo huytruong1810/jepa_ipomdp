@@ -51,6 +51,7 @@ from ..agents import PlanningAgent, UniformRandomAgent
 from ..domain import AlphaVectorSet, BatchedPOMDPEnv, FinitePOMDP, belief_update, initial_beliefs
 from ..models.world_model import BeliefFilter
 from ..training.rollout import discounted_returns, play_episodes
+from ..training.seeding import stream_seed
 from .belief_probe import (BeliefProbe, ProbeDataset, ProbeReport, build_probe_dataset, evaluate_probe,
                            fit_linear_probe, fit_mlp_probe)
 from .error_bounds import ErrorBoundReport, error_bounds, q_values
@@ -195,13 +196,15 @@ def analyze_beliefs(
         episode_length: Steps per episode.
         num_episodes: Episodes per data set and per return estimate.
         mlp_probe_steps: Adam steps of each MLP probe fit.
-        seed: Base seed; every data set and return estimate uses its own simulator seed.
+        seed: Base seed. Streams 1-4 seed the probe data sets, 5 the common simulator of the return
+            estimates, 6 the uniform agent (training/seeding.py); the caller seeds planner_agent
+            from other streams of the same base.
         device: Device of the networks.
     """
     if planner_agent.batch_size != num_episodes:
         raise ValueError("planner_agent.batch_size must equal num_episodes.")
-    env = lambda offset: BatchedPOMDPEnv(model, num_episodes, episode_length, seed + offset, device)  # noqa: E731
-    uniform = UniformRandomAgent(model.num_actions, num_episodes, seed, device)
+    env = lambda stream: BatchedPOMDPEnv(model, num_episodes, episode_length, stream_seed(seed, stream), device)  # noqa: E731
+    uniform = UniformRandomAgent(model.num_actions, num_episodes, stream_seed(seed, 6), device)
     data = {
         "random": (build_probe_dataset(model, belief_filter, play_episodes(env(1), uniform)[0]),
                    build_probe_dataset(model, belief_filter, play_episodes(env(2), uniform)[0])),

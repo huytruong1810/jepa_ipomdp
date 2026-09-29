@@ -40,7 +40,7 @@ from ..domain import BatchedPOMDPEnv, FinitePOMDP, action_value_functions, build
 from ..interpretability import BeliefAnalysis, analyze_beliefs, build_probe_dataset
 from ..planning import BeliefTreeSearch
 from ..telemetry import BeliefGeometryVisualizer
-from ..training import RunConfig, TrainerConfig, TrainingRun, load_checkpoint, play_episodes
+from ..training import RunConfig, TrainerConfig, TrainingRun, load_checkpoint, play_episodes, stream_seed
 
 # Domains selectable through conf/env/<name>.yaml. Each builder returns the exact model.
 DOMAIN_BUILDERS = {"tiger": build_tiger_pomdp}
@@ -95,7 +95,9 @@ class AnalysisSettings:
         episodes: Episodes per probe data set and per return estimate.
         solver_tolerance: Certified ||V* - V_n||_inf of the reference solution.
         mlp_probe_steps: Adam steps of each MLP probe fit.
-        seed: Base simulator seed; disjoint from every stream training uses (training/run.py).
+        seed: Base seed of the analysis streams (training/seeding.py): 1-6 inside
+            analyze_beliefs, 7-8 the greedy planner and its agent, 9-10 the geometry figure.
+            Hashed streams never coincide with a training run's streams.
     """
 
     episodes: int = 512
@@ -113,8 +115,8 @@ def analyze_run(run_dir: Path, settings: AnalysisSettings, device: torch.device)
     model = run.eval_agent.model
     planner = PlanningAgent(
         model, BeliefTreeSearch(model, cfg.mcts.num_simulations, cfg.mcts.c_puct, cfg.mcts.dirichlet_alpha,
-                                dirichlet_epsilon=0.0, seed=settings.seed),
-        settings.episodes, temperature=0.0, seed=settings.seed, device=device)
+                                dirichlet_epsilon=0.0, seed=stream_seed(settings.seed, 7)),
+        settings.episodes, temperature=0.0, seed=stream_seed(settings.seed, 8), device=device)
     analysis = analyze_beliefs(pomdp, run.world_model.belief_filter, planner, solution.value_function, action_values,
                                solution.error_bound, cfg.env.max_steps, settings.episodes,
                                settings.mlp_probe_steps, settings.seed, device)
@@ -126,8 +128,8 @@ def analyze_run(run_dir: Path, settings: AnalysisSettings, device: torch.device)
                                  "settings": asdict(settings)}
     (out / "report.json").write_text(json.dumps(report, indent=2, default=str))
     episodes, _ = play_episodes(
-        BatchedPOMDPEnv(pomdp, settings.episodes, cfg.env.max_steps, settings.seed + 99, device),
-        UniformRandomAgent(pomdp.num_actions, settings.episodes, settings.seed + 99, device))
+        BatchedPOMDPEnv(pomdp, settings.episodes, cfg.env.max_steps, stream_seed(settings.seed, 9), device),
+        UniformRandomAgent(pomdp.num_actions, settings.episodes, stream_seed(settings.seed, 10), device))
     dataset = build_probe_dataset(pomdp, run.world_model.belief_filter, episodes)
     plt.close(BeliefGeometryVisualizer(str(out)).plot(dataset.latents, dataset.posteriors[:, 0],
                                                       pomdp.state_names[0], filename="geometry"))

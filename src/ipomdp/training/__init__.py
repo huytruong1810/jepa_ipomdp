@@ -4,12 +4,14 @@ from .checkpointing import load_checkpoint, save_checkpoint
 from .episode_buffer import EpisodeBatch, EpisodeBuffer
 from .rollout import discounted_returns, play_episodes
 from .run import RunConfig, TrainingRun
+from .seeding import RunStream, stream_seed
 from .trainer import TrainerConfig, WorldModelTrainer
 
 __all__ = [
     "EpisodeBatch",
     "EpisodeBuffer",
     "RunConfig",
+    "RunStream",
     "TrainerConfig",
     "TrainingRun",
     "WorldModelTrainer",
@@ -17,4 +19,5 @@ __all__ = [
     "load_checkpoint",
     "play_episodes",
     "save_checkpoint",
+    "stream_seed",
 ]
