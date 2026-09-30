@@ -97,7 +97,7 @@ Rules the user set:
 
 ## 4. Key measured results (cite from the module headers)
 
-- **Multi-seed result (Phase 8, the numbers to cite):** `runs/sweeps/default/aggregate.json`, 5 seeds, default config, new seed streams, about 57 min per seed.
+- **Multi-seed result before Polyak averaging (`default`, superseded by `polyak` below):** `runs/sweeps/default/aggregate.json`, 5 seeds, default config, new seed streams, about 57 min per seed.
   - Paired gaps to the optimal agent on common analysis episodes (Student-t 95% over seeds):
 
     | Agent | Gap |
@@ -116,11 +116,12 @@ Rules the user set:
   - The exact margin Q*(door) − Q*(listen) there is only **+0.70**. The observation head is essentially exact (KL ≈ 0.002). The margin is flipped by the reward head (correct-door error −1.79) and a belief-dependent value bias (+0.5 at confident beliefs up to +2.6 at b = 0.5). The search cannot repair a root-edge reward error.
   - **The head errors are optimisation noise, not bias.** Between best.pt and latest.pt, door-reward and value errors at decision-relevant beliefs move by 1–3 with sign changes: seed 1 from −1.76 to +0.19, seed 2 from +0.48 to −2.79 (its evaluation dip to 14.58 at collection 40), seed 3 from −0.66 to +0.91.
   - The late-run evaluation dips have the same cause. The constant learning rate on high-variance bimodal door rewards (−100/+10) and bootstrapped values makes the heads jitter by more than the 0.70 decision margin.
-- **Polyak-averaged acting weights (`430f20c`), interim result on seeds 1 and 2** (`runs/sweeps/polyak`):
-  - Learned planner gap to optimal: seed 1 went from −1.97 to −0.015, seed 2 from −0.04 to −0.019.
-  - Cost: escape from always-listen moved from collection 10 to collection 15, the averaging lag.
-  - Correction to the "late dips" reading: a 128-episode in-training evaluation has a standard error of about 2.8 (per-episode return std ≈ 31), so scores of 13–24 are within noise of the optimum. Only seed 1's 11.4 at collection 30 of `default` stood out. The in-training evaluation is too noisy to diagnose dips; the analysis's common-episode gaps are the reliable measure.
-  - Running now: seeds 0, 3 and 4, extending `polyak` to 5 seeds.
+- **Polyak-averaged acting weights (`430f20c`), full result** (`runs/sweeps/polyak`, 5 seeds; this is now the headline):
+  - Learned planner gap to optimal: **−0.03 ± 0.06** (per seed −0.11, −0.02, −0.02, 0.00, +0.00), down from −0.51 ± 1.02 in `default`.
+  - Decoded MLP gap: −0.23 ± 0.53. Decoded linear gap: −5.38 ± 3.68, with 1.3% suboptimal decisions.
+  - Probe KL (MLP) < 1e-4. Minimality ratio 0.27 ± 0.03.
+  - Cost: escape from always-listen moved from collection 10 to 15 in 4 of 5 seeds.
+  - A 128-episode in-training evaluation has a standard error of about 2.8 (per-episode return std ≈ 31), so it cannot resolve dips; use the analysis's common-episode gaps.
 - The seed-0 numbers below predate the seeding fix and are kept for history.
 
 
@@ -164,16 +165,16 @@ Rules the user set:
 
 ## 6. Next actions (in order)
 
-1. **Done:** the sweep was read (section 4) and README updated.
-2. **Ask before pushing** `fd4d628`, `e2620c4` and later Phase 8 commits.
-3. **Phase 8 (holistic), remaining:** a plan for progressively larger experiments, informed by the sweep. Proposed order:
+1. **Done:** sweeps `default` and `polyak` read (section 4); README cites `polyak`.
+2. **Ask before pushing** any unpushed Phase 8 commits.
+3. **Phase 8 (holistic), remaining:** the canonical Tiger result now matches the exact solver across seeds, which clears the project's gate for larger experiments. Proposed order:
    1. multi-seed canonical Tiger;
    2. a baseline comparison;
    3. multi-agent Tiger, whose exact tables must first be verified against Gmytrasiewicz & Doshi;
    4. I-POMDP levels via the S × M_j reduction.
 4. **Known open issues to raise with the user:**
-   - The learned planner (17.1) trails the decoded-belief agent (19.5); the gap comes from the learned heads, not the representation.
-   - Late-run evaluation dips (5.5 at one point).
+   - Resolved in Phase 8: the planner shortfall was head optimisation noise, fixed by Polyak-averaged acting weights (gap −0.03 ± 0.06).
+   - Late-run evaluation dips: mostly in-training evaluation noise (standard error about 2.8). A common-random-numbers evaluation against the exact optimum would make the training curve interpretable.
    - Slow value convergence (|V − V*| was still 4.9 after 3000 updates).
    - The latent is not linearly sufficient.
    - Worst-case bounds are loose.
