@@ -46,6 +46,7 @@ The three scripts are thin shells over `ipomdp.experiments`; no script imports a
 - `state_dict()`/`load_state_dict()` make resume bit-exact (tested). `main.py` is a thin Hydra shell around it that handles telemetry, evaluation, checkpoints, visualization and SIGINT.
 - Collection: `env_batch_size` whole episodes of `env.max_steps` (100 for Tiger). Actions are uniform during `warmup_episodes`, then come from the exploring planner (root Dirichlet noise, annealed temperature). `updates_per_collection` trainer steps follow.
 - Evaluation, every `eval_every` collections: a separate greedy planner (argmax Q) on a separate simulator. It reports the mean **discounted** return, comparable to V*(b₀) = 19.37. `best.pt` tracks the best evaluation and `latest.pt` holds the full state.
+- The planner (collection and evaluation) acts with **Polyak-averaged copies** of the filter and heads (`model.acting_ema_momentum`, 0.99), updated after every optimizer step. Training uses the online weights. The online heads jitter by 1–3 under a constant learning rate, more than the 0.70 margin of Tiger's open-vs-listen decision at b = 0.97 (Phase 8). Analysis and probes read the acting copies.
 - There is no opponent input anywhere. The agent models the POMDP it faces, with the opponent folded into the environment (Phase 4 decision).
 
 **World model (`models/world_model.py`).** One latent vector; there are no object slots.

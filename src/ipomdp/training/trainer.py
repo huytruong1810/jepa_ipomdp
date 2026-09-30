@@ -64,7 +64,6 @@
 #      evaluates the same backup (planning/search_model.py, section 4).
 # ==============================================================================
 
-import copy
 from dataclasses import dataclass
 
 import torch
@@ -72,6 +71,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from ..models.distributions import TwoHotSymlog
+from ..models.ema import ema_update, frozen_copy
 from ..models.heads import ObservationHead, RewardHead, ValueHead
 from ..models.world_model import RecurrentJEPA
 from ..planning.search_model import LearnedSearchModel
@@ -122,7 +122,7 @@ class WorldModelTrainer:
             *observation_head.parameters(),
         ]
         self.optimizer = torch.optim.AdamW(self.parameters, lr=config.learning_rate, weight_decay=config.weight_decay)
-        self.target_value_head = copy.deepcopy(value_head).requires_grad_(False)
+        self.target_value_head = frozen_copy(value_head)
         self.target_model = LearnedSearchModel(world_model.belief_filter, reward_head, observation_head,
                                                self.target_value_head, codec, num_actions, num_observations, discount)
 
@@ -141,12 +141,6 @@ class WorldModelTrainer:
             expansion = self.target_model.expand(latents.float())
             q = expansion.rewards + self.discount * (expansion.observation_probs * expansion.next_values).sum(-1)
         return q.max(dim=-1).values
-
-    @torch.no_grad()
-    def _update_target_value_head(self) -> None:
-        momentum = self.config.value_target_momentum
-        for target, online in zip(self.target_value_head.parameters(), self.value_head.parameters()):
-            target.mul_(momentum).add_(online, alpha=1.0 - momentum)
 
     def train_step(self, episodes: EpisodeBatch) -> dict[str, float]:
         """
@@ -196,7 +190,7 @@ class WorldModelTrainer:
         torch.nn.utils.clip_grad_norm_(self.parameters, self.config.grad_clip_norm)
         self.optimizer.step()
         self.world_model.update_target()
-        self._update_target_value_head()
+        ema_update(self.target_value_head, self.value_head, self.config.value_target_momentum)
 
         with torch.no_grad():
             value_error = (self.twohot.mean(value_logits) - targets_value).abs().mean()

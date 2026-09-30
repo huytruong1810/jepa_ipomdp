@@ -87,6 +87,7 @@ model:
   hidden_dim: 64              # Width of SwiGLU residual MLPs
   num_blocks: 1               # SwiGLU residual blocks per MLP
   ema_momentum: 0.99          # Target filter EMA momentum
+  acting_ema_momentum: 0.99   # Polyak averaging of the weights the planner acts with (training/run.py, section 4)
   num_bins: 255               # Two-hot bins for value and reward
 
 mcts:

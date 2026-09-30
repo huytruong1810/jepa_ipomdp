@@ -26,6 +26,23 @@
 #      sampling, planners, agents) is seeded with stream_seed(cfg.seed, RunStream.<consumer>),
 #      a hash of the pair (training/seeding.py). No two consumers share a generator, within a
 #      run or across the runs of a seed sweep.
+#
+# 4. The Agent Acts With Polyak-Averaged Weights (Phase-8 decision):
+#    - The planner (collection and evaluation alike) uses EMA copies of the belief filter and the
+#      reward, observation and value heads, updated after every optimiser step with
+#      acting_ema_momentum (models/ema.py). Training continues on the online weights.
+#    - Phase-8 finding: with a constant learning rate on Tiger's high-variance door rewards
+#      (-100/+10) and bootstrapped values, the online heads jitter by 1-3 between updates
+#      (door-reward error at b = 0.97 moved from -1.76 to +0.19 between two checkpoints of one
+#      run), while the exact margin between opening and listening at that belief is only 0.70.
+#      Whichever way the last update left the heads decided the action: one of five seeds
+#      listened too long (gap -1.97) and late evaluations dipped (to 11.4 and 14.6). Averaging
+#      the weights averages that jitter out without changing the objective.
+#    - Momentum 0.99 averages over ~100 updates (about 1.5 collections at 64 updates each).
+#      Learning escapes always-listen after ~1000 updates, so a much slower average (0.999,
+#      ~16 collections) would delay the agent behind what the online model has learned.
+#    - The acting copies are checkpointed with every other network and are what analysis and
+#      probes read (ipomdp.experiments), since they are the model the agent actually runs.
 # ==============================================================================
 
 from dataclasses import dataclass
@@ -35,7 +52,8 @@ import torch
 
 from ..agents import PlanningAgent, UniformRandomAgent
 from ..domain import BatchedPOMDPEnv, FinitePOMDP
-from ..models import BeliefFilter, LatentPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueHead
+from ..models import (BeliefFilter, LatentPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueHead,
+                      ema_update, frozen_copy)
 from ..planning import BeliefTreeSearch, LearnedSearchModel
 from .episode_buffer import EpisodeBuffer
 from .rollout import discounted_returns, play_episodes
@@ -60,6 +78,7 @@ class RunConfig:
     hidden_dim: int
     num_blocks: int
     ema_momentum: float
+    acting_ema_momentum: float
     num_bins: int
     trainer: TrainerConfig
     num_simulations: int
@@ -90,8 +109,13 @@ class TrainingRun:
         self.trainer = WorldModelTrainer(self.world_model, self.value_head, self.reward_head, self.observation_head,
                                          self.codec, num_a, num_o, pomdp.discount, cfg.trainer, device)
 
-        model = LearnedSearchModel(self.world_model.belief_filter, self.reward_head, self.observation_head,
-                                   self.value_head, self.codec, num_a, num_o, pomdp.discount)
+        # Polyak-averaged copies the agent acts with (section 4).
+        self.acting_filter = frozen_copy(self.world_model.belief_filter)
+        self.acting_reward_head = frozen_copy(self.reward_head)
+        self.acting_observation_head = frozen_copy(self.observation_head)
+        self.acting_value_head = frozen_copy(self.value_head)
+        model = LearnedSearchModel(self.acting_filter, self.acting_reward_head, self.acting_observation_head,
+                                   self.acting_value_head, self.codec, num_a, num_o, pomdp.discount)
         self.train_agent = PlanningAgent(
             model, BeliefTreeSearch(model, cfg.num_simulations, cfg.c_puct, cfg.dirichlet_alpha, cfg.dirichlet_epsilon,
                                     seed=seed(RunStream.TRAIN_PLANNER)),
@@ -110,7 +134,18 @@ class TrainingRun:
     @property
     def networks(self) -> dict[str, torch.nn.Module]:
         return {"world_model": self.world_model, "value": self.value_head, "reward": self.reward_head,
-                "observation": self.observation_head, "target_value": self.trainer.target_value_head}
+                "observation": self.observation_head, "target_value": self.trainer.target_value_head,
+                "acting_filter": self.acting_filter, "acting_reward": self.acting_reward_head,
+                "acting_observation": self.acting_observation_head, "acting_value": self.acting_value_head}
+
+    def _update_acting(self) -> None:
+        """Polyak step of the acting copies towards the online weights (section 4)."""
+        momentum = self.cfg.acting_ema_momentum
+        for acting, online in ((self.acting_filter, self.world_model.belief_filter),
+                               (self.acting_reward_head, self.reward_head),
+                               (self.acting_observation_head, self.observation_head),
+                               (self.acting_value_head, self.value_head)):
+            ema_update(acting, online, momentum)
 
     @property
     def in_warmup(self) -> bool:
@@ -124,6 +159,7 @@ class TrainingRun:
         metrics: dict[str, float] = {}
         for _ in range(self.cfg.updates_per_collection):
             metrics = self.trainer.train_step(self.buffer.sample(self.cfg.batch_size))
+            self._update_acting()
         if not warmup:
             agent = self.train_agent
             agent.temperature = max(self.cfg.temperature_min, agent.temperature * self.cfg.temperature_decay)

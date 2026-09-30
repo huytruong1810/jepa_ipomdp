@@ -60,7 +60,7 @@ torch.set_float32_matmul_precision('high')
 def visualize(run: TrainingRun, pomdp: FinitePOMDP, collection: int, plots: Path, metrics_logger: MetricsLogger) -> None:
     """Belief geometry, search tree and cumulative rewards of greedy evaluation episodes."""
     episodes, _ = play_episodes(run.eval_env, run.eval_agent)
-    dataset = build_probe_dataset(pomdp, run.world_model.belief_filter, episodes)
+    dataset = build_probe_dataset(pomdp, run.acting_filter, episodes)
     figure = BeliefGeometryVisualizer(save_dir=str(plots / "geometry")).plot(
         dataset.latents, dataset.posteriors[:, 0], pomdp.state_names[0], filename=f"geometry_c{collection}")
     metrics_logger.log_figure("Visuals/belief_geometry", figure, collection)

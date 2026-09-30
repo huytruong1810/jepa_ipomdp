@@ -54,6 +54,7 @@ def build_run_config(cfg: DictConfig) -> RunConfig:
         warmup_episodes=t.warmup_episodes, buffer_capacity=t.buffer_capacity, batch_size=t.batch_size,
         updates_per_collection=t.updates_per_collection, eval_episodes=t.eval_episodes,
         latent_dim=m.latent_dim, hidden_dim=m.hidden_dim, num_blocks=m.num_blocks, ema_momentum=m.ema_momentum,
+        acting_ema_momentum=m.acting_ema_momentum,
         num_bins=m.num_bins, trainer=TrainerConfig(**cfg.trainer), num_simulations=s.num_simulations,
         c_puct=s.c_puct, dirichlet_alpha=s.dirichlet_alpha, dirichlet_epsilon=s.dirichlet_epsilon,
         temperature=a.temperature, temperature_min=a.temperature_min, temperature_decay=a.temperature_decay)
@@ -117,7 +118,7 @@ def analyze_run(run_dir: Path, settings: AnalysisSettings, device: torch.device)
         model, BeliefTreeSearch(model, cfg.mcts.num_simulations, cfg.mcts.c_puct, cfg.mcts.dirichlet_alpha,
                                 dirichlet_epsilon=0.0, seed=stream_seed(settings.seed, 7)),
         settings.episodes, temperature=0.0, seed=stream_seed(settings.seed, 8), device=device)
-    analysis = analyze_beliefs(pomdp, run.world_model.belief_filter, planner, solution.value_function, action_values,
+    analysis = analyze_beliefs(pomdp, run.acting_filter, planner, solution.value_function, action_values,
                                solution.error_bound, cfg.env.max_steps, settings.episodes,
                                settings.mlp_probe_steps, settings.seed, device)
 
@@ -130,7 +131,7 @@ def analyze_run(run_dir: Path, settings: AnalysisSettings, device: torch.device)
     episodes, _ = play_episodes(
         BatchedPOMDPEnv(pomdp, settings.episodes, cfg.env.max_steps, stream_seed(settings.seed, 9), device),
         UniformRandomAgent(pomdp.num_actions, settings.episodes, stream_seed(settings.seed, 10), device))
-    dataset = build_probe_dataset(pomdp, run.world_model.belief_filter, episodes)
+    dataset = build_probe_dataset(pomdp, run.acting_filter, episodes)
     plt.close(BeliefGeometryVisualizer(str(out)).plot(dataset.latents, dataset.posteriors[:, 0],
                                                       pomdp.state_names[0], filename="geometry"))
     return analysis

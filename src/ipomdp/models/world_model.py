@@ -59,12 +59,11 @@
 #      on, and branching mirrors the exact belief tree of the benchmark solver.
 # ==============================================================================
 
-import copy
-
 import torch
 import torch.nn as nn
 from torch import Tensor
 
+from .ema import ema_update, frozen_copy
 from .layers import build_residual_stack
 
 
@@ -149,10 +148,8 @@ class RecurrentJEPA(nn.Module):
         self.belief_filter = belief_filter
         self.predictor = predictor
         self.ema_momentum = ema_momentum
-        self.target_filter = copy.deepcopy(belief_filter).requires_grad_(False)
+        self.target_filter = frozen_copy(belief_filter)
 
-    @torch.no_grad()
     def update_target(self) -> None:
         """EMA update of the target filter (in place, after each optimiser step)."""
-        for target, online in zip(self.target_filter.parameters(), self.belief_filter.parameters()):
-            target.mul_(self.ema_momentum).add_(online, alpha=1.0 - self.ema_momentum)
+        ema_update(self.target_filter, self.belief_filter, self.ema_momentum)
