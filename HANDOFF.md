@@ -1,181 +1,156 @@
-# HANDOFF — JEPA I-POMDP phased review (as of 2026-09-28)
+# HANDOFF: JEPA I-POMDP (as of 2026-09-30)
 
-Read `CLAUDE.md` first: it describes the current architecture and conventions. This file covers the review's state, history and next steps. The module headers (`DESIGN DECISIONS & THEORETICAL FOUNDATIONS` blocks) record the evidence behind every design choice. Read the relevant header before changing a module.
+Read `CLAUDE.md` first. It describes the architecture, commands and conventions. This file covers the project's goals, state, history, dead ends and next steps. The module headers (`DESIGN DECISIONS & THEORETICAL FOUNDATIONS` blocks) record the evidence behind each design choice; read the relevant header before changing a module.
 
-## 1. Goal and ground rules
+## 1. Goal
 
-The research code has three contributions:
-1. A JEPA-style recurrent **belief filter** learned while the agent learns the dynamics.
-2. **MCTS planning** over that filter, for POMDPs and later I-POMDPs.
-3. **Interpretability** that maps the latent to the (interactive) belief with quantified error bounds.
+Three research contributions:
 
-The user asked for a rigorous, phased, bottom-up review:
+1. **Belief filter.** A recurrent JEPA belief filter (no observation decoder) learned while the agent learns the dynamics.
+2. **Planning.** Belief-tree search over that filter, for POMDPs now and I-POMDPs later.
+3. **Interpretability.** A map from the latent to the exact (later interactive) belief, with quantified error bounds.
 
-| Phase | Scope | Status |
-|---|---|---|
-| 1 | domain | done |
-| 2 | JEPA filter | done |
-| 3 | DreamerV3 parts | done |
-| 4 | MCTS/agent | done |
-| 5 | training loop | done |
-| 6 | interpretability / error bounds | done |
-| 7 | scripts, configs, results layout | done |
-| 8 | holistic review | in progress |
+The project gate was that the learned agent must match the exact solver on canonical single-agent Tiger before anything larger runs. **That gate is now met across seeds** (section 4). The next stage is a baseline comparison, then multi-agent Tiger, then I-POMDP levels.
 
-Rules the user set:
+## 2. Rules the user set (unchanged; follow them)
+
 - **Scope:**
-  - Canonical single-agent Tiger only (`tiger.95.POMDP`, γ = 0.95). Never add non-canonical elements to Tiger.
-  - The learned agent must match the exact solver at small scale before anything larger is run.
-- **Code quality:**
+  - Canonical single-agent Tiger only (`tiger.95.POMDP`, γ = 0.95) until the user moves on. Never add non-canonical elements to Tiger.
+  - Every change needs a small-scale check against the exact references before a larger run.
+- **Code:**
   - No fallback paths, no deprecated code, no backward compatibility, no schema versions. Fail loudly.
-  - Code should read as if written from scratch. Keep comments and docstrings verbose about design decisions.
-  - Follow DDD/DRY/KISS/SOLID. Restructure, rename or delete freely when it improves the design.
+  - Code should read as if written from scratch, with verbose comments about design decisions. Follow DDD/DRY/KISS/SOLID.
+  - Every source file starts with `# ABSOLUTE PATH:` and a design-decisions header.
 - **Workflow:**
-  - Commit on `main` (remote `github.com/huytruong1810/jepa_ipomdp`). Ask before pushing.
-  - Ask the user whenever a research or design decision is genuinely theirs. So far they have picked the recommended option each time, but they still want to be asked.
-  - Every phase needs a small-scale check against exact references before any larger run.
-- **Environment:** WSL2 Ubuntu, RTX 5080, `uv`, Python 3.12, cu128. Another project (`~/projects/ipomcp`) sometimes runs CPU-heavy experiments on the same machine, which inflates timings. Check `uptime`, and check `pgrep -fl main.py` before launching training.
+  - Commit on `main` (remote `github.com/huytruong1810/jepa_ipomdp`). **Ask before every push.**
+  - **Ask the user about every research or design decision that is theirs.** Offer a recommended option. So far they have always picked the recommendation, but they want to be asked.
+- **Communication:**
+  - The user is preparing reviewer material. They want results stated plainly, including unfavourable ones. For example, the runtime comparison says honestly that exact is faster on Tiger.
+  - Reviewer-facing pages should be minimal: main results only, figures over prose (section 7).
+- **Machine:** WSL2 Ubuntu, RTX 5080, `uv`, Python 3.12, cu128.
+  - Another project (`~/projects/ipomcp`) sometimes runs CPU-heavy experiments here. Check `uptime` and `pgrep -af "python.*(main|sweep).py"` before long runs.
+  - The belief-tree search is CPU/Python-bound, so running pytest during a sweep slows the sweep.
+  - Pattern for watching a detached sweep: `ps -eo args | grep "^[^ ]*python[^ ]* [^ ]*sweep.py <name>"`. A plain `pgrep -f` matches its own shell.
 
-## 2. Current git state
+## 3. Current state
 
-- Pushed through `01bbe62` (Phase 7). Phase 8 commits `fd4d628` (seeding fix) and `e2620c4` (consistency pass) are local; ask before pushing.
-- Fast suite: 121 passed at `e2620c4`. The slow acceptance suite last passed at Phase 6; Phase 8 changed only seeding and comments in the code it exercises, so its numbers will differ slightly from section 4 but it has not been rerun.
-- **Running:** `uv run sweep.py default --seeds 0,1,2,3,4` (default config, new seed streams), started 2026-09-28 22:09, log `runs/sweep_default.log`, results `runs/sweeps/default/aggregate.json`. About 45-60 min per seed. Re-running the same command continues it if it is interrupted. Avoid CPU-heavy work (e.g. pytest) while it runs: search is CPU-bound and slows down.
+- **Git:** `main` is pushed through `065b1c1`. The HANDOFF, CLAUDE.md and `reports/` commit that follows it is local; ask before pushing.
+- **Review phases:** 1 domain, 2 JEPA filter, 3 DreamerV3 parts, 4 planner/agent, 5 training loop, 6 interpretability, 7 scripts/layout: all done. 8 holistic: consistency review done, multi-seed validation done, remaining items in section 6.
+- **Tests:** the fast suite passes (123 at `430f20c`).
+  - The slow suite (`uv run pytest -m slow`, about 25 min on GPU) last passed at Phase 6.
+  - Phase 8 changed seeding and added Polyak acting weights inside `TrainingRun`. The acceptance test builds its components directly, so it is probably unaffected, but **it has not been rerun since Phase 8**. Rerun it once.
+- **Runs:**
+  - `runs/sweeps/default` and `runs/sweeps/polyak`: 5 seeds each, default config.
+  - `polyak` is the current method and the numbers to cite.
+  - Older `runs/tiger/phase5_*` runs predate the seeding fix and are not reproducible from their seed.
+- **Reviewer page:** https://claude.ai/artifact/Rboz6xV7xA7Ejrjomy4As5 (private, owner-shared). Reviewers loved it. Its source, data and generating scripts are in `reports/2026-09-30_reviewer_page/` (see its README).
+  - The owner edits the live page themselves; for example, they renamed the title to "JEPA-IPOMDP".
+  - Always read the live version with the Artifact tool before republishing, and merge onto it.
 
-## 3. What was done (commit, then the gist)
+## 4. Results to cite (canonical Tiger, `runs/sweeps/polyak`, 5 seeds)
 
-- `db269d3`: baseline snapshot. Old run artifacts deleted (user's decision).
-- `ba1d3fc`, **Phase 1 (domain).**
-  - The old Tiger was not canonical: it emitted a free observation at t = 0, the growl stayed informative after a door opened, and γ was 0.99.
-  - Built `src/ipomdp/domain/`:
-    - `FinitePOMDP`, the single source of truth;
-    - an exact batched Bayes filter;
-    - an exact alpha-vector value iteration (incremental pruning plus a certified infinite-horizon bound; V*(b0) = 19.3713);
-    - a seeded batched env.
-  - Wumpus, UAV and the old scripts deleted.
-- `c267482`, **critical bug.** Non-blocking device-to-host copies stored stale memory in the replay buffer (477 of 500 reads stale). That silently corrupted every earlier GPU run.
-- `ccc985b`, **Phase 2 (JEPA filter).**
-  - The old world model's latent was no more belief-like than a random network's.
-  - Now: `BeliefFilter` with a learned z0, a single latent vector (no slots), whole-episode training, and VICReg removed.
-  - Decision: **filter objective = reward grounding + JEPA self-prediction.**
-- `94c4b1e` and `2191999`, **Phase 3 (DreamerV3 parts).**
-  - Two-hot decoding was Jensen-biased: the −100/+10 door gamble (mean −45) decoded to −2.9. Replaced with an unbiased real-space codec bounded by `FinitePOMDP.value_bound`.
-  - The prior never trained because free bits were swallowing the KL.
-  - Stochastic latent imagination was biased.
-  - Decision: **observation-branching imagination.** A learned `ObservationHead` predicts P(o′|z,a) and the real `BeliefFilter.step` produces the child latents. The JEPA predictor became deterministic and is used for representation learning only.
-  - Tiger episodes are 100 steps. A 20-step truncation left the bootstrap latent unanchored and biased values by 8%.
-- `d110ad9`, **Phase 4 (planner/agent).**
-  - Decision: **no opponent inputs anywhere.** The opponent is folded into the env.
-  - `SearchModel` protocol with `ExactSearchModel` and `LearnedSearchModel`.
-  - `BeliefTreeSearch`: exact branching over observations, **expectimax backups** (mean backups got worse with more search), argmax-Q greedy actions, seeded RNG.
-  - The exact-model agent matches the optimal return (slow test).
-- `682060a`, `db625d9`, `80ee623`, **Phase 5 (training loop).**
-  - `TrainingRun` gives bit-exact resume, including buffer and RNG states.
-  - Greedy evaluation of the discounted return; `best.pt` chosen by evaluation.
-  - Decision: **value target = Bellman optimality backup through the learned model** (EMA target value head, momentum 0.9), with the value head on **detached** latents.
-  - The full loop reaches roughly V*: greedy returns about 12.6–22.4 once learning starts. Default config: 64 episodes × 40 collections with 64 updates each, about 40 min.
-  - Learning is gated by roughly 1000 gradient updates, not by collected data.
-- `7a16fea`, **Phase 6 (interpretability).**
-  - Probes: `build_probe_dataset` from any recorded episodes, fitted `BeliefProbe`s that decode latents, evaluation on held-out episodes.
-  - `error_bounds.py`: span-Hölder bounds (value, one-step regret, discounted loss) in worst-case and expected form.
-  - `analysis.py`: decoded-belief agent versus optimal versus the learned planner on common seeds, plus a geometry report.
-  - Solver: `action_value_functions` (per-action Q* sets).
-  - Agents: `UniformRandomAgent`, and an `Agent` protocol for `play_episodes`.
-  - `BeliefGeometryVisualizer`.
-  - `analyze.py <run_dir>` writes `analysis/report.json` and `geometry.png`.
+All agents play the same 512 held-out episodes. The paired gap to the optimal agent is reported with a Student-t 95% interval over seeds. The optimal agent earns 18.48 on these episodes, and V*(b₀) = 19.36.
 
-- Phase 7 commit, **Phase 7 (scripts, configs, results layout).** User decisions: thin scripts over a library package; delete stale files; sequential multi-seed runner with aggregation.
-  - `src/ipomdp/experiments/`: `runs.py` (`DOMAIN_BUILDERS`, `build_run_config`, `build_training_run`, `load_trained_run`, `analyze_run`) and `aggregate.py` (Student-t 95% intervals over seeds, paired within-seed gaps). No script imports another any more.
-  - `sweep.py <name> --seeds ... [overrides]`: one `main.py` process per seed into `runs/sweeps/<name>/seed<k>/`, then `analyze_run`, then `aggregate.json`. Continues an interrupted sweep; a changed condition raises.
-  - `main.py` exits non-zero on SIGINT (130) and guardrail aborts (1), so only completed runs are analysed.
-  - Deleted `BACKLOG.md`, `plot_rewards.py`, `src/__init__.py`. Dropped `torchvision`, `torchaudio`, `scikit-learn`; `pytest` moved to the `dev` dependency group. `.gitignore` pruned. `recreate_venv.sh` now just `uv sync` + CUDA check. README rewritten.
+| Agent | Gap to optimal |
+|---|---|
+| **Learned planner** (the trained agent) | **−0.03 ± 0.06** (per seed −0.11, −0.02, −0.02, 0.00, +0.00) |
+| Decoded belief, MLP probe → exact Q* | −0.23 ± 0.53 (contains 0) |
+| Decoded belief, linear probe → exact Q* | −5.38 ± 3.68 (1.3% suboptimal decisions) |
 
-- `fd4d628`, `e2620c4`, **Phase 8 (holistic review), part 1.** Every module re-read end to end against its header and the others.
-  - **Seed streams were shared across runs** (user decision: stop, fix, restart the sweep). `cfg.seed + offset` made run k's collection env replay run k-1's evaluation env, and run k's buffer share run k+2's env stream, so sweep replicates were coupled. Now `training/seeding.py` hashes `(seed, stream)` with numpy `SeedSequence` for every consumer, in training and analysis. Tested (the cross-run test fails under the old scheme). Consequence: runs made before `fd4d628` (including `phase5_ratio64_seed0`) are not reproducible from their seed any more; section 4 numbers were produced with the old streams.
-  - Verified with no change needed: the solver's ε-pruning accounting (2|O|ε per backup) and certified bound; expectimax/PUCT search; the Bellman value target through `LearnedSearchModel.expand`; the error-bound derivations (span-Hölder, 2 L_Q ε regret, performance-difference form of (c)); resume state coverage.
-  - Stale comments fixed (see the `e2620c4` message) and dead code removed (`symlog`/`symexp`, silent `None` skipping in `MetricsLogger`, cwd-relative visualizer defaults).
+- **Policy:**
+  - 99.94% of 128,000 greedy decisions match the exact optimal policy: listen at net growls 0 and ±1, open the opposite door at ±2.
+  - It is a *net* count, so a left growl followed by a right growl cancels.
+  - At ±2, Q*(open) − Q*(listen) = 0.70, the tightest margin. Almost every deviation is one extra listen there.
+  - Source: `reports/.../scripts/policy_check_output.txt`.
+- **Representation:**
+  - MLP probe KL to the exact posterior is below 1e-4 nats. Minimality ratio 0.27 ± 0.03.
+  - PC1 separates post-door-opening states from balanced-listening states even though both have belief 0.5, so the latent is sufficient but not minimal. PC2 carries the side.
+- **Observation prediction:** KL(exact ‖ learned) is 1–6e-4 nats. Log-loss on the realised growls is 0.6484 (learned) against 0.6487 (exact). Accuracy is 58.3% against 57.8%, the Bayes ceiling.
+- **Runtime (honest):** on Tiger the exact solution is far cheaper.
 
-## 4. Key measured results (cite from the module headers)
+  | | Exact | Learned |
+  |---|---|---|
+  | One-off cost | 72 s certified solve | 52–59 min training per seed |
+  | Acting | 0.096 ms per decision (alpha vectors) | 4.6 ms per decision (learned-model search) |
 
-- **Multi-seed result before Polyak averaging (`default`, superseded by `polyak` below):** `runs/sweeps/default/aggregate.json`, 5 seeds, default config, new seed streams, about 57 min per seed.
-  - Paired gaps to the optimal agent on common analysis episodes (Student-t 95% over seeds):
+  Exact-model search costs 4.0 ms per decision, so the search is Python-bound. The learned agent's case is model-freeness and scaling (|A|·|Γ|^|O| vector growth, nested I-POMDPs), not speed on Tiger.
+- **Planning horizon:**
+  - All methods optimise the discounted infinite-horizon return; the effective horizon is 1/(1−γ) = 20.
+  - The exact solver ran 150 exact backups, certified within 0.0096 of V*. The greedy-policy guarantee from that bound is only 2γδ/(1−γ) ≈ 0.37, but the actual decisions are unaffected because the tightest margin is 0.70.
+  - The search reaches about 3.6 actions ahead on average (6 at most) with 50 simulations. V̂ or V* leaves carry the tail.
+- **Before Polyak averaging** (`runs/sweeps/default`): planner gap −0.51 ± 1.02, and seed 1 lost 1.97. The training-time `best.pt` score overstates performance (22.0 against an unbiased 18.0 for the same checkpoints).
+- **Exact references:** V_h(b₀) = −1, −1.95, 2.3098, 1.7955, 2.7631 for h = 1..5; V*(b₀) = 19.3713.
 
-    | Agent | Gap |
-    |---|---|
-    | Decoded-belief, MLP probe | −0.08 ± 0.44 |
-    | Learned planner | −0.51 ± 1.02 (seed 1: −1.97; others ≥ −0.27) |
-    | Decoded-belief, linear probe | −6.16 ± 7.00 (seed 3: −16.06) |
+## 5. History (commit, then the gist)
 
-  - The optimal agent earns 18.48 on those 512 episodes (V*(b0) = 19.36).
-  - Probe KL: MLP < 1e-4, linear 0.0009. Suboptimal decisions: MLP 0.17%, linear 2.1%. Minimality ratio 0.27 ± 0.03.
-  - Every seed escaped always-listen by collection 10 (seed 4: 15).
-  - The biased training selection score was 22.01 ± 2.26, against an unbiased 17.96 ± 1.02 for the same checkpoints.
-  - Late-run evaluation dips persist: seed 1 scored 11.40 at collection 30, seed 2 scored 14.58 at collection 40. The final checkpoint is not the best one.
-- **Where the planner loses return (Phase 8 diagnosis, 2026-09-29):** a scratch script replayed greedy episodes with exact beliefs tracked alongside.
-  - Seed 1's entire shortfall is one decision. At posterior 0.97/0.03 (two net growls) it LISTENs instead of opening the correct door, at 18% of steps, with regret ≈ 0.7 each.
-  - The exact margin Q*(door) − Q*(listen) there is only **+0.70**. The observation head is essentially exact (KL ≈ 0.002). The margin is flipped by the reward head (correct-door error −1.79) and a belief-dependent value bias (+0.5 at confident beliefs up to +2.6 at b = 0.5). The search cannot repair a root-edge reward error.
-  - **The head errors are optimisation noise, not bias.** Between best.pt and latest.pt, door-reward and value errors at decision-relevant beliefs move by 1–3 with sign changes: seed 1 from −1.76 to +0.19, seed 2 from +0.48 to −2.79 (its evaluation dip to 14.58 at collection 40), seed 3 from −0.66 to +0.91.
-  - The late-run evaluation dips have the same cause. The constant learning rate on high-variance bimodal door rewards (−100/+10) and bootstrapped values makes the heads jitter by more than the 0.70 decision margin.
-- **Polyak-averaged acting weights (`430f20c`), full result** (`runs/sweeps/polyak`, 5 seeds; this is now the headline):
-  - Learned planner gap to optimal: **−0.03 ± 0.06** (per seed −0.11, −0.02, −0.02, 0.00, +0.00), down from −0.51 ± 1.02 in `default`.
-  - Decoded MLP gap: −0.23 ± 0.53. Decoded linear gap: −5.38 ± 3.68, with 1.3% suboptimal decisions.
-  - Probe KL (MLP) < 1e-4. Minimality ratio 0.27 ± 0.03.
-  - Cost: escape from always-listen moved from collection 10 to 15 in 4 of 5 seeds.
-  - A 128-episode in-training evaluation has a standard error of about 2.8 (per-episode return std ≈ 31), so it cannot resolve dips; use the analysis's common-episode gaps.
-- The seed-0 numbers below predate the seeding fix and are kept for history.
-
-
-- **Exact references:** V_h(b0) for h = 1..5 is −1, −1.95, 2.3098, 1.7955, 2.7631; V*(b0) = 19.37.
-- **Off-policy acceptance** (random data, 3000 updates):
-
-  | Check | Result |
-  |---|---|
-  | Belief probe KL, linear / MLP | 0.0007 / 0.00004 |
-  | Door-reward error | about 2 |
-  | Mean \|V − V*\| | 4.9 |
-  | Learned planner return | 21.19 ± 1.69 (V* = 19.28) |
-
-- **Phase 6 analysis** of `runs/tiger/phase5_ratio64_seed0` (`analysis/report.json` there, regenerated at Phase 7 with deterministic latents; the pre-fix Phase 6 report differed by < 1 stderr):
-
-  | Agent | Discounted return |
-  |---|---|
-  | Optimal | 19.54 ± 1.35 |
-  | Decoded-belief, MLP probe | **19.46 ± 1.31** (the latent is Bayes-sufficient for decisions) |
-  | Decoded-belief, linear probe | 8.59 ± 0.64 (not linearly sufficient: 2.1% wrong decisions) |
-  | Learned planner | 17.08 ± 1.20 |
-
-  - Geometry: PC1 (68% of variance) is confidence (|Spearman| with |log-odds| 0.755); PC2 (19%) is side (0.816 with log-odds). Minimality ratio 0.283, so the latent is sufficient but not minimal.
-  - Bounds: the expected-form value-error bound is 0.33 against a measured 0.068. Worst-case bounds are loose (for example 55 against 0.70) because of a few rare latents.
-
-## 5. Approaches that failed — do not repeat
-
-- **VICReg**: in any placement it made the latent less belief-like. Pure JEPA self-prediction without reward grounding learns no belief.
-- **Stochastic latent transition** (DreamerV3 discrete z) for MCTS imagination:
-  - The EMA-target latent space differs from the online space the heads read.
-  - Predicting the online target collapses the representation.
-  - The discrete z learned even the two-outcome growl poorly.
-- **Free bits on the balanced KL**: the prior never trained.
-- **Symlog-space two-hot decoding**: biased. **Unbounded bins (±4.85e8)**: tail mass wrecks real-space means.
-- **Mean (MuZero-style) backups with a uniform prior**: estimates degrade with more search.
-- **TD(λ) value targets**: they learn the exploring policy's value, and the greedy agent listens forever (return −19.88 = Σγ^t·(−1)).
-- **Bellman value targets with gradients into the filter**: the representation collapses to the always-listen fixed point.
-- **20-step episodes**: the value is biased because the bootstrap latent is unanchored.
-- **Using R² as the probe metric**: an untrained GRU already reaches R² = 0.93. Use KL and L1.
-- **Chunked PER replay with a zero-initialized belief mid-episode**: replaced by uniform whole-episode replay. PER was not reintroduced for lack of demonstrated benefit.
+- `ba1d3fc`, **Phase 1:** canonical Tiger rebuilt as the single source of truth (the old one had a free t = 0 observation, informative post-door growls and γ = 0.99). Added the exact Bayes filter, the certified alpha-vector solver and a seeded batched env.
+- `c267482`: non-blocking device-to-host copies stored stale memory in the replay buffer (477 of 500 reads stale), silently corrupting every earlier GPU run.
+- `ccc985b`, **Phase 2:** `BeliefFilter` with a learned z₀, a single latent (no slots), whole-episode training. Filter objective = reward grounding + JEPA self-prediction.
+- `94c4b1e`, `2191999`, **Phase 3:**
+  - Unbiased real-space two-hot codec bounded by `value_bound`.
+  - Observation-branching imagination: a learned P̂(o′|z,a), with children produced by the real filter.
+  - 100-step episodes.
+- `d110ad9`, **Phase 4:** `SearchModel` protocol (exact and learned models) and `BeliefTreeSearch` with exact observation branching, expectimax backups and argmax-Q greedy actions. No opponent inputs anywhere.
+- `682060a`, `db625d9`, `80ee623`, **Phase 5:**
+  - `TrainingRun` with bit-exact resume.
+  - Bellman-optimality value targets through the learned model, using an EMA target value head, with the value head on **detached** latents.
+- `7a16fea`, **Phase 6:** probes, span-Hölder error bounds, the decoded-belief agent, geometry, `analyze.py`.
+- `01bbe62`, **Phase 7:**
+  - `ipomdp.experiments` (`runs.py`, `aggregate.py`). Thin `main.py`, `analyze.py` and `sweep.py`.
+  - `main.py` exits non-zero unless every collection completed.
+  - Stale files and dependencies removed, README rewritten.
+- `fd4d628`, **Phase 8:** hashed seed streams (`training/seeding.py`) replace `cfg.seed + offset`, which coupled neighbouring sweep seeds.
+- `e2620c4`: consistency pass over module headers, plus dead-code removal.
+- `d4e37b1`, `6597c57`: the `default` sweep result.
+- `5c79deb`, `430f20c`, `c77ebd7`, `065b1c1`:
+  - Diagnosis: head optimisation noise flipped the 0.70-margin decision.
+  - Fix: **Polyak-averaged acting weights** (`model.acting_ema_momentum = 0.99`), shared EMA helpers in `models/ema.py`.
+  - The `polyak` sweep result.
+- Final commit of this session: this HANDOFF, CLAUDE.md, and `reports/2026-09-30_reviewer_page/` (page source, data, scripts).
 
 ## 6. Next actions (in order)
 
-1. **Done:** sweeps `default` and `polyak` read (section 4); README cites `polyak`.
-2. **Ask before pushing** any unpushed Phase 8 commits.
-3. **Phase 8 (holistic), remaining:** the canonical Tiger result now matches the exact solver across seeds, which clears the project's gate for larger experiments. Proposed order:
-   1. multi-seed canonical Tiger;
-   2. a baseline comparison;
-   3. multi-agent Tiger, whose exact tables must first be verified against Gmytrasiewicz & Doshi;
-   4. I-POMDP levels via the S × M_j reduction.
-4. **Known open issues to raise with the user:**
-   - Resolved in Phase 8: the planner shortfall was head optimisation noise, fixed by Polyak-averaged acting weights (gap −0.03 ± 0.06).
-   - Late-run evaluation dips: mostly in-training evaluation noise (standard error about 2.8). A common-random-numbers evaluation against the exact optimum would make the training curve interpretable.
-   - Slow value convergence (|V − V*| was still 4.9 after 3000 updates).
+1. **Ask before pushing** the final commit of this session.
+2. **Rerun the slow suite once** (`uv run pytest -m slow`, about 25 min, idle GPU) to confirm Phase 8 did not disturb the acceptance gate.
+3. **Baseline comparison. The user must choose the baseline first; ask them.** Both options reuse `sweep.py` and cost about 5 GPU-hours per 5-seed condition.
+   - *Recommended:* a **decoder-based world model**: the same filter, heads and search, with the representation trained by next-observation reconstruction instead of JEPA. This isolates exactly what dropping the decoder buys.
+   - *Alternative:* a model-free recurrent Q-learner (answers whether planning helps at all).
+4. **Small open questions worth one run each:**
+   - **Observation-head detach ablation.** The observation head reads detached latents by design, never by measurement. One acceptance-protocol run with gradients allowed would settle it (about 25 min).
+   - **Polyak momentum.** 0.99 delays the escape from always-listen by about 5 collections. Try 0.98 on seeds 1–2 as a cheap check. Ask before changing the default.
+   - **Interpretable training curves.** The in-training evaluation (128 episodes, standard error about 2.8) cannot resolve dips. Scoring it against the exact optimal agent on the same episodes (common random numbers) would make the curves readable. Tiger-only helper: V*/Q* take about 72 s to compute once.
+5. **Multi-agent Tiger:** first verify its exact joint tables against Gmytrasiewicz & Doshi (2005), including the creak observations and their 90% accuracy. Only then add it as a separate `FinitePOMDP` builder. Never modify the canonical Tiger.
+6. **I-POMDP levels** via the S × M_j reduction (`domain/pomdp.py`, section 4). The same env, filter and certified solver apply.
+7. **Known limitations to keep visible:**
    - The latent is not linearly sufficient.
-   - Worst-case bounds are loose.
-   - Search throughput is about 220 transitions/s at B = 256 and is Python-bound.
+   - Worst-case error bounds are loose; the expected-form bounds are within a small factor of the measurements.
+   - Search throughput is Python-bound: about 4.6 ms per decision at B = 256.
+   - Value convergence is slow off-policy: mean |V − V*| was 4.9 after 3000 updates in the acceptance protocol.
+
+## 7. Failed paths: do not try again
+
+Representation and model:
+- **VICReg**, in any placement: the latent became less belief-like. **Pure JEPA without reward grounding** learns no belief (probe KL 0.018, the same as an untrained network).
+- **Stochastic latent transition (DreamerV3 discrete z) for imagination:**
+  - It imagined biased beliefs, because the EMA-target latent space differs from the online space the heads read.
+  - Predicting online targets instead collapsed the representation.
+  - The discrete z learned even the two-outcome growl poorly.
+- **Free bits on the balanced KL:** the prior never trained.
+- **Symlog-space two-hot decoding:** Jensen-biased (the −45 door gamble decoded to −2.9). **Unbounded bins (±4.85e8)**: tail mass wrecks the real-space means.
+
+Planning:
+- **Mean (MuZero-style) backups with a uniform prior:** estimates degrade as search grows (Q(open) went from 12.80 to −2.98 at 1000 simulations).
+
+Training:
+- **TD(λ) value targets:** they learn the noisy exploring policy's value, so the greedy agent listens forever (−19.88).
+- **Bellman value targets with gradients into the filter:** the self-referential targets collapse the latent to the always-listen fixed point (probe KL 0.002 → 0.045).
+- **20-step episodes:** the bootstrap latent is unanchored and the value is biased.
+- **Chunked prioritised replay with a zero-initialised mid-episode belief:** replaced by uniform whole-episode replay. PER was not reintroduced for lack of benefit.
+- **Acting with the online (non-averaged) weights:** head jitter of 1–3 exceeds the 0.70 decision margin. Keep the Polyak acting copies.
+
+Methodology:
+- **`cfg.seed + offset` seed streams:** they couple neighbouring seeds. Always use `stream_seed(base, stream)`.
+- **R² as the probe metric:** an untrained GRU already reaches 0.93. Use KL and L1.
+- **Reading in-training evaluation dips as real regressions:** the standard error is about 2.8. Use the common-episode gaps from `analyze_run`.
+- **Citing the training-time `best.pt` score:** it is a max over noisy evaluations (winner's curse). Cite `analyze_run`'s fresh-seed returns instead.
+- **Launching a sweep while pytest or `ipomcp` load runs:** it slows the CPU-bound search a lot.

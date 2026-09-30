@@ -1,0 +1,45 @@
+{
+ "solve": [
+  {
+   "tolerance": 1.0,
+   "seconds": 66.43748766501085,
+   "iterations": 60,
+   "vectors": 27,
+   "bound": 0.9652506465823498
+  },
+  {
+   "tolerance": 0.1,
+   "seconds": 68.48088630102575,
+   "iterations": 105,
+   "vectors": 9,
+   "bound": 0.09603157406409517
+  },
+  {
+   "tolerance": 0.01,
+   "seconds": 71.5582447409979,
+   "iterations": 150,
+   "vectors": 9,
+   "bound": 0.00962144567701575
+  }
+ ],
+ "per_decision": {
+  "exact_alpha": {
+   "batch": 256,
+   "steps": 20,
+   "seconds": 0.49169292600709014,
+   "ms_per_decision": 0.09603377461075979
+  },
+  "exact_search": {
+   "batch": 256,
+   "steps": 20,
+   "seconds": 20.70399923599325,
+   "ms_per_decision": 4.043749850779932
+  },
+  "learned_search": {
+   "batch": 256,
+   "steps": 20,
+   "seconds": 23.528498430008767,
+   "ms_per_decision": 4.595409849611087
+  }
+ }
+}

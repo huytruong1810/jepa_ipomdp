@@ -1,0 +1,828 @@
+<title>JEPA-IPOMDP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: one reading column (~70ch) with figures allowed to widen to 1040px; each figure = caption above, chart, table view below. */
+:root {
+  --bg: #f6f7f9;
+  --surface: #fcfcfd;
+  --ink: #111418;
+  --ink-2: #4a515b;
+  --muted: #7d848e;
+  --grid: #e2e5ea;
+  --axis: #c2c7cf;
+  --rule: rgba(17, 20, 24, 0.10);
+  --accent: #2a78d6;
+  --s1: #2a78d6;           /* categorical 1: Polyak-averaged (current) */
+  --s2: #eb6834;           /* categorical 2: online weights (before) */
+  --s3: #1baf7a;           /* categorical 3 */
+  --div-lo: #2a78d6;       /* diverging: tiger right (P(left) -> 0) */
+  --div-mid: #d9dbdf;
+  --div-hi: #e34948;       /* diverging: tiger left (P(left) -> 1) */
+  --good: #006300;
+  --band: rgba(42, 120, 214, 0.10);
+  --warnband: rgba(235, 104, 52, 0.12);
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1114; --surface: #171a1e; --ink: #f3f5f7; --ink-2: #c1c6cd; --muted: #8b929b;
+    --grid: #262a30; --axis: #3a3f47; --rule: rgba(255, 255, 255, 0.10); --accent: #3987e5;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --div-lo: #3987e5; --div-mid: #3d4148; --div-hi: #e66767;
+    --good: #0ca30c; --band: rgba(57, 135, 229, 0.16); --warnband: rgba(217, 89, 38, 0.18);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1114; --surface: #171a1e; --ink: #f3f5f7; --ink-2: #c1c6cd; --muted: #8b929b;
+  --grid: #262a30; --axis: #3a3f47; --rule: rgba(255, 255, 255, 0.10); --accent: #3987e5;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --div-lo: #3987e5; --div-mid: #3d4148; --div-hi: #e66767;
+  --good: #0ca30c; --band: rgba(57, 135, 229, 0.16); --warnband: rgba(217, 89, 38, 0.18);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 16px/1.6 var(--f-body); }
+.wrap { max-width: 1040px; margin: 0 auto; padding-inline: 20px; padding-block: 40px 80px; }
+.prose { max-width: 70ch; }
+h1, h2, h3 { font-family: var(--f-display); font-weight: 600; text-wrap: balance; line-height: 1.15; margin: 0; }
+h1 { font-size: clamp(2rem, 4.6vw, 3rem); letter-spacing: -0.01em; }
+h2 { font-size: 1.6rem; margin-top: 0.2em; }
+h3 { font-size: 1.1rem; font-family: var(--f-body); font-weight: 600; }
+p { margin: 0; }
+.eyebrow { font: 500 0.75rem/1 var(--f-data); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.lede { font-size: 1.15rem; color: var(--ink-2); margin-top: 16px; }
+.meta { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 18px; font: 0.8rem/1.4 var(--f-data); color: var(--muted); }
+section { display: grid; gap: 16px; padding-block: 44px 8px; border-top: 1px solid var(--rule); margin-top: 44px; }
+header + section { border-top: 0; margin-top: 8px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin-top: 28px; }
+.stat { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 18px; display: grid; gap: 6px; align-content: start; }
+.stat .v { font: 600 1.9rem/1.1 var(--f-display); }
+.stat .v small { font: 500 1rem var(--f-display); color: var(--ink-2); }
+.stat .k { font-size: 0.85rem; color: var(--ink-2); line-height: 1.4; }
+.figure { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 18px 12px; display: grid; gap: 10px; min-width: 0; }
+.figure .cap { display: grid; gap: 4px; }
+.figure .cap p { color: var(--ink-2); font-size: 0.92rem; max-width: 80ch; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 0.85rem; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.sw.line { height: 2px; border-radius: 1px; width: 16px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+svg.chart { width: 100%; height: auto; display: block; overflow: visible; }
+svg.chart text { font-family: var(--f-data); font-size: 11px; fill: var(--muted); }
+svg.chart .lbl { fill: var(--ink-2); }
+svg.chart .strong { fill: var(--ink); font-weight: 500; }
+details { font-size: 0.85rem; color: var(--ink-2); }
+summary { cursor: pointer; color: var(--muted); font-family: var(--f-data); font-size: 0.78rem; letter-spacing: 0.04em; }
+summary:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tscroll { overflow-x: auto; margin-top: 8px; }
+table { border-collapse: collapse; font: 0.8rem/1.4 var(--f-data); font-variant-numeric: tabular-nums; min-width: 100%; }
+th, td { text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--muted); font-weight: 500; }
+td { color: var(--ink); }
+.pipeline { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.node { border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; background: var(--surface); display: grid; gap: 4px; align-content: start; }
+.node b { font-family: var(--f-display); font-weight: 600; font-size: 1rem; }
+.node code, .mono { font-family: var(--f-data); font-size: 0.8rem; color: var(--ink-2); }
+.node p { font-size: 0.85rem; color: var(--ink-2); line-height: 1.45; }
+.node.ref { border-style: solid; border-color: var(--axis); background: transparent; }
+.flowlabel { font: 500 0.72rem/1 var(--f-data); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.log { display: grid; gap: 0; }
+.log .row { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr) minmax(0, 15rem); gap: 6px 18px; padding-block: 12px; border-bottom: 1px solid var(--rule); align-items: baseline; }
+.log .row .ph { font: 500 0.78rem var(--f-data); color: var(--muted); }
+.log .row .what { font-size: 0.92rem; }
+.log .row .what b { font-weight: 600; }
+.log .row .num { font: 0.8rem/1.45 var(--f-data); color: var(--ink-2); }
+@media (max-width: 640px) { .log .row { grid-template-columns: 1fr; gap: 2px; } }
+.pill { display: inline-block; font: 500 0.7rem/1 var(--f-data); padding: 4px 7px; border-radius: 999px; border: 1px solid var(--rule); color: var(--ink-2); letter-spacing: 0.03em; }
+.pill.done { color: var(--good); border-color: currentColor; }
+.phases { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.phase { border: 1px solid var(--rule); border-radius: 6px; padding: 10px 12px; display: grid; gap: 6px; background: var(--surface); }
+.phase .n { font: 500 0.72rem var(--f-data); color: var(--muted); }
+.phase .t { font-size: 0.9rem; font-weight: 500; line-height: 1.3; }
+svg.dg { width: 100%; min-width: 640px; height: auto; display: block; }
+svg.dg text { font-family: var(--f-body); font-size: 13px; fill: var(--ink); }
+svg.dg .t { font-weight: 600; }
+svg.dg .m { font-family: var(--f-data); font-size: 11.5px; fill: var(--ink-2); }
+svg.dg .lab { font-family: var(--f-data); font-size: 11px; fill: var(--muted); }
+svg.dg .lab.accent, svg.dg .badge { fill: var(--s1); }
+svg.dg .badge { font-family: var(--f-data); font-size: 11px; font-weight: 500; }
+svg.dg .sgmark { font-family: var(--f-data); font-size: 10px; fill: var(--muted); font-weight: 500; }
+svg.dg .box { fill: var(--surface); stroke: var(--axis); stroke-width: 1.2; }
+svg.dg .box.ag { stroke: var(--s1); stroke-width: 1.6; }
+svg.dg .box.ex { stroke-dasharray: 5 4; }
+svg.dg .box.loss { fill: var(--bg); }
+svg.dg .region { fill: none; stroke: var(--axis); stroke-width: 1; }
+svg.dg .region.ex { stroke-dasharray: 6 5; }
+svg.dg .edge { fill: none; stroke: var(--ink-2); stroke-width: 1.5; }
+svg.dg .edge.ex, svg.dg .edge.sg { stroke: var(--muted); stroke-dasharray: 5 4; }
+svg.dg .edge.grad { stroke: var(--s1); stroke-width: 2.4; }
+svg.dg .edge.back { stroke: var(--s1); stroke-width: 1.6; stroke-dasharray: 2 4; stroke-linecap: round; }
+svg.dg .dnode { fill: var(--surface); stroke: var(--ink-2); stroke-width: 1.5; }
+svg.dg .cnode { fill: var(--grid); stroke: var(--ink-2); stroke-width: 1.5; }
+.dgfig figcaption { max-width: 90ch; }
+figure.figure { margin: 0; }
+#tip { position: fixed; pointer-events: none; z-index: 10; background: var(--ink); color: var(--bg); font: 0.78rem/1.4 var(--f-data); padding: 7px 9px; border-radius: 4px; max-width: 260px; opacity: 0; transition: opacity 0.08s; }
+#tip.on { opacity: 1; }
+.note { font-size: 0.85rem; color: var(--muted); }
+.btn { font: 500 0.8rem/1 var(--f-data); padding: 8px 11px; border-radius: 4px; border: 1px solid var(--axis); background: var(--surface); color: var(--ink); cursor: pointer; }
+.btn:hover { border-color: var(--ink-2); }
+.btn[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+input[type=range] { accent-color: var(--accent); }
+.err { color: var(--div-hi); font-family: var(--f-data); font-size: 0.85rem; }
+@media (prefers-reduced-motion: reduce) { #tip { transition: none; } }
+</style>
+
+<div class="wrap">
+<header class="prose">
+  <p class="eyebrow">Research progress · 30 September 2026</p>
+  <h1 style="margin-top:12px">A learned belief filter that plans as well as the exact Bayes solution</h1>
+</header>
+
+<section aria-labelledby="h-method">
+  <div class="prose"><p class="eyebrow">Method</p><h2 id="h-method">How the agent acts, plans and learns, and what checks it</h2></div>
+
+  <figure class="figure dgfig">
+    <div class="cap"><h3>1 · Execution: one step of the agent in the environment</h3></div>
+    <div class="tscroll"><svg class="dg" viewBox="0 0 960 330" role="img" aria-label="Execution loop. The environment emits an observation; the belief filter folds the action and observation into the latent; the belief-tree search plans from the latent and returns the action. An exact Bayes filter, certified solver and probe replay the same history for scoring only, with no path back into the agent.">
+      <defs>
+        <marker id="m1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--ink-2)"/></marker>
+        <marker id="m1b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/></marker>
+      </defs>
+      <rect class="region" x="200" y="14" width="290" height="302" rx="10"/>
+      <text class="lab" x="214" y="36">LEARNED AGENT · ONLINE</text>
+      <rect class="region ex" x="552" y="14" width="394" height="302" rx="10"/>
+      <text class="lab" x="566" y="36">EXACT REFERENCE · SCORING ONLY</text>
+
+      <rect class="box" x="20" y="120" width="140" height="84" rx="6"/>
+      <text class="t" x="90" y="156" text-anchor="middle">Environment</text>
+      <text class="m" x="90" y="178" text-anchor="middle">hidden tiger s</text>
+
+      <rect class="box ag" x="230" y="56" width="230" height="70" rx="6"/>
+      <text class="t" x="345" y="84" text-anchor="middle">Belief filter f</text>
+      <text class="m" x="345" y="106" text-anchor="middle">z′ = GRU([a, o′], z)</text>
+      <rect class="box ag" x="230" y="214" width="230" height="70" rx="6"/>
+      <text class="t" x="345" y="242" text-anchor="middle">Belief-tree search</text>
+      <text class="m" x="345" y="264" text-anchor="middle">heads R̂ P̂ V̂ · 50 sims</text>
+
+      <path class="edge" d="M160 146 H192 V91 H228" marker-end="url(#m1a)"/>
+      <text class="lab" x="210" y="84" text-anchor="middle">o′</text>
+      <path class="edge" d="M230 250 H192 V184 H162" marker-end="url(#m1a)"/>
+      <text class="lab" x="210" y="268" text-anchor="middle">a_t</text>
+      <path class="edge" d="M372 128 V212" marker-end="url(#m1a)"/>
+      <text class="lab" x="380" y="174">z_t</text>
+      <path class="edge" d="M292 212 V128" marker-end="url(#m1a)"/>
+      <text class="lab" x="284" y="174" text-anchor="end">a_t</text>
+
+      <path class="edge" d="M90 204 V262" marker-end="url(#m1a)"/>
+      <text class="lab" x="98" y="238">(a, o′, r)</text>
+      <rect class="box" x="20" y="264" width="140" height="44" rx="6"/>
+      <text class="m" x="90" y="291" text-anchor="middle">replay buffer</text>
+
+      <rect class="box ex" x="582" y="56" width="160" height="70" rx="6"/>
+      <text class="t" x="662" y="84" text-anchor="middle">Bayes filter τ</text>
+      <text class="m" x="662" y="106" text-anchor="middle">b′ = τ(b, a, o′)</text>
+      <rect class="box ex" x="772" y="56" width="160" height="70" rx="6"/>
+      <text class="t" x="852" y="84" text-anchor="middle">Certified solver</text>
+      <text class="m" x="852" y="106" text-anchor="middle">V*, Q* ± 0.0096</text>
+      <rect class="box ex" x="582" y="214" width="160" height="70" rx="6"/>
+      <text class="t" x="662" y="242" text-anchor="middle">Probe ψ</text>
+      <text class="m" x="662" y="264" text-anchor="middle">decodes z into b</text>
+      <rect class="box ex" x="772" y="214" width="160" height="70" rx="6"/>
+      <text class="t" x="852" y="242" text-anchor="middle">Scores</text>
+      <text class="m" x="852" y="264" text-anchor="middle">KL · regret · gap</text>
+
+      <path class="edge ex" d="M460 91 H580" marker-end="url(#m1b)"/>
+      <text class="lab" x="520" y="83" text-anchor="middle">same (a, o′)</text>
+      <path class="edge ex" d="M460 249 H580" marker-end="url(#m1b)"/>
+      <text class="lab" x="520" y="241" text-anchor="middle">z_t</text>
+      <path class="edge ex" d="M662 126 V212" marker-end="url(#m1b)"/>
+      <text class="lab" x="670" y="174">b_t</text>
+      <path class="edge ex" d="M852 126 V212" marker-end="url(#m1b)"/>
+      <text class="lab" x="860" y="174">V*, Q*</text>
+      <path class="edge ex" d="M742 249 H770" marker-end="url(#m1b)"/>
+    </svg></div>
+    <figcaption class="note">The environment emits no observation before the first action, so the filter starts from a learned z₀. Each step folds (a_t, o_{t+1}) into the latent, and the search plans from it. The dashed side replays the same history through the exact Bayes filter and scores the latent against it. No arrow runs back from the exact side into the agent.</figcaption>
+  </figure>
+
+  <figure class="figure dgfig">
+    <div class="cap"><h3>2 · Planning: the belief tree the search builds over the learned model</h3></div>
+    <div class="tscroll"><svg class="dg" viewBox="0 0 960 360" role="img" aria-label="Belief tree. The root latent branches into three actions, each with a learned expected reward. Each action branches exactly over the two growls, weighted by the learned observation probabilities, into child latents produced by the same belief filter. Unexpanded children are valued by the learned value head. Decision nodes take the maximum over actions and chance nodes take the exact expectation over observations.">
+      <defs>
+        <marker id="m2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--ink-2)"/></marker>
+        <marker id="m2b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--s1)"/></marker>
+      </defs>
+      <circle class="dnode" cx="70" cy="180" r="26"/>
+      <text class="t" x="70" y="185" text-anchor="middle">z</text>
+      <text class="lab" x="70" y="226" text-anchor="middle">root = z_t</text>
+      <text class="badge" x="70" y="246" text-anchor="middle">max over a</text>
+
+      <path class="edge" d="M94 170 L286 76"/>
+      <path class="edge" d="M96 180 H286"/>
+      <path class="edge" d="M94 190 L286 284"/>
+      <text class="lab" x="200" y="116" text-anchor="middle">listen · R̂ ≈ −1</text>
+      <text class="lab" x="190" y="172" text-anchor="middle">open left · R̂(z, a)</text>
+      <text class="lab" x="180" y="258" text-anchor="middle">open right · R̂(z, a)</text>
+
+      <rect class="cnode" x="287" y="63" width="26" height="26"/>
+      <rect class="cnode" x="287" y="167" width="26" height="26"/>
+      <rect class="cnode" x="287" y="271" width="26" height="26"/>
+      <text class="badge" x="300" y="52" text-anchor="middle">Σ over o′</text>
+
+      <path class="edge" d="M313 72 L496 38"/>
+      <path class="edge" d="M313 82 L496 118"/>
+      <text class="lab" x="404" y="44" text-anchor="middle">growl left · P̂(o′|z,a)</text>
+      <text class="lab" x="404" y="122" text-anchor="middle">growl right · P̂</text>
+      <circle class="dnode" cx="518" cy="36" r="20"/>
+      <text class="t" x="518" y="41" text-anchor="middle">z′</text>
+      <circle class="dnode" cx="518" cy="122" r="20"/>
+      <text class="t" x="518" y="127" text-anchor="middle">z′</text>
+      <text class="m" x="546" y="127">leaf: V̂(z′)</text>
+
+      <path class="edge" d="M538 32 L676 14"/>
+      <path class="edge" d="M538 36 H676"/>
+      <path class="edge" d="M538 40 L676 58"/>
+      <rect class="cnode small" x="678" y="7" width="14" height="14"/>
+      <rect class="cnode small" x="678" y="29" width="14" height="14"/>
+      <rect class="cnode small" x="678" y="51" width="14" height="14"/>
+      <text class="m" x="702" y="41">expanded on visit</text>
+
+      <path class="edge" d="M313 176 L500 166"/>
+      <path class="edge" d="M313 184 L500 196"/>
+      <circle class="dnode" cx="512" cy="166" r="11"/>
+      <circle class="dnode" cx="512" cy="196" r="11"/>
+      <text class="m" x="534" y="185">both growls uninformative; belief resets to b₀</text>
+      <path class="edge" d="M313 280 L500 270"/>
+      <path class="edge" d="M313 288 L500 300"/>
+      <circle class="dnode" cx="512" cy="270" r="11"/>
+      <circle class="dnode" cx="512" cy="300" r="11"/>
+      <text class="m" x="534" y="289">same, for the right door</text>
+
+      <path class="edge back" d="M496 128 C 430 160, 380 150, 318 92" marker-end="url(#m2b)"/>
+      <path class="edge back" d="M282 78 C 200 60, 120 100, 88 156" marker-end="url(#m2b)"/>
+      <text class="lab accent" x="440" y="84" text-anchor="middle">backup: Q = R̂ + γ Σ P̂·V</text>
+      <text class="lab accent" x="150" y="62" text-anchor="middle">V(z) = max_a Q</text>
+
+      <rect class="region" x="700" y="226" width="246" height="118" rx="8"/>
+      <circle class="dnode" cx="722" cy="252" r="9"/>
+      <text class="m" x="740" y="256">decision node: a latent z</text>
+      <rect class="cnode" x="714" y="276" width="16" height="16"/>
+      <text class="m" x="740" y="288">chance node: action taken</text>
+      <line class="edge back" x1="712" y1="316" x2="734" y2="316"/>
+      <text class="m" x="740" y="320">value backed up (expectimax)</text>
+      <text class="m" x="740" y="336">z′ = f(z, a, o′), same filter</text>
+    </svg></div>
+    <figcaption class="note">Selection uses PUCT on min-max-normalised Q and descends by sampling o′ from P̂. Expanding a node creates every action and growl child at once, each with a V̂ leaf value. Backups take the max at decision nodes and the exact P̂-weighted expectation at chance nodes. A MuZero-style mean backup got worse with more search. At evaluation the agent takes argmax Q at the root. During collection it samples visit counts, with Dirichlet noise and a temperature.</figcaption>
+  </figure>
+
+  <figure class="figure dgfig">
+    <div class="cap"><h3>3 · Training cycle: 40 collections of 64 episodes</h3></div>
+    <div class="tscroll"><svg class="dg" viewBox="0 0 960 250" role="img" aria-label="Training cycle. The planner with the acting weights collects 64 episodes into a replay buffer; 64 gradient steps update the online weights from uniformly sampled whole episodes; after each step, EMA updates move the target filter, target value head and acting copies; the acting copies plan the next collection. Every 5 collections a greedy evaluation runs with the acting weights.">
+      <defs>
+        <marker id="m3a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--ink-2)"/></marker>
+        <marker id="m3b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--s1)"/></marker>
+      </defs>
+      <rect class="box ag" x="20" y="30" width="196" height="92" rx="6"/>
+      <text class="t" x="118" y="58" text-anchor="middle">Collect</text>
+      <text class="m" x="118" y="80" text-anchor="middle">64 episodes × 100 steps</text>
+      <text class="m" x="118" y="98" text-anchor="middle">search + root noise</text>
+      <rect class="box" x="262" y="30" width="196" height="92" rx="6"/>
+      <text class="t" x="360" y="58" text-anchor="middle">Replay buffer</text>
+      <text class="m" x="360" y="80" text-anchor="middle">whole episodes, from z₀</text>
+      <text class="m" x="360" y="98" text-anchor="middle">uniform sampling</text>
+      <rect class="box" x="504" y="30" width="196" height="92" rx="6"/>
+      <text class="t" x="602" y="58" text-anchor="middle">Gradient steps</text>
+      <text class="m" x="602" y="80" text-anchor="middle">64 per collection</text>
+      <text class="m" x="602" y="98" text-anchor="middle">online weights · AdamW</text>
+      <rect class="box ag" x="746" y="30" width="196" height="92" rx="6"/>
+      <text class="t" x="844" y="58" text-anchor="middle">EMA updates</text>
+      <text class="m" x="844" y="80" text-anchor="middle">target f̄ 0.99 · V̄ 0.9</text>
+      <text class="m" x="844" y="98" text-anchor="middle">acting copies 0.99</text>
+
+      <path class="edge" d="M216 76 H260" marker-end="url(#m3a)"/>
+      <path class="edge" d="M458 76 H502" marker-end="url(#m3a)"/>
+      <path class="edge" d="M700 76 H744" marker-end="url(#m3a)"/>
+      <text class="lab" x="238" y="22" text-anchor="middle">6,400 steps</text>
+      <text class="lab" x="480" y="22" text-anchor="middle">16 episodes</text>
+      <text class="lab" x="722" y="22" text-anchor="middle">every step</text>
+
+      <path class="edge back" d="M800 122 V158 H118 V124" marker-end="url(#m3b)"/>
+      <text class="lab accent" x="460" y="150" text-anchor="middle">acting copies plan the next collection</text>
+
+      <path class="edge" d="M890 122 V190" marker-end="url(#m3a)"/>
+      <rect class="box" x="604" y="192" width="338" height="44" rx="6"/>
+      <text class="m" x="773" y="218" text-anchor="middle">every 5: greedy eval, no noise → best.pt</text>
+      <rect class="region" x="20" y="192" width="300" height="44" rx="6"/>
+      <text class="m" x="170" y="218" text-anchor="middle">collections 1–4: uniform random (warm-up)</text>
+    </svg></div>
+    <figcaption class="note">About 57 minutes per seed. Learning is gated by gradient updates, not by collected data. The agent stops listening forever after roughly 1,000 updates. The acting copies trail the online weights by about 100 updates, which averages out head jitter and costs about 5 collections of delay.</figcaption>
+  </figure>
+
+  <figure class="figure dgfig">
+    <div class="cap"><h3>4 · One gradient step: which losses shape the latent</h3></div>
+    <div class="tscroll"><svg class="dg" viewBox="0 0 960 400" role="img" aria-label="One gradient step. A batch of whole episodes is unrolled by the online filter and by its EMA target. The JEPA predictor and the reward head read the online latents, and their losses send gradients into the filter. The observation head and the value head read stop-gradient latents, so they never shape the representation. The value target is the Bellman optimality backup through the learned model with the target value head.">
+      <defs>
+        <marker id="m4a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--ink-2)"/></marker>
+        <marker id="m4b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--s1)"/></marker>
+        <marker id="m4c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--muted)"/></marker>
+      </defs>
+      <rect class="box" x="20" y="180" width="150" height="90" rx="6"/>
+      <text class="t" x="95" y="210" text-anchor="middle">Episode batch</text>
+      <text class="m" x="95" y="232" text-anchor="middle">16 × 100 steps</text>
+      <text class="m" x="95" y="252" text-anchor="middle">a, o′, r</text>
+
+      <rect class="box ag" x="220" y="110" width="170" height="64" rx="6"/>
+      <text class="t" x="305" y="136" text-anchor="middle">Online filter f</text>
+      <text class="m" x="305" y="158" text-anchor="middle">z₀ … z_T</text>
+      <rect class="box" x="220" y="326" width="170" height="64" rx="6"/>
+      <text class="t" x="305" y="352" text-anchor="middle">Target filter f̄</text>
+      <text class="m" x="305" y="374" text-anchor="middle">EMA · z̄₁ … z̄_T</text>
+      <path class="edge" d="M170 205 L218 150" marker-end="url(#m4a)"/>
+      <path class="edge" d="M170 250 L218 350" marker-end="url(#m4a)"/>
+
+      <rect class="box" x="440" y="30" width="160" height="52" rx="6"/>
+      <text class="t" x="520" y="61" text-anchor="middle">Reward head R̂</text>
+      <rect class="box" x="440" y="112" width="160" height="52" rx="6"/>
+      <text class="t" x="520" y="143" text-anchor="middle">Observation P̂</text>
+      <rect class="box" x="440" y="194" width="160" height="52" rx="6"/>
+      <text class="t" x="520" y="225" text-anchor="middle">Value head V̂</text>
+      <rect class="box" x="440" y="288" width="160" height="52" rx="6"/>
+      <text class="t" x="520" y="319" text-anchor="middle">Predictor g</text>
+
+      <path class="edge grad" d="M390 128 L438 56" marker-end="url(#m4b)"/>
+      <path class="edge sg" d="M390 138 L438 138" marker-end="url(#m4c)"/>
+      <path class="edge sg" d="M390 150 L438 220" marker-end="url(#m4c)"/>
+      <path class="edge grad" d="M390 164 L438 314" marker-end="url(#m4b)"/>
+      <text class="sgmark" x="414" y="130" text-anchor="middle">sg</text>
+      <text class="sgmark" x="404" y="192" text-anchor="end">sg</text>
+
+      <rect class="box loss" x="640" y="30" width="300" height="52" rx="6"/>
+      <text class="m" x="656" y="52">two-hot CE vs r_t</text>
+      <text class="lab accent" x="656" y="70">∇ shapes the latent</text>
+      <rect class="box loss" x="640" y="112" width="300" height="52" rx="6"/>
+      <text class="m" x="656" y="134">cross-entropy vs o_{t+1}</text>
+      <text class="lab" x="656" y="152">detached: planning model only</text>
+      <rect class="box loss" x="640" y="194" width="300" height="52" rx="6"/>
+      <text class="m" x="656" y="216">two-hot vs sg(max_a R̂ + γ Σ P̂·V̄(z′))</text>
+      <text class="lab" x="656" y="234">detached: Bellman backup, target V̄</text>
+      <rect class="box loss" x="640" y="288" width="300" height="52" rx="6"/>
+      <text class="m" x="656" y="310">MSE vs sg(z̄_{t+1})</text>
+      <text class="lab accent" x="656" y="328">∇ shapes the latent (JEPA)</text>
+
+      <path class="edge grad" d="M600 56 H638" marker-end="url(#m4b)"/>
+      <path class="edge" d="M600 138 H638" marker-end="url(#m4a)"/>
+      <path class="edge" d="M600 220 H638" marker-end="url(#m4a)"/>
+      <path class="edge grad" d="M600 314 H638" marker-end="url(#m4b)"/>
+      <path class="edge sg" d="M390 358 H620 V332 H638" marker-end="url(#m4c)"/>
+      <text class="lab" x="505" y="374" text-anchor="middle">stop-gradient target</text>
+    </svg></div>
+    <figcaption class="note">Blue paths carry gradients into the filter. Only reward prediction and JEPA self-prediction shape the representation, the two terms grounded in real data. Dashed "sg" paths are detached. The value target is computed by the planner's own one-step expansion, so letting it train the filter collapsed the latent to the always-listen fixed point. JEPA self-prediction alone learns no belief; the reward term grounds it.</figcaption>
+  </figure>
+
+  <div class="grid2">
+    <div class="figure"><div class="cap"><h3>Representation choices</h3><p>A single latent vector, no object slots and no observation decoder. The two-hot codec decodes linearly in real space, so the −100/+10 door reward averages to −45 as it should.</p></div></div>
+    <div class="figure"><div class="cap"><h3>Exact references</h3><p>An exact batched Bayes filter and alpha-vector value iteration by incremental pruning, with a proven LP-computed error bound. Every statistic on this page compares against these.</p></div></div>
+  </div>
+</section>
+
+<section aria-labelledby="h-policy">
+  <div class="prose"><p class="eyebrow">Result 1 · Policy</p><h2 id="h-policy">It learned the textbook Tiger policy: listen until the growls lead by two, then open the other door</h2></div>
+  <div class="figure">
+    <div class="cap"><h3>Actions of the trained agents at each net growl count, against the exact optimal action</h3>
+      <p>Bars show the share of each action, pooled over 5 seeds. The column on the right is the solver's action and its Q* margin over the runner-up. At ±2 the margin is only 0.70, and almost every remaining deviation is one extra listen there.</p></div>
+    <div class="legend"><span><i class="sw" style="background:var(--s1)"></i>Listen</span><span><i class="sw" style="background:var(--s2)"></i>Open left</span><span><i class="sw" style="background:var(--s3)"></i>Open right</span></div>
+    <div id="fig-policy"></div>
+    <details><summary>Table view (per seed)</summary><div class="tscroll" id="tab-policy"></div></details>
+  </div>
+</section>
+
+<section aria-labelledby="h-rep">
+  <div class="prose"><p class="eyebrow">Result 2 · Representation</p><h2 id="h-rep">The latent is the Bayesian belief, up to an invertible map</h2></div>
+  <div class="grid2">
+    <div class="figure">
+      <div class="cap"><h3>Latent geometry, coloured by the exact posterior</h3>
+        <p id="geo-cap">2,400 filter states from random-policy histories (seed 0), projected on their first two principal components. Colour is the exact P(tiger left | history), computed by the Bayes filter on the same history.</p></div>
+      <div class="legend" id="geo-legend"></div>
+      <div id="fig-geo"></div>
+    </div>
+    <div class="figure">
+      <div class="cap"><h3>Probe error by exact posterior</h3>
+        <p>Mean KL(b* ‖ ψ(z)) on held-out histories, averaged over 5 seeds (log scale). An MLP probe recovers the posterior almost exactly. A linear probe does not, and it is weakest at confident beliefs.</p></div>
+      <div class="legend"><span><i class="sw" style="background:var(--s1)"></i>MLP probe</span><span><i class="sw" style="background:var(--s2)"></i>Linear probe</span></div>
+      <div id="fig-probe"></div>
+      <details><summary>Table view</summary><div class="tscroll" id="tab-probe"></div></details>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="h-traj">
+  <div class="prose"><p class="eyebrow">Result 2b · Latent dynamics over time</p><h2 id="h-traj">One episode, step by step: the latent moves where the Bayes filter moves</h2></div>
+  <div class="figure">
+    <div class="trajctl" style="display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center">
+      <div style="display:flex;gap:6px;flex-wrap:wrap" id="traj-eps" role="group" aria-label="Episode"></div>
+      <button id="traj-play" type="button" class="btn">Play</button>
+      <label for="traj-t" class="mono" style="display:flex;gap:10px;align-items:center;flex:1 1 220px;min-width:0">step <input id="traj-t" type="range" min="0" max="100" value="12" style="flex:1;min-width:0"></label>
+    </div>
+    <div class="mono" id="traj-readout" style="min-height:2.8em"></div>
+    <div class="grid2">
+      <div id="fig-traj-latent"></div>
+      <div id="fig-traj-belief"></div>
+    </div>
+    <div class="legend"><span><i class="sw line" style="background:var(--ink)"></i>latent path so far</span><span><i class="sw line" style="background:var(--ink-2)"></i>exact P(tiger left)</span><span><i class="sw" style="background:var(--s1)"></i>decoded from the latent</span><span><i class="sw" style="background:var(--s2)"></i>door opened</span></div>
+  </div>
+</section>
+
+<section aria-labelledby="h-model">
+  <div class="prose"><p class="eyebrow">Result 3 · Learned model vs exact model</p><h2 id="h-model">The value and reward heads track the exact functions</h2></div>
+  <div class="grid2">
+    <div class="figure">
+      <div class="cap"><h3>Value: learned V̂ against exact V*</h3>
+        <p>The line is V*(b) from the certified solver. Dots are the mean learned value at each exact posterior the random histories reach, and the whiskers span the 5 seeds.</p></div>
+      <div class="legend"><span><i class="sw line" style="background:var(--ink-2)"></i>Exact V*</span><span><i class="sw" style="background:var(--s1)"></i>Learned V̂ (mean, seed range)</span></div>
+      <div id="fig-value"></div>
+    </div>
+    <div class="figure">
+      <div class="cap"><h3>Reward for opening the left door</h3>
+        <p>Exact expected reward b·R = −100·p + 10·(1 − p), against the learned reward head. Every sample is −100 or +10, so the head has to learn a mean from bimodal targets.</p></div>
+      <div class="legend"><span><i class="sw line" style="background:var(--ink-2)"></i>Exact b·R[open-left]</span><span><i class="sw" style="background:var(--s1)"></i>Learned R̂ (mean, seed range)</span></div>
+      <div id="fig-reward"></div>
+    </div>
+  </div>
+  <details class="figure" style="display:block"><summary>Table view (value and reward by posterior)</summary><div class="tscroll" id="tab-model"></div></details>
+  <div class="grid2">
+    <div class="figure">
+      <div class="cap"><h3>Observation prediction: learned against ground-truth dynamics</h3>
+        <p>P(growl left | listen) at each exact posterior. The line is the true model, 0.15 + 0.70·P(left). Dots are the JEPA model's observation head reading the latent (mean over 5 seeds, whiskers show the range). Hollow rings are the observed growl frequencies in the same 25,600 random-policy transitions.</p></div>
+      <div class="legend"><span><i class="sw line" style="background:var(--ink-2)"></i>Exact P(o′ | b, listen)</span><span><i class="sw" style="background:var(--s1)"></i>Learned P̂(o′ | z, listen)</span><span><i class="sw" style="border:2px solid var(--muted);background:transparent"></i>Observed frequency</span></div>
+      <div id="fig-obs"></div>
+    </div>
+    <div class="figure">
+      <div class="cap"><h3>Prediction scores against the observations that occurred</h3>
+        <p>A perfect model cannot beat the exact model's scores, because growls are 85% accurate and door observations are uniform noise. The learned model matches them, and its KL to the exact prediction is 10⁻⁴ nats. Means over 5 seeds.</p></div>
+      <div class="tscroll" id="tab-obs"></div>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="h-runtime">
+  <div class="prose"><p class="eyebrow">Runtime</p><h2 id="h-runtime">On Tiger, the exact solution is cheaper. The learned agent is not a speed-up here</h2></div>
+  <div class="grid2">
+    <div class="figure">
+      <div class="cap"><h3>Cost per decision (log scale)</h3>
+        <p>256 parallel episodes × 20 steps on one RTX 5080 with the CPU search. Each search does 50 simulations per decision. Best of 2 runs.</p></div>
+      <div id="fig-runtime"></div>
+    </div>
+    <div class="figure">
+      <div class="cap"><h3>One-off and per-step costs</h3></div>
+      <div class="tscroll" id="tab-runtime"></div>
+    </div>
+  </div>
+</section>
+
+</div>
+<div id="tip" role="tooltip"></div>
+
+<script>
+(function () {
+  "use strict";
+  const NS = "http://www.w3.org/2000/svg";
+  const tip = document.getElementById("tip");
+  const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const fmt = (v, d = 2) => (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(d);
+  const fmt0 = (v, d = 2) => (v < 0 ? "−" : "") + Math.abs(v).toFixed(d);
+
+  function el(tag, attrs, parent) {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+  function svg(host, w, h, label) {
+    const s = el("svg", { viewBox: `0 0 ${w} ${h}`, class: "chart", role: "img", "aria-label": label });
+    host.appendChild(s);
+    return s;
+  }
+  const lin = (d0, d1, r0, r1) => (v) => r0 + ((v - d0) / (d1 - d0)) * (r1 - r0);
+  function hover(node, html) {
+    node.style.cursor = "default";
+    node.setAttribute("tabindex", "0");
+    const show = (x, y) => { tip.innerHTML = html; tip.classList.add("on"); place(x, y); };
+    node.addEventListener("mouseenter", (e) => show(e.clientX, e.clientY));
+    node.addEventListener("mousemove", (e) => place(e.clientX, e.clientY));
+    node.addEventListener("mouseleave", () => tip.classList.remove("on"));
+    node.addEventListener("focus", () => { const r = node.getBoundingClientRect(); show(r.right, r.top); });
+    node.addEventListener("blur", () => tip.classList.remove("on"));
+  }
+  function place(x, y) {
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    let left = x + 14, top = y - h - 10;
+    if (left + w > innerWidth - 8) left = x - w - 14;
+    if (top < 8) top = y + 16;
+    tip.style.left = left + "px"; tip.style.top = top + "px";
+  }
+  function axisX(s, x, y0, ticks, label, fmtTick, W) {
+    ticks.forEach((t) => {
+      el("line", { x1: x(t), x2: x(t), y1: y0, y2: y0 + 4, stroke: "var(--axis)", "stroke-width": 1 }, s);
+      el("text", { x: x(t), y: y0 + 16, "text-anchor": "middle" }, s).textContent = fmtTick ? fmtTick(t) : t;
+    });
+    if (label) el("text", { x: W / 2, y: y0 + 34, "text-anchor": "middle", class: "lbl" }, s).textContent = label;
+  }
+  function gridY(s, y, ticks, x0, x1, fmtTick) {
+    ticks.forEach((t) => {
+      el("line", { x1: x0, x2: x1, y1: y(t), y2: y(t), stroke: "var(--grid)", "stroke-width": 1 }, s);
+      el("text", { x: x0 - 8, y: y(t) + 4, "text-anchor": "end" }, s).textContent = fmtTick ? fmtTick(t) : t;
+    });
+  }
+  function table(host, head, rows) {
+    const t = document.createElement("table");
+    t.innerHTML = "<thead><tr>" + head.map((h) => `<th>${h}</th>`).join("") + "</tr></thead><tbody>" +
+      rows.map((r) => "<tr>" + r.map((c) => `<td>${c}</td>`).join("") + "</tr>").join("") + "</tbody>";
+    host.appendChild(t);
+  }
+
+  function render(D) {
+
+    // ---- Figure: geometry scatter
+    {
+      const G = D.geometry, host = document.getElementById("fig-geo");
+      const W = 460, H = 380, L = 44, R = 12, T = 10, Bm = 40;
+      const xs = G.xy.map((q) => q[0]), ys = G.xy.map((q) => q[1]);
+      const pad = (a, b) => [a - (b - a) * 0.05, b + (b - a) * 0.05];
+      const [x0, x1] = pad(Math.min(...xs), Math.max(...xs)), [y0, y1] = pad(Math.min(...ys), Math.max(...ys));
+      const s = svg(host, W, H, "Principal components of the latent coloured by the exact posterior");
+      const x = lin(x0, x1, L, W - R), y = lin(y0, y1, H - Bm, T);
+      el("rect", { x: L, y: T, width: W - R - L, height: H - Bm - T, fill: "none", stroke: "var(--grid)" }, s);
+      const lo = css("--div-lo"), mid = css("--div-mid"), hi = css("--div-hi");
+      const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+      const mix = (a, b, t) => "rgb(" + hex(a).map((v, i) => Math.round(v + (hex(b)[i] - v) * t)).join(",") + ")";
+      const col = (p) => (p < 0.5 ? mix(lo, mid, p / 0.5) : mix(mid, hi, (p - 0.5) / 0.5));
+      const order = G.p.map((p, i) => i).sort((a, b) => Math.abs(G.p[a] - 0.5) - Math.abs(G.p[b] - 0.5));
+      order.forEach((i) => {
+        const c = el("circle", { cx: x(xs[i]), cy: y(ys[i]), r: 2.6, fill: col(G.p[i]), "fill-opacity": 0.8 }, s);
+        c.dataset.i = i;
+      });
+      el("text", { x: (L + W - R) / 2, y: H - 8, "text-anchor": "middle", class: "lbl" }, s).textContent = `PC1 (${(G.explained[0] * 100).toFixed(0)}% of variance)`;
+      const yl = el("text", { x: 12, y: (T + H - Bm) / 2, "text-anchor": "middle", class: "lbl", transform: `rotate(-90 12 ${(T + H - Bm) / 2})` }, s);
+      yl.textContent = `PC2 (${(G.explained[1] * 100).toFixed(0)}%)`;
+      // nearest-point hover
+      const hit = el("rect", { x: L, y: T, width: W - R - L, height: H - Bm - T, fill: "transparent" }, s);
+      const ring = el("circle", { r: 5, fill: "none", stroke: "var(--ink)", "stroke-width": 1.5, opacity: 0 }, s);
+      hit.addEventListener("mousemove", (e) => {
+        const pt = s.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY;
+        const q = pt.matrixTransform(s.getScreenCTM().inverse());
+        let best = -1, bd = 1e9;
+        for (let i = 0; i < xs.length; i++) { const dx = x(xs[i]) - q.x, dy = y(ys[i]) - q.y, dd = dx * dx + dy * dy; if (dd < bd) { bd = dd; best = i; } }
+        if (bd > 400) { ring.setAttribute("opacity", 0); tip.classList.remove("on"); return; }
+        ring.setAttribute("cx", x(xs[best])); ring.setAttribute("cy", y(ys[best])); ring.setAttribute("opacity", 1);
+        tip.innerHTML = `exact P(tiger left) = ${G.p[best].toFixed(4)}`; tip.classList.add("on"); place(e.clientX, e.clientY);
+      });
+      hit.addEventListener("mouseleave", () => { ring.setAttribute("opacity", 0); tip.classList.remove("on"); });
+      document.getElementById("geo-legend").innerHTML =
+        `<span><i class="sw" style="background:var(--div-lo)"></i>tiger right (P(left) → 0)</span><span><i class="sw" style="background:var(--div-mid)"></i>uninformed (0.5)</span><span><i class="sw" style="background:var(--div-hi)"></i>tiger left (P(left) → 1)</span>`;
+    }
+
+    // ---- Figure: probe KL by posterior
+    {
+      const host = document.getElementById("fig-probe");
+      const skeys = Object.keys(D.probes[0]["mlp/random"].by_posterior).sort((a, b) => Number(a) - Number(b));
+      const keys = skeys.map(Number);
+      const avg = (kind) => skeys.map((k) => {
+        const vals = D.probes.map((pr) => pr[kind].by_posterior[k]).filter(Boolean).map((r) => r[1]);
+        return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+      });
+      const mlp = avg("mlp/random"), linr = avg("linear/random");
+      const W = 460, H = 330, L = 56, R = 12, T = 10, Bm = 50;
+      const s = svg(host, W, H, "Probe KL by exact posterior");
+      const all = mlp.concat(linr).filter((v) => v > 0);
+      const lmin = Math.floor(Math.log10(Math.min(...all))), lmax = Math.ceil(Math.log10(Math.max(...all)));
+      const y = (v) => lin(lmin, lmax, H - Bm, T)(Math.log10(v));
+      const bandW = (W - L - R) / keys.length;
+      const xc = (i) => L + bandW * (i + 0.5);
+      const ticks = []; for (let e = lmin; e <= lmax; e++) ticks.push(e);
+      ticks.forEach((e) => {
+        el("line", { x1: L, x2: W - R, y1: y(10 ** e), y2: y(10 ** e), stroke: "var(--grid)" }, s);
+        el("text", { x: L - 8, y: y(10 ** e) + 4, "text-anchor": "end" }, s).textContent = `1e${e}`;
+      });
+      keys.forEach((k, i) => {
+        const t = el("text", { x: xc(i), y: H - Bm + 16, "text-anchor": "middle" }, s);
+        t.textContent = k === 0 ? "0" : k === 1 ? "1" : k.toFixed(k < 0.01 || k > 0.99 ? 4 : 2).replace(/^0/, "");
+        if (keys.length > 9) t.setAttribute("transform", `rotate(-40 ${xc(i)} ${H - Bm + 16})`), t.setAttribute("text-anchor", "end");
+      });
+      el("text", { x: (L + W - R) / 2, y: H - 4, "text-anchor": "middle", class: "lbl" }, s).textContent = "exact P(tiger left | history)";
+      [[mlp, "var(--s1)", "MLP"], [linr, "var(--s2)", "linear"]].forEach(([vals, col, nm]) => {
+        const pts = vals.map((v, i) => (v && v > 0 ? [xc(i), y(v)] : null));
+        const d = pts.filter(Boolean).map((p, j) => (j ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+        el("path", { d, fill: "none", stroke: col, "stroke-width": 2, "stroke-linejoin": "round" }, s);
+        pts.forEach((p, i) => { if (!p) return; const c = el("circle", { cx: p[0], cy: p[1], r: 4, fill: col, stroke: "var(--surface)", "stroke-width": 2 }, s); hover(c, `${nm} probe<br>P(left) = ${keys[i]}<br>mean KL ${vals[i].toExponential(2)} nats`); });
+      });
+      table(document.getElementById("tab-probe"), ["exact P(tiger left)", "MLP KL", "linear KL"], keys.map((k, i) => [k, mlp[i] ? mlp[i].toExponential(2) : "–", linr[i] ? linr[i].toExponential(2) : "–"]));
+    }
+
+    // ---- Figures: value and reward vs exact
+    const pk = Object.keys(D.learned[0]).filter((k) => D.learned.every((r) => r[k])).map(Number).sort((a, b) => a - b);
+    function modelFig(hostId, exactY, learnedOf, yLabel, yTicks, name) {
+      const host = document.getElementById(hostId);
+      const W = 460, H = 320, L = 50, R = 12, T = 10, Bm = 44;
+      const s = svg(host, W, H, name);
+      const x = lin(0, 1, L, W - R), y = lin(yTicks[0], yTicks[yTicks.length - 1], H - Bm, T);
+      gridY(s, y, yTicks, L, W - R, (t) => (t < 0 ? "−" : "") + Math.abs(t));
+      axisX(s, x, H - Bm, [0, 0.25, 0.5, 0.75, 1], "P(tiger left)", (t) => t, W + L - R);
+      const d = D.exact.p.map((p, i) => (i ? "L" : "M") + x(p).toFixed(1) + " " + y(exactY(i)).toFixed(1)).join(" ");
+      el("path", { d, fill: "none", stroke: "var(--ink-2)", "stroke-width": 2 }, s);
+      pk.forEach((p) => {
+        const vals = D.learned.map((r) => learnedOf(r[p.toFixed(4)]));
+        const m = vals.reduce((a, b) => a + b, 0) / vals.length;
+        const lo = Math.min(...vals), hi = Math.max(...vals);
+        el("line", { x1: x(p), x2: x(p), y1: y(lo), y2: y(hi), stroke: "var(--s1)", "stroke-width": 2, "stroke-linecap": "round" }, s);
+        const c = el("circle", { cx: x(p), cy: y(m), r: 4.5, fill: "var(--s1)", stroke: "var(--surface)", "stroke-width": 2 }, s);
+        const ex = exactAt(p);
+        hover(c, `P(left) = ${p}<br>learned ${fmt0(m)} (seeds ${fmt0(lo)} … ${fmt0(hi)})<br>exact ${fmt0(ex[name === "value" ? 0 : 1])}`);
+      });
+      return s;
+    }
+    const exactAt = (p) => { const i = Math.round(p * 200); return [D.exact.v[i], -100 * p + 10 * (1 - p)]; };
+    modelFig("fig-value", (i) => D.exact.v[i], (r) => r.v, "V", [14, 16, 18, 20, 22, 24, 26, 28, 30], "value");
+    modelFig("fig-reward", (i) => -100 * D.exact.p[i] + 10 * (1 - D.exact.p[i]), (r) => r.r[1], "R", [-100, -75, -50, -25, 0, 10], "reward");
+    {
+      const rows = pk.map((p) => {
+        const v = D.learned.map((r) => r[p.toFixed(4)].v), rr = D.learned.map((r) => r[p.toFixed(4)].r[1]);
+        const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+        const ex = exactAt(p);
+        return [p, fmt0(ex[0]), fmt0(mean(v)), fmt0(ex[1]), fmt0(mean(rr))];
+      });
+      table(document.getElementById("tab-model"), ["exact P(tiger left)", "V*", "learned V̂ (mean of 5)", "exact R[open-left]", "learned R̂ (mean of 5)"], rows);
+    }
+
+    // ---- Policy by net growl count
+    {
+      const A = ["LISTEN", "OPEN_LEFT", "OPEN_RIGHT"], lab = ["listen", "open left", "open right"], cols = ["var(--s1)", "var(--s2)", "var(--s3)"];
+      const net = (p) => Math.round(Math.log(p / (1 - p)) / Math.log(0.85 / 0.15));
+      const pooled = new Map();
+      D.policy.rows.forEach(([seed, p, l, ol, or, ex]) => {
+        const k = net(p);
+        const r = pooled.get(k) || { p, c: [0, 0, 0], ex, seeds: {} };
+        r.c[0] += l; r.c[1] += ol; r.c[2] += or; r.seeds[seed] = [l, ol, or];
+        pooled.set(k, r);
+      });
+      const qAt = (p) => { const i = Math.round(p * 200); return [0, 1, 2].map((a) => D.exact.q[a][i]); };
+      const ks = [...pooled.keys()].sort((a, b) => b - a);
+      const host = document.getElementById("fig-policy");
+      const W = 900, rowH = 38, L = 250, R = 190, T = 6, H = T + ks.length * rowH + 30;
+      const s = svg(host, W, H, "Action shares by net growl count");
+      const x = lin(0, 1, L, W - R);
+      [0, 0.25, 0.5, 0.75, 1].forEach((t) => { el("line", { x1: x(t), x2: x(t), y1: T, y2: T + ks.length * rowH, stroke: "var(--grid)" }, s); el("text", { x: x(t), y: T + ks.length * rowH + 16, "text-anchor": "middle" }, s).textContent = `${t * 100}%`; });
+      ks.forEach((k, i) => {
+        const r = pooled.get(k), tot = r.c[0] + r.c[1] + r.c[2], y = T + i * rowH + 7, h = rowH - 14;
+        const growl = k === 0 ? "0 (even)" : `${k > 0 ? "+" : "−"}${Math.abs(k)} ${k > 0 ? "left" : "right"}`;
+        el("text", { x: 0, y: y + h / 2 + 4, class: "strong" }, s).textContent = `net growls ${growl}`;
+        el("text", { x: 150, y: y + h / 2 + 4 }, s).textContent = `P(left) ${r.p.toFixed(3)}`;
+        let acc = 0;
+        r.c.forEach((c, a) => {
+          if (!c) return;
+          const w = Math.max(1.5, x(acc + c / tot) - x(acc) - (acc + c / tot < 0.999 ? 2 : 0));
+          const rect = el("rect", { x: x(acc), y, width: w, height: h, fill: cols[a], rx: 2 }, s);
+          hover(rect, `net growls ${growl}<br>${lab[a]}: ${c.toLocaleString()} of ${tot.toLocaleString()} (${(100 * c / tot).toFixed(2)}%)`);
+          acc += c / tot;
+        });
+        const q = qAt(r.p), best = A.indexOf(r.ex), sorted = [...q].sort((a, b) => b - a);
+        const agree = 100 * r.c[best] / tot;
+        el("text", { x: W - R + 12, y: y + h / 2 + 4, class: "strong" }, s).textContent = `${lab[best]} · ${agree.toFixed(2)}%`;
+        el("text", { x: W - 4, y: y + h / 2 + 4, "text-anchor": "end" }, s).textContent = `margin ${(sorted[0] - sorted[1]).toFixed(2)}`;
+      });
+      el("text", { x: W - R + 12, y: T + ks.length * rowH + 16, class: "lbl" }, s).textContent = "exact action · agreement";
+      const rows = [];
+      ks.forEach((k) => { const r = pooled.get(k); Object.entries(r.seeds).forEach(([sd, c]) => rows.push([k > 0 ? `+${k}` : `${k}`, r.p.toFixed(4), sd, c[0], c[1], c[2], r.ex.toLowerCase().replace("_", " ")])); });
+      table(document.getElementById("tab-policy"), ["net growls", "P(left)", "seed", "listen", "open left", "open right", "exact action"], rows);
+    }
+
+    // ---- Latent traversal
+    {
+      const T = D.trajectories, G = D.geometry;
+      const epsHost = document.getElementById("traj-eps"), slider = document.getElementById("traj-t"), play = document.getElementById("traj-play"), readout = document.getElementById("traj-readout");
+      let ep = 0, timer = null;
+      T.forEach((_, i) => { const b = document.createElement("button"); b.type = "button"; b.className = "btn"; b.textContent = `Episode ${i + 1}`; b.setAttribute("aria-pressed", i === 0); b.onclick = () => { ep = i; [...epsHost.children].forEach((c, j) => c.setAttribute("aria-pressed", j === i)); draw(); }; epsHost.appendChild(b); });
+      const hostL = document.getElementById("fig-traj-latent"), hostR = document.getElementById("fig-traj-belief");
+      const allx = G.xy.map((q) => q[0]).concat(T.flatMap((t) => t.xy.map((q) => q[0]))), ally = G.xy.map((q) => q[1]).concat(T.flatMap((t) => t.xy.map((q) => q[1])));
+      const pad = (a, b) => [a - (b - a) * 0.05, b + (b - a) * 0.05];
+      const [x0, x1] = pad(Math.min(...allx), Math.max(...allx)), [y0, y1] = pad(Math.min(...ally), Math.max(...ally));
+      const WL = 460, HL = 360, Lm = 16, Rm = 12, Tm = 10, Bm = 30;
+      const sL = svg(hostL, WL, HL, "Latent trajectory in principal-component space");
+      const X = lin(x0, x1, Lm, WL - Rm), Y = lin(y0, y1, HL - Bm, Tm);
+      const lo = css("--div-lo"), mid = css("--div-mid"), hi = css("--div-hi");
+      const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+      const mix = (a, b, t) => "rgb(" + hex(a).map((v, i) => Math.round(v + (hex(b)[i] - v) * t)).join(",") + ")";
+      const col = (p) => (p < 0.5 ? mix(lo, mid, p / 0.5) : mix(mid, hi, (p - 0.5) / 0.5));
+      G.xy.forEach((q, i) => el("circle", { cx: X(q[0]), cy: Y(q[1]), r: 2, fill: col(G.p[i]), "fill-opacity": 0.28 }, sL));
+      el("text", { x: (Lm + WL - Rm) / 2, y: HL - 8, "text-anchor": "middle", class: "lbl" }, sL).textContent = "PC1 → PC2 plane of the latent (same axes as the geometry figure)";
+      const pathL = el("path", { fill: "none", stroke: "var(--ink)", "stroke-width": 1.4, "stroke-opacity": 0.55, "stroke-linejoin": "round" }, sL);
+      const doorsL = el("g", {}, sL);
+      const cur = el("circle", { r: 7, fill: "none", stroke: "var(--ink)", "stroke-width": 2.5 }, sL);
+      const curDot = el("circle", { r: 4, fill: "var(--ink)" }, sL);
+      const WR = 460, HR = 360, L2 = 44, R2 = 12, T2 = 10, B2 = 70;
+      const sR = svg(hostR, WR, HR, "Exact and decoded belief over time");
+      const tx = lin(0, 100, L2, WR - R2), py = lin(0, 1, HR - B2, T2);
+      gridY(sR, py, [0, 0.25, 0.5, 0.75, 1], L2, WR - R2, (t) => t);
+      el("text", { x: 12, y: (T2 + HR - B2) / 2, "text-anchor": "middle", class: "lbl", transform: `rotate(-90 12 ${(T2 + HR - B2) / 2})` }, sR).textContent = "P(tiger left)";
+      axisX(sR, tx, HR - B2 + 34, [0, 20, 40, 60, 80, 100], "step", (t) => t, WR + L2 - R2);
+      el("text", { x: L2 - 8, y: HR - B2 + 14, "text-anchor": "end" }, sR).textContent = "growl";
+      el("text", { x: L2 - 8, y: HR - B2 + 28, "text-anchor": "end" }, sR).textContent = "tiger";
+      const exactP = el("path", { fill: "none", stroke: "var(--ink-2)", "stroke-width": 1.6 }, sR);
+      const decG = el("g", {}, sR), strip = el("g", {}, sR);
+      const cursor = el("line", { y1: T2, y2: HR - B2 + 32, stroke: "var(--ink)", "stroke-width": 1 }, sR);
+      const growlName = ["left", "right"], actName = ["listen", "open left", "open right"];
+      function draw() {
+        const tr = T[ep], t = +slider.value;
+        pathL.setAttribute("d", tr.xy.slice(0, t + 1).map((q, i) => (i ? "L" : "M") + X(q[0]).toFixed(1) + " " + Y(q[1]).toFixed(1)).join(" "));
+        doorsL.innerHTML = "";
+        for (let i = 1; i <= t; i++) if (tr.actions[i - 1] !== 0) el("circle", { cx: X(tr.xy[i][0]), cy: Y(tr.xy[i][1]), r: 3.5, fill: "var(--s2)" }, doorsL);
+        cur.setAttribute("cx", X(tr.xy[t][0])); cur.setAttribute("cy", Y(tr.xy[t][1]));
+        curDot.setAttribute("cx", X(tr.xy[t][0])); curDot.setAttribute("cy", Y(tr.xy[t][1])); curDot.setAttribute("fill", col(tr.exact[t]));
+        let d = `M${tx(0)} ${py(tr.exact[0])}`;
+        for (let i = 1; i <= 100; i++) d += ` H${tx(i)} V${py(tr.exact[i])}`;
+        exactP.setAttribute("d", d);
+        decG.innerHTML = ""; strip.innerHTML = "";
+        tr.decoded.forEach((v, i) => el("circle", { cx: tx(i), cy: py(v), r: i === t ? 4.5 : 2.4, fill: "var(--s1)", "fill-opacity": i <= t ? 1 : 0.3 }, decG));
+        for (let i = 1; i <= 100; i++) {
+          const a = tr.actions[i - 1], o = tr.observations[i - 1];
+          if (a !== 0) el("rect", { x: tx(i) - 1.5, y: T2, width: 3, height: HR - B2 - T2, fill: "var(--warnband)" }, strip);
+          if (a === 0) el("rect", { x: tx(i) - 1.2, y: HR - B2 + 6 + (o === 0 ? 0 : 5), width: 2.4, height: 5, fill: o === 0 ? "var(--div-hi)" : "var(--div-lo)" }, strip);
+          el("rect", { x: tx(i - 1), y: HR - B2 + 20, width: tx(1) - tx(0) + 0.3, height: 5, fill: tr.tiger[i - 1] === 0 ? "var(--div-hi)" : "var(--div-lo)", "fill-opacity": 0.6 }, strip);
+        }
+        cursor.setAttribute("x1", tx(t)); cursor.setAttribute("x2", tx(t));
+        const last = t > 0 ? `a = ${actName[tr.actions[t - 1]]}, ${tr.actions[t - 1] === 0 ? "heard " + growlName[tr.observations[t - 1]] : "reward " + tr.rewards[t - 1]}` : "start of episode, no observation yet";
+        const ret = tr.rewards.slice(0, t).reduce((a, r, i) => a + r * 0.95 ** i, 0);
+        readout.innerHTML = `step ${t} · ${last}<br>exact P(tiger left) ${tr.exact[t].toFixed(4)} · decoded ${tr.decoded[t].toFixed(4)} · discounted return so far ${ret.toFixed(2)}`;
+      }
+      slider.addEventListener("input", draw);
+      const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      play.addEventListener("click", () => {
+        if (timer) { clearInterval(timer); timer = null; play.textContent = "Play"; return; }
+        if (+slider.value >= 100) slider.value = 0;
+        play.textContent = "Pause";
+        timer = setInterval(() => { if (+slider.value >= 100) { clearInterval(timer); timer = null; play.textContent = "Play"; return; } slider.value = +slider.value + 1; draw(); }, reduce ? 400 : 160);
+      });
+      draw();
+    }
+
+    // ---- Observation prediction
+    {
+      const O = D.observation, host = document.getElementById("fig-obs");
+      const ks = Object.keys(O[0].listen_calibration).filter((k) => O.every((o) => o.listen_calibration[k])).sort((a, b) => a - b);
+      const W = 460, H = 320, L = 50, R = 12, T = 10, Bm = 44;
+      const s = svg(host, W, H, "Learned vs exact observation probabilities for listening");
+      const x = lin(0, 1, L, W - R), y = lin(0, 1, H - Bm, T);
+      gridY(s, y, [0, 0.25, 0.5, 0.75, 1], L, W - R, (t) => t);
+      axisX(s, x, H - Bm, [0, 0.25, 0.5, 0.75, 1], "exact P(tiger left) before listening", (t) => t, W + L - R);
+      el("text", { x: 12, y: (T + H - Bm) / 2, "text-anchor": "middle", class: "lbl", transform: `rotate(-90 12 ${(T + H - Bm) / 2})` }, s).textContent = "P(growl left)";
+      el("line", { x1: x(0), x2: x(1), y1: y(0.15), y2: y(0.85), stroke: "var(--ink-2)", "stroke-width": 2 }, s);
+      ks.forEach((k) => {
+        const p = +k, c0 = O[0].listen_calibration[k];
+        const vals = O.map((o) => o.listen_calibration[k].learned), m = vals.reduce((a, b) => a + b, 0) / vals.length;
+        el("line", { x1: x(p), x2: x(p), y1: y(Math.min(...vals)), y2: y(Math.max(...vals)), stroke: "var(--s1)", "stroke-width": 2 }, s);
+        const ring = el("circle", { cx: x(p), cy: y(c0.empirical), r: 6, fill: "none", stroke: "var(--muted)", "stroke-width": 1.5 }, s);
+        const c = el("circle", { cx: x(p), cy: y(m), r: 4.5, fill: "var(--s1)", stroke: "var(--surface)", "stroke-width": 2 }, s);
+        const html = `P(left) = ${p}<br>exact ${c0.exact.toFixed(4)}<br>learned ${m.toFixed(4)} (seeds ${Math.min(...vals).toFixed(3)}–${Math.max(...vals).toFixed(3)})<br>observed ${c0.empirical.toFixed(3)} (n = ${c0.n})`;
+        hover(c, html); hover(ring, html);
+      });
+      const mean = (f) => (a) => O.reduce((acc, o) => acc + f(o.per_action[a]), 0) / O.length;
+      const rows = ["LISTEN", "OPEN_LEFT", "OPEN_RIGHT"].map((a) => [a.toLowerCase().replace("_", " "), mean((r) => r.kl)(a).toExponential(1), mean((r) => r.logloss_learned)(a).toFixed(4), mean((r) => r.logloss_exact)(a).toFixed(4), (100 * mean((r) => r.acc_learned)(a)).toFixed(1) + "%", (100 * mean((r) => r.acc_exact)(a)).toFixed(1) + "%"]);
+      table(document.getElementById("tab-obs"), ["action", "KL(exact ‖ learned)", "log-loss learned", "log-loss exact", "accuracy learned", "accuracy exact"], rows);
+    }
+
+    // ---- Runtime
+    {
+      const R = D.runtime, pd = R.per_decision, host = document.getElementById("fig-runtime");
+      const items = [["Exact policy (alpha vectors)", pd.exact_alpha.ms_per_decision, "var(--ink-2)"], ["Search over the exact model", pd.exact_search.ms_per_decision, "var(--s3)"], ["Search over the learned model", pd.learned_search.ms_per_decision, "var(--s1)"]];
+      const W = 460, rowH = 44, L = 190, Rr = 70, T = 6, H = T + items.length * rowH + 36;
+      const s = svg(host, W, H, "Milliseconds per decision");
+      const x = (v) => lin(-2, 1, L, W - Rr)(Math.log10(v));
+      [0.01, 0.1, 1, 10].forEach((t) => { el("line", { x1: x(t), x2: x(t), y1: T, y2: T + items.length * rowH, stroke: "var(--grid)" }, s); el("text", { x: x(t), y: T + items.length * rowH + 16, "text-anchor": "middle" }, s).textContent = t; });
+      el("text", { x: (L + W - Rr) / 2, y: H - 4, "text-anchor": "middle", class: "lbl" }, s).textContent = "ms per decision (log scale)";
+      items.forEach(([nm, v, c], i) => {
+        const y = T + i * rowH + 12;
+        el("text", { x: 0, y: y + 14, class: "strong" }, s).textContent = nm;
+        const r = el("rect", { x: x(0.01), y, width: x(v) - x(0.01), height: 20, fill: c, rx: 3 }, s);
+        hover(r, `${nm}<br>${v.toFixed(3)} ms per decision`);
+        el("text", { x: x(v) + 8, y: y + 14, class: "lbl" }, s).textContent = `${v < 1 ? v.toFixed(3) : v.toFixed(1)} ms`;
+      });
+      const sol = R.solve[R.solve.length - 1], trainMin = R.training_seconds.map((t) => t / 60);
+      const rows = [
+        ["Exact: certified solve to ±" + sol.tolerance, `${sol.seconds.toFixed(0)} s once`, `${sol.iterations} backups, ${sol.vectors} final vectors`],
+        ["Learned: training", `${Math.min(...trainMin).toFixed(0)}–${Math.max(...trainMin).toFixed(0)} min once`, "per seed, including search-based data collection"],
+        ["Exact Bayes belief update", `${R.belief_update_us.exact_bayes.toFixed(0)} µs`, `per step for ${R.belief_update_us.batch} episodes`],
+        ["Learned filter step", `${R.belief_update_us.learned_filter.toFixed(0)} µs`, `per step for ${R.belief_update_us.batch} episodes`],
+        ...R.solve.slice(0, -1).map((r) => ["Exact: certified solve to ±" + r.tolerance, `${r.seconds.toFixed(0)} s`, `${r.iterations} backups, ${r.vectors} final vectors`]),
+      ];
+      table(document.getElementById("tab-runtime"), ["component", "cost", "detail"], rows);
+    }
+
+  }
+
+  fetch("data.json").then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }).then(render).catch((e) => {
+    document.querySelectorAll('[id^="fig-"]').forEach((n) => { n.innerHTML = `<p class="err">The chart data (data.json) did not load: ${e.message}. Reload the page to try again.</p>`; });
+  });
+})();
+</script>

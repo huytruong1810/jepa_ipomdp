@@ -1,0 +1,43 @@
+exact optimal policy (net growls = #left - #right since the last door opening):
+  net -4  P(left)=0.0010  Q*=[25.87, 28.29, -81.5]  -> OPEN_LEFT
+  net -3  P(left)=0.0055  Q*=[25.4, 27.79, -81.01]  -> OPEN_LEFT
+  net -2  P(left)=0.0302  Q*=[24.37, 25.07, -78.28]  -> OPEN_LEFT
+  net -1  P(left)=0.1500  Q*=[21.43, 11.89, -65.11]  -> LISTEN
+  net +0  P(left)=0.5000  Q*=[19.36, -26.61, -26.61]  -> LISTEN
+  net +1  P(left)=0.8500  Q*=[21.43, -65.11, 11.89]  -> LISTEN
+  net +2  P(left)=0.9698  Q*=[24.37, -78.28, 25.07]  -> OPEN_RIGHT
+  net +3  P(left)=0.9945  Q*=[25.4, -81.01, 27.79]  -> OPEN_RIGHT
+  net +4  P(left)=0.9990  Q*=[25.87, -81.5, 28.29]  -> OPEN_RIGHT
+seed 0: agrees with the exact policy on 25593/25600 decisions (99.97%)
+   P(left)=0.0302  n= 3409  listen/openL/openR = [7, 3402, 0]  exact -> OPEN_LEFT
+   P(left)=0.1500  n= 4620  listen/openL/openR = [4620, 0, 0]  exact -> LISTEN
+   P(left)=0.5000  n= 9415  listen/openL/openR = [9415, 0, 0]  exact -> LISTEN
+   P(left)=0.8500  n= 4707  listen/openL/openR = [4707, 0, 0]  exact -> LISTEN
+   P(left)=0.9698  n= 3443  listen/openL/openR = [0, 0, 3443]  exact -> OPEN_RIGHT
+seed 1: agrees with the exact policy on 25568/25600 decisions (99.88%)
+   P(left)=0.0055  n=   24  listen/openL/openR = [0, 24, 0]  exact -> OPEN_LEFT
+   P(left)=0.0302  n= 3412  listen/openL/openR = [26, 3386, 0]  exact -> OPEN_LEFT
+   P(left)=0.1500  n= 4628  listen/openL/openR = [4625, 3, 0]  exact -> LISTEN
+   P(left)=0.5000  n= 9403  listen/openL/openR = [9403, 0, 0]  exact -> LISTEN
+   P(left)=0.8500  n= 4689  listen/openL/openR = [4689, 0, 0]  exact -> LISTEN
+   P(left)=0.9698  n= 3441  listen/openL/openR = [3, 0, 3438]  exact -> OPEN_RIGHT
+seed 2: agrees with the exact policy on 25568/25600 decisions (99.88%)
+   P(left)=0.0302  n= 3426  listen/openL/openR = [15, 3411, 0]  exact -> OPEN_LEFT
+   P(left)=0.1500  n= 4633  listen/openL/openR = [4633, 0, 0]  exact -> LISTEN
+   P(left)=0.5000  n= 9400  listen/openL/openR = [9400, 0, 0]  exact -> LISTEN
+   P(left)=0.8500  n= 4681  listen/openL/openR = [4681, 0, 0]  exact -> LISTEN
+   P(left)=0.9698  n= 3431  listen/openL/openR = [17, 0, 3414]  exact -> OPEN_RIGHT
+seed 3: agrees with the exact policy on 25600/25600 decisions (100.00%)
+   P(left)=0.0302  n= 3419  listen/openL/openR = [0, 3419, 0]  exact -> OPEN_LEFT
+   P(left)=0.1500  n= 4631  listen/openL/openR = [4631, 0, 0]  exact -> LISTEN
+   P(left)=0.5000  n= 9417  listen/openL/openR = [9417, 0, 0]  exact -> LISTEN
+   P(left)=0.8500  n= 4697  listen/openL/openR = [4697, 0, 0]  exact -> LISTEN
+   P(left)=0.9698  n= 3436  listen/openL/openR = [0, 0, 3436]  exact -> OPEN_RIGHT
+seed 4: agrees with the exact policy on 25598/25600 decisions (99.99%)
+   P(left)=0.0302  n= 3420  listen/openL/openR = [1, 3419, 0]  exact -> OPEN_LEFT
+   P(left)=0.1500  n= 4631  listen/openL/openR = [4631, 0, 0]  exact -> LISTEN
+   P(left)=0.5000  n= 9415  listen/openL/openR = [9415, 0, 0]  exact -> LISTEN
+   P(left)=0.8500  n= 4696  listen/openL/openR = [4696, 0, 0]  exact -> LISTEN
+   P(left)=0.9698  n= 3436  listen/openL/openR = [1, 0, 3435]  exact -> OPEN_RIGHT
+
+[exited with code 0]
