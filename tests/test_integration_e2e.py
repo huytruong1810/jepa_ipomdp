@@ -20,16 +20,17 @@ def test_tiger_collection_and_training_cycle():
     num_envs, episode_length, latent_dim, hidden = 2, 6, 16, 32
     num_actions, num_obs = pomdp.num_actions, pomdp.num_observations
 
-    world_model = RecurrentJEPA(BeliefFilter(num_actions, num_obs, latent_dim, hidden, 1),
+    belief_filter = BeliefFilter(num_actions, num_obs, latent_dim, hidden, 1).to(device)
+    world_model = RecurrentJEPA(belief_filter,
                                 LatentPredictor(latent_dim, num_actions, hidden, 1), 0.99).to(device)
     value_head = ValueHead(latent_dim, hidden, 1, 255).to(device)
     reward_head = RewardHead(latent_dim, num_actions, hidden, 1, 255).to(device)
     observation_head = ObservationHead(latent_dim, num_actions, num_obs, hidden, 1).to(device)
     codec = TwoHotSymlog(255, pomdp.value_bound).to(device)
     trainer = WorldModelTrainer(
-        world_model, value_head, reward_head, observation_head, codec, num_actions, num_obs, pomdp.discount,
+        belief_filter, world_model, value_head, reward_head, observation_head, codec, num_actions, num_obs, pomdp.discount,
         TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0, value_target_momentum=0.99), device)
-    model = LearnedSearchModel(world_model.belief_filter, reward_head, observation_head, value_head, codec,
+    model = LearnedSearchModel(belief_filter, reward_head, observation_head, value_head, codec,
                                num_actions, num_obs, pomdp.discount)
     agent = PlanningAgent(model, BeliefTreeSearch(model, 5, 1.25, 0.3, 0.25, seed=0), num_envs, temperature=1.0,
                           seed=0, device=device)

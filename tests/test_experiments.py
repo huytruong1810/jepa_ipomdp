@@ -46,7 +46,7 @@ class TestRunConstruction:
 
         trained = load_trained_run(tmp_path, CPU)
         assert trained.checkpoint_collection == 1 and trained.checkpoint_eval_return == 3.5
-        assert not trained.run.world_model.training
+        assert not trained.run.belief_filter.training
         for name, net in run.networks.items():
             for key, value in net.state_dict().items():
                 assert torch.equal(trained.run.networks[name].state_dict()[key], value), f"{name}.{key}"

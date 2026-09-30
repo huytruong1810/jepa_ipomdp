@@ -43,6 +43,16 @@
 #      ~16 collections) would delay the agent behind what the online model has learned.
 #    - The acting copies are checkpointed with every other network and are what analysis and
 #      probes read (ipomdp.experiments), since they are the model the agent actually runs.
+#
+# 5. Representation (training/trainer.py, sections 2 and 2b):
+#    - cfg.representation selects the JEPA agent (the filter is wrapped in RecurrentJEPA with
+#      its predictor and EMA target, checkpointed as "world_model") or the decoder baseline
+#      (the bare filter, checkpointed as "belief_filter"; no JEPA parts are built). Heads,
+#      acting copies, planners and seed streams are identical.
+#    - With the same seed both start from the same filter weights. The heads are drawn after
+#      the JEPA predictor (keeping the JEPA runs' initialisation, and thus the cited results,
+#      reproducible), so the decoder baseline's initial head weights are a different draw --
+#      no more than the difference between two seeds.
 # ==============================================================================
 
 from dataclasses import dataclass
@@ -58,7 +68,7 @@ from ..planning import BeliefTreeSearch, LearnedSearchModel
 from .episode_buffer import EpisodeBuffer
 from .rollout import discounted_returns, play_episodes
 from .seeding import RunStream, stream_seed
-from .trainer import TrainerConfig, WorldModelTrainer
+from .trainer import Representation, TrainerConfig, WorldModelTrainer
 
 
 
@@ -77,7 +87,8 @@ class RunConfig:
     latent_dim: int
     hidden_dim: int
     num_blocks: int
-    ema_momentum: float
+    representation: Representation
+    ema_momentum: float               # JEPA target filter; unused by the decoder baseline
     acting_ema_momentum: float
     num_bins: int
     trainer: TrainerConfig
@@ -99,18 +110,20 @@ class TrainingRun:
         torch.manual_seed(seed(RunStream.NETWORK_INIT))
         num_a, num_o = pomdp.num_actions, pomdp.num_observations
 
-        self.world_model = RecurrentJEPA(
-            BeliefFilter(num_a, num_o, cfg.latent_dim, cfg.hidden_dim, cfg.num_blocks),
-            LatentPredictor(cfg.latent_dim, num_a, cfg.hidden_dim, cfg.num_blocks), cfg.ema_momentum).to(device)
+        self.belief_filter = BeliefFilter(num_a, num_o, cfg.latent_dim, cfg.hidden_dim, cfg.num_blocks).to(device)
+        self.jepa = (RecurrentJEPA(self.belief_filter,
+                                   LatentPredictor(cfg.latent_dim, num_a, cfg.hidden_dim, cfg.num_blocks),
+                                   cfg.ema_momentum).to(device)
+                     if cfg.representation is Representation.JEPA else None)
         self.value_head = ValueHead(cfg.latent_dim, cfg.hidden_dim, cfg.num_blocks, cfg.num_bins).to(device)
         self.reward_head = RewardHead(cfg.latent_dim, num_a, cfg.hidden_dim, cfg.num_blocks, cfg.num_bins).to(device)
         self.observation_head = ObservationHead(cfg.latent_dim, num_a, num_o, cfg.hidden_dim, cfg.num_blocks).to(device)
         self.codec = TwoHotSymlog(cfg.num_bins, pomdp.value_bound).to(device)
-        self.trainer = WorldModelTrainer(self.world_model, self.value_head, self.reward_head, self.observation_head,
+        self.trainer = WorldModelTrainer(self.belief_filter, self.jepa, self.value_head, self.reward_head, self.observation_head,
                                          self.codec, num_a, num_o, pomdp.discount, cfg.trainer, device)
 
         # Polyak-averaged copies the agent acts with (section 4).
-        self.acting_filter = frozen_copy(self.world_model.belief_filter)
+        self.acting_filter = frozen_copy(self.belief_filter)
         self.acting_reward_head = frozen_copy(self.reward_head)
         self.acting_observation_head = frozen_copy(self.observation_head)
         self.acting_value_head = frozen_copy(self.value_head)
@@ -133,7 +146,8 @@ class TrainingRun:
 
     @property
     def networks(self) -> dict[str, torch.nn.Module]:
-        return {"world_model": self.world_model, "value": self.value_head, "reward": self.reward_head,
+        representation = {"world_model": self.jepa} if self.jepa is not None else {"belief_filter": self.belief_filter}
+        return {**representation, "value": self.value_head, "reward": self.reward_head,
                 "observation": self.observation_head, "target_value": self.trainer.target_value_head,
                 "acting_filter": self.acting_filter, "acting_reward": self.acting_reward_head,
                 "acting_observation": self.acting_observation_head, "acting_value": self.acting_value_head}
@@ -141,7 +155,7 @@ class TrainingRun:
     def _update_acting(self) -> None:
         """Polyak step of the acting copies towards the online weights (section 4)."""
         momentum = self.cfg.acting_ema_momentum
-        for acting, online in ((self.acting_filter, self.world_model.belief_filter),
+        for acting, online in ((self.acting_filter, self.belief_filter),
                                (self.acting_reward_head, self.reward_head),
                                (self.acting_observation_head, self.observation_head),
                                (self.acting_value_head, self.value_head)):

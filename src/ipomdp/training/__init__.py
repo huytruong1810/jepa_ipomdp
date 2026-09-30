@@ -5,11 +5,12 @@ from .episode_buffer import EpisodeBatch, EpisodeBuffer
 from .rollout import discounted_returns, play_episodes
 from .run import RunConfig, TrainingRun
 from .seeding import RunStream, stream_seed
-from .trainer import TrainerConfig, WorldModelTrainer
+from .trainer import Representation, TrainerConfig, WorldModelTrainer
 
 __all__ = [
     "EpisodeBatch",
     "EpisodeBuffer",
+    "Representation",
     "RunConfig",
     "RunStream",
     "TrainerConfig",

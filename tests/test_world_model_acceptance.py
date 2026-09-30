@@ -31,31 +31,37 @@ from ipomdp.domain import BatchedPOMDPEnv, build_tiger_pomdp, observation_distri
 from ipomdp.planning import BeliefTreeSearch, LearnedSearchModel
 from ipomdp.interpretability import build_probe_dataset, evaluate_probe, fit_linear_probe, fit_mlp_probe
 from ipomdp.models import BeliefFilter, LatentPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueHead
-from ipomdp.training import TrainerConfig, WorldModelTrainer, discounted_returns, play_episodes
+from ipomdp.training import Representation, TrainerConfig, WorldModelTrainer, discounted_returns, play_episodes
 
 UPDATES, BATCH, LENGTH, DIM, HIDDEN = 3000, 64, 100, 32, 64
 
 
-def train_and_measure() -> dict:
-    """Trains the world model with the acceptance protocol and returns all measured errors."""
+def train_and_measure(representation: Representation = Representation.JEPA) -> dict:
+    """
+    Trains the world model with the acceptance protocol and returns all measured errors.
+
+    The tests below gate the JEPA agent; the decoder baseline (training/trainer.py, section 2b)
+    is measured by the same function, with the same seeds, for the baseline comparison.
+    """
     device = torch.device("cuda")
     torch.manual_seed(0)
     pomdp = build_tiger_pomdp()
     num_a, num_o = pomdp.num_actions, pomdp.num_observations
-    world_model = RecurrentJEPA(BeliefFilter(num_a, num_o, DIM, HIDDEN, 1),
-                                LatentPredictor(DIM, num_a, HIDDEN, 1), 0.99).to(device)
+    belief_filter = BeliefFilter(num_a, num_o, DIM, HIDDEN, 1).to(device)
+    world_model = (RecurrentJEPA(belief_filter, LatentPredictor(DIM, num_a, HIDDEN, 1), 0.99).to(device)
+                   if representation is Representation.JEPA else None)
     value_head = ValueHead(DIM, HIDDEN, 1, 255).to(device)
     reward_head = RewardHead(DIM, num_a, HIDDEN, 1, 255).to(device)
     observation_head = ObservationHead(DIM, num_a, num_o, HIDDEN, 1).to(device)
     codec = TwoHotSymlog(255, pomdp.value_bound).to(device)
     trainer = WorldModelTrainer(
-        world_model, value_head, reward_head, observation_head, codec, num_a, num_o, pomdp.discount,
+        belief_filter, world_model, value_head, reward_head, observation_head, codec, num_a, num_o, pomdp.discount,
         TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0, value_target_momentum=0.9), device)
 
     def probe_data(seed):
         episodes, _ = play_episodes(BatchedPOMDPEnv(pomdp, 1024, LENGTH, seed, device),
                                     UniformRandomAgent(num_a, 1024, seed, device))
-        return build_probe_dataset(pomdp, world_model.belief_filter, episodes)
+        return build_probe_dataset(pomdp, belief_filter, episodes)
 
     untrained_linear = evaluate_probe(fit_linear_probe(probe_data(998)), probe_data(999))
     behaviour = UniformRandomAgent(num_a, BATCH, 123, device)
@@ -82,7 +88,7 @@ def train_and_measure() -> dict:
             log_model = F.log_softmax(observation_head(latents, onehot).float(), -1).double()
             measured[f"observation_kl_{a}"] = (exact * (exact.clamp(min=1e-12).log() - log_model)).sum(-1)
     # Greedy planning with the learned model (50 simulations, argmax Q), 256 episodes of 100 steps.
-    model = LearnedSearchModel(world_model.belief_filter, reward_head, observation_head, value_head, codec,
+    model = LearnedSearchModel(belief_filter, reward_head, observation_head, value_head, codec,
                                num_a, num_o, pomdp.discount)
     agent = PlanningAgent(model, BeliefTreeSearch(model, 50, 1.25, 0.3, 0.0, seed=0), 256, 0.0, 0, device)
     episodes, _ = play_episodes(BatchedPOMDPEnv(pomdp, 256, LENGTH, seed=4242, device=device), agent)

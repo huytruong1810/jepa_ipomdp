@@ -24,6 +24,8 @@
 #      z-bar_{t+1} from (z_t, a_t), in latent space, with no observation reconstruction.
 #    - Grounding: reward prediction from (z_t, a_t). The value and observation heads read
 #      detached latents and do not shape the representation (training/trainer.py, section 2).
+#    - Baseline: the decoder agent (training/trainer.py, section 2b) builds no RecurrentJEPA;
+#      the bare BeliefFilter is shaped by reward and the next-observation likelihood instead.
 #    - Measured on canonical Tiger (Phase-2 isolated study, random-policy data): JEPA
 #      self-prediction ALONE leaves the latent no more belief-like than an untrained network
 #      (probe KL 0.018 vs 0.024 nats); reward grounding brings it to 0.0015 (linear probe) /

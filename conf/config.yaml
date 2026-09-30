@@ -43,6 +43,8 @@
 #      (on detached latents) regresses the Bellman optimality backup through the learned
 #      model with an EMA target value head (trainer.value_target_momentum). Two-hot bins
 #      (num_bins) are bounded by the domain's value bound.
+#    - model.representation=decoder is the baseline: no JEPA parts; the observation head's
+#      next-observation likelihood shapes the filter instead (training/trainer.py, section 2b).
 #    - Planning is a belief-tree search that branches exactly over observations, weighted by a
 #      learned observation head, and steps the belief filter (planning/mcts.py).
 # ==============================================================================
@@ -86,7 +88,8 @@ model:
   latent_dim: 32              # Belief latent dimension D
   hidden_dim: 64              # Width of SwiGLU residual MLPs
   num_blocks: 1               # SwiGLU residual blocks per MLP
-  ema_momentum: 0.99          # Target filter EMA momentum
+  representation: jepa        # jepa | decoder: what shapes the filter besides reward (training/trainer.py, 2/2b)
+  ema_momentum: 0.99          # JEPA target filter EMA momentum (unused by representation=decoder)
   acting_ema_momentum: 0.99   # Polyak averaging of the weights the planner acts with (training/run.py, section 4)
   num_bins: 255               # Two-hot bins for value and reward
 

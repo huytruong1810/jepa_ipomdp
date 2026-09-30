@@ -1,6 +1,6 @@
 # ABSOLUTE PATH: src/ipomdp/training/trainer.py
 # ==============================================================================
-# WHOLE-EPISODE WORLD-MODEL TRAINER (JEPA SELF-PREDICTION + REWARD/VALUE GROUNDING)
+# WHOLE-EPISODE WORLD-MODEL TRAINER (JEPA OR DECODER REPRESENTATION + REWARD/VALUE GROUNDING)
 # ==============================================================================
 #
 # DESIGN DECISIONS & THEORETICAL FOUNDATIONS:
@@ -9,7 +9,7 @@
 #      so training sees exactly the latents the online agent computes. There is no burn-in,
 #      no mask, and no zero-initialised mid-episode state.
 #
-# 2. Loss Terms (all averaged over the B x T transitions of the batch):
+# 2. Loss Terms of the JEPA Agent (Representation.JEPA; averaged over the B x T transitions):
 #      JEPA         MSE( g(z_t, a_t), sg(z-bar_{t+1}) )      z-bar = EMA target filter
 #      Reward       TwoHot( R(z_t, a_t), r_t )
 #      Value        TwoHot( V(sg(z_t)), sg(max_a [R(z_t,a) + gamma sum_o P(o|z_t,a) V-bar(tau(z_t,a,o))]) )
@@ -31,6 +31,20 @@
 #      (optimal 19.28).
 #    - Two-hot means are unbiased (models/distributions.py), so V and R decode to expected
 #      returns/rewards even for multimodal targets such as Tiger's -100/+10 door reward.
+#
+# 2b. The Decoder Baseline (Representation.DECODER, the baseline chosen after the Tiger gate):
+#      Reward       TwoHot( R(z_t, a_t), r_t )                   (unchanged)
+#      Value        as above                                      (unchanged, detached input)
+#      Observation  CE( P(o | z_t, a_t), o_{t+1} )                gradients INTO the filter
+#    - The JEPA term, its predictor and its EMA target filter are absent (jepa=None). The
+#      representation is instead shaped by the next-observation likelihood: the observation
+#      head IS the decoder. This is the one change against the JEPA agent, so a comparison
+#      of the two isolates what replacing observation reconstruction by latent
+#      self-prediction buys; the heads, value targets, Polyak acting copies and search are
+#      identical.
+#    - The decoder predicts o_{t+1} from (z_t, a_t) rather than reconstructing o_t from z_t
+#      (DreamerV3's posterior decoder): the filter has just read o_t, so reconstructing it can
+#      be satisfied by copying the last input and carries no belief pressure.
 #
 # 3. Value Target: the Bellman Optimality Backup Through the Learned Model (Phase-5 decision):
 #      V_target(z) = max_a [ R(z, a) + gamma * sum_o P(o | z, a) * V-bar(tau(z, a, o)) ]
@@ -65,6 +79,7 @@
 # ==============================================================================
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 import torch
 import torch.nn.functional as F
@@ -73,9 +88,16 @@ from torch import Tensor
 from ..models.distributions import TwoHotSymlog
 from ..models.ema import ema_update, frozen_copy
 from ..models.heads import ObservationHead, RewardHead, ValueHead
-from ..models.world_model import RecurrentJEPA
+from ..models.world_model import BeliefFilter, RecurrentJEPA
 from ..planning.search_model import LearnedSearchModel
 from .episode_buffer import EpisodeBatch
+
+
+class Representation(StrEnum):
+    """What shapes the belief filter besides reward grounding (sections 2 and 2b)."""
+
+    JEPA = "jepa"          # latent self-prediction against an EMA target; observation head detached
+    DECODER = "decoder"    # next-observation likelihood of the observation head; no JEPA parts
 
 
 @dataclass(frozen=True)
@@ -89,11 +111,12 @@ class TrainerConfig:
 
 
 class WorldModelTrainer:
-    """One gradient step of the JEPA world model and its heads on a batch of whole episodes."""
+    """One gradient step of the belief filter and its heads on a batch of whole episodes."""
 
     def __init__(
         self,
-        world_model: RecurrentJEPA,
+        belief_filter: BeliefFilter,
+        jepa: RecurrentJEPA | None,
         value_head: ValueHead,
         reward_head: RewardHead,
         observation_head: ObservationHead,
@@ -104,7 +127,17 @@ class WorldModelTrainer:
         config: TrainerConfig,
         device: torch.device,
     ):
-        self.world_model = world_model
+        """
+        Args:
+            belief_filter: The online filter z_{t+1} = f(z_t, a_t, o_{t+1}).
+            jepa: The JEPA parts built around belief_filter (Representation.JEPA), or None for
+                the decoder baseline (Representation.DECODER, section 2b).
+        """
+        if jepa is not None and jepa.belief_filter is not belief_filter:
+            raise ValueError("jepa must wrap the trained belief_filter")
+        self.belief_filter = belief_filter
+        self.jepa = jepa
+        self.representation = Representation.DECODER if jepa is None else Representation.JEPA
         self.value_head = value_head
         self.reward_head = reward_head
         self.observation_head = observation_head
@@ -115,15 +148,15 @@ class WorldModelTrainer:
         self.config = config
         self.device = device
         self.parameters = [
-            *world_model.belief_filter.parameters(),
-            *world_model.predictor.parameters(),
+            *belief_filter.parameters(),
+            *(jepa.predictor.parameters() if jepa is not None else ()),
             *value_head.parameters(),
             *reward_head.parameters(),
             *observation_head.parameters(),
         ]
         self.optimizer = torch.optim.AdamW(self.parameters, lr=config.learning_rate, weight_decay=config.weight_decay)
         self.target_value_head = frozen_copy(value_head)
-        self.target_model = LearnedSearchModel(world_model.belief_filter, reward_head, observation_head,
+        self.target_model = LearnedSearchModel(belief_filter, reward_head, observation_head,
                                                self.target_value_head, codec, num_actions, num_observations, discount)
 
     @torch.no_grad()
@@ -149,47 +182,49 @@ class WorldModelTrainer:
         Returns:
             Scalar diagnostics (losses, mean value target and mean |V - V_target|).
         """
-        self.world_model.train()
+        self.belief_filter.train()
         actions = F.one_hot(episodes.actions, self.num_actions).float()
         observations = F.one_hot(episodes.observations, self.num_observations).float()
         batch, steps = episodes.actions.shape
+        losses: dict[str, Tensor] = {}
 
         with torch.autocast(self.device.type, dtype=torch.bfloat16, enabled=self.device.type == "cuda"):
-            latents = self.world_model.belief_filter.unroll(actions, observations)          # (B, T+1, D)
-            with torch.no_grad():
-                targets = self.world_model.target_filter.unroll(actions, observations)    # (B, T+1, D)
-
+            latents = self.belief_filter.unroll(actions, observations)                     # (B, T+1, D)
             flat = lambda x: x.reshape(batch * steps, -1)  # noqa: E731
             current = flat(latents[:, :-1])
             action_flat = flat(actions)
 
-            predicted = self.world_model.predictor(current, action_flat)
-            loss_prediction = F.mse_loss(predicted.float(), flat(targets[:, 1:]).float())
+            if self.jepa is not None:
+                with torch.no_grad():
+                    targets = self.jepa.target_filter.unroll(actions, observations)       # (B, T+1, D)
+                predicted = self.jepa.predictor(current, action_flat)
+                losses["prediction"] = F.mse_loss(predicted.float(), flat(targets[:, 1:]).float())
 
-            loss_reward = self.twohot.loss(self.reward_head(current, action_flat),
-                                           episodes.rewards.reshape(-1)).mean()
+            losses["reward"] = self.twohot.loss(self.reward_head(current, action_flat),
+                                                episodes.rewards.reshape(-1)).mean()
 
             all_latents = latents.reshape(batch * (steps + 1), -1)
             targets_value = self.value_targets(all_latents.detach())
             value_logits = self.value_head(all_latents.detach())
-            loss_value = self.twohot.loss(value_logits, targets_value).mean()
+            losses["value"] = self.twohot.loss(value_logits, targets_value).mean()
 
-            loss_observation = F.cross_entropy(
-                self.observation_head(current.detach(), action_flat).float(),
-                episodes.observations.reshape(-1))
+            # The decoder baseline's representation term; a detached planning-model fit otherwise.
+            decoded = current if self.representation is Representation.DECODER else current.detach()
+            losses["observation"] = F.cross_entropy(self.observation_head(decoded, action_flat).float(),
+                                                    episodes.observations.reshape(-1))
 
-            total = loss_prediction + loss_reward + loss_value + loss_observation
+            total = sum(losses.values())
 
         if not torch.isfinite(total):
             raise FloatingPointError(
-                f"Non-finite loss: prediction={loss_prediction.item()}, reward={loss_reward.item()}, "
-                f"value={loss_value.item()}, observation={loss_observation.item()}")
+                "Non-finite loss: " + ", ".join(f"{name}={loss.item()}" for name, loss in losses.items()))
 
         self.optimizer.zero_grad(set_to_none=True)
         total.backward()
         torch.nn.utils.clip_grad_norm_(self.parameters, self.config.grad_clip_norm)
         self.optimizer.step()
-        self.world_model.update_target()
+        if self.jepa is not None:
+            self.jepa.update_target()
         ema_update(self.target_value_head, self.value_head, self.config.value_target_momentum)
 
         with torch.no_grad():
@@ -197,10 +232,7 @@ class WorldModelTrainer:
 
         return {
             "loss_total": total.item(),
-            "loss_prediction": loss_prediction.item(),
-            "loss_reward": loss_reward.item(),
-            "loss_value": loss_value.item(),
-            "loss_observation": loss_observation.item(),
+            **{f"loss_{name}": loss.item() for name, loss in losses.items()},
             "value_target_mean": targets_value.mean().item(),
             "value_abs_error": value_error.item(),
         }

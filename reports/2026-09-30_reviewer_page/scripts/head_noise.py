@@ -22,7 +22,7 @@ for seed in range(5):
         if nets is not None:
             for n, net in t.run.networks.items():
                 net.load_state_dict(nets[n])
-        ds = build_probe_dataset(t.pomdp, t.run.world_model.belief_filter, ep)
+        ds = build_probe_dataset(t.pomdp, t.run.belief_filter, ep)
         z, b = ds.latents, ds.posteriors
         p = b[:, 0]
         with torch.no_grad():

@@ -40,7 +40,7 @@ from ..domain import BatchedPOMDPEnv, FinitePOMDP, action_value_functions, build
 from ..interpretability import BeliefAnalysis, analyze_beliefs, build_probe_dataset
 from ..planning import BeliefTreeSearch
 from ..telemetry import BeliefGeometryVisualizer
-from ..training import RunConfig, TrainerConfig, TrainingRun, load_checkpoint, play_episodes, stream_seed
+from ..training import Representation, RunConfig, TrainerConfig, TrainingRun, load_checkpoint, play_episodes, stream_seed
 
 # Domains selectable through conf/env/<name>.yaml. Each builder returns the exact model.
 DOMAIN_BUILDERS = {"tiger": build_tiger_pomdp}
@@ -53,7 +53,8 @@ def build_run_config(cfg: DictConfig) -> RunConfig:
         seed=cfg.seed, episode_length=cfg.env.max_steps, env_batch_size=t.env_batch_size,
         warmup_episodes=t.warmup_episodes, buffer_capacity=t.buffer_capacity, batch_size=t.batch_size,
         updates_per_collection=t.updates_per_collection, eval_episodes=t.eval_episodes,
-        latent_dim=m.latent_dim, hidden_dim=m.hidden_dim, num_blocks=m.num_blocks, ema_momentum=m.ema_momentum,
+        latent_dim=m.latent_dim, hidden_dim=m.hidden_dim, num_blocks=m.num_blocks,
+        representation=Representation(m.representation), ema_momentum=m.ema_momentum,
         acting_ema_momentum=m.acting_ema_momentum,
         num_bins=m.num_bins, trainer=TrainerConfig(**cfg.trainer), num_simulations=s.num_simulations,
         c_puct=s.c_puct, dirichlet_alpha=s.dirichlet_alpha, dirichlet_epsilon=s.dirichlet_epsilon,
@@ -85,7 +86,7 @@ def load_trained_run(run_dir: Path, device: torch.device) -> TrainedRun:
     best = load_checkpoint(run_dir / "checkpoints" / "best.pt")
     for name, net in run.networks.items():
         net.load_state_dict(best["networks"][name])
-    run.world_model.eval()
+    run.belief_filter.eval()
     return TrainedRun(run_dir, cfg, pomdp, run, best["collection"], best["eval_return"])
 
 

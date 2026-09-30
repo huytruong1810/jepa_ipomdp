@@ -57,7 +57,9 @@ The three scripts are thin shells over `ipomdp.experiments`; no script imports a
   - two-hot value regressing the **Bellman optimality backup through the learned model**, `max_a [R + γ Σ_o P(o) V̄(τ)]`, computed with the planner's own `LearnedSearchModel.expand` and an EMA target value head;
   - observation cross-entropy.
 
-  Value and observation heads read **detached** latents. Self-referential Bellman targets otherwise collapse the representation. TD(λ) targets were removed because they estimate the noisy exploring policy's value, which made the greedy agent listen forever.
+  `model.representation=decoder` is the chosen baseline: no JEPA parts (`jepa=None`), and the observation cross-entropy reaches the filter instead (`trainer.py`, section 2b).
+
+  Value and observation heads read **detached** latents (JEPA mode). Self-referential Bellman targets otherwise collapse the representation. TD(λ) targets were removed because they estimate the noisy exploring policy's value, which made the greedy agent listen forever.
 - The design follows from studies recorded in module headers. Pure JEPA gives no belief without reward grounding, and VICReg hurts (`world_model.py`, sections 3 and 5). The stochastic latent transition imagined biased beliefs and was removed.
 - **Planning imagines by observation branching:** sample `o' ~ ObservationHead(z, a)`, then `z' = BeliefFilter.step(z, a, o')`. Imagined latents stay on the filter's manifold.
 - Heads (`models/heads.py`): value, reward and observation. `TwoHotSymlog` (`models/distributions.py`) is one shared instance injected into trainer and planner. Its bins are symlog-spaced real values bounded by `FinitePOMDP.value_bound` = max|R|/(1−γ). Encoding and decoding are linear in real space, so means are unbiased. The old symlog-space decoding turned Tiger's −100/+10 door gamble (mean −45) into −2.9.

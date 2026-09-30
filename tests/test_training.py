@@ -6,7 +6,7 @@ import torch
 
 from ipomdp.domain import BatchedPOMDPEnv, build_tiger_pomdp
 from ipomdp.models import BeliefFilter, LatentPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueHead
-from ipomdp.training import EpisodeBatch, EpisodeBuffer, TrainerConfig, WorldModelTrainer
+from ipomdp.training import EpisodeBatch, EpisodeBuffer, Representation, TrainerConfig, WorldModelTrainer
 
 CPU = torch.device("cpu")
 A, O, D, H, T = 3, 2, 16, 32, 6
@@ -27,10 +27,12 @@ def _episodes(batch: int, seed: int, device: torch.device = CPU) -> EpisodeBatch
     return EpisodeBatch(torch.stack(actions, 1), torch.stack(observations, 1), torch.stack(rewards, 1))
 
 
-def _trainer(device: torch.device = CPU) -> WorldModelTrainer:
+def _trainer(device: torch.device = CPU, representation: Representation = Representation.JEPA) -> WorldModelTrainer:
     torch.manual_seed(0)
-    world_model = RecurrentJEPA(BeliefFilter(A, O, D, H, 1), LatentPredictor(D, A, H, 1), 0.99)
-    return WorldModelTrainer(world_model.to(device), ValueHead(D, H, 1, 255).to(device),
+    belief_filter = BeliefFilter(A, O, D, H, 1).to(device)
+    jepa = (RecurrentJEPA(belief_filter, LatentPredictor(D, A, H, 1), 0.99).to(device)
+            if representation is Representation.JEPA else None)
+    return WorldModelTrainer(belief_filter, jepa, ValueHead(D, H, 1, 255).to(device),
                              RewardHead(D, A, H, 1, 255).to(device), ObservationHead(D, A, O, H, 1).to(device),
                              TwoHotSymlog(255, 2000.0).to(device), A, O, discount=0.95, config=CONFIG, device=device)
 
@@ -70,7 +72,7 @@ class TestWorldModelTrainer:
         # V_target(z) = max_a [R(z,a) + gamma sum_o P(o|z,a) V-bar(tau(z,a,o))], computed by hand.
         trainer = _trainer()
         latents = torch.randn(5, D)
-        codec, filt = trainer.twohot, trainer.world_model.belief_filter
+        codec, filt = trainer.twohot, trainer.belief_filter
         expected = []
         with torch.no_grad():
             for a in range(A):
@@ -92,7 +94,7 @@ class TestWorldModelTrainer:
 
     def test_train_step_updates_parameters_and_target(self):
         trainer = _trainer()
-        filt, target = trainer.world_model.belief_filter, trainer.world_model.target_filter
+        filt, target = trainer.belief_filter, trainer.jepa.target_filter
         before = [p.clone() for p in filt.parameters()]
         target_before = [p.clone() for p in target.parameters()]
         metrics = trainer.train_step(_episodes(8, 0))
@@ -114,13 +116,42 @@ class TestWorldModelTrainer:
         batch = _episodes(4, 0)
         actions = torch.nn.functional.one_hot(batch.actions, A).float()
         observations = torch.nn.functional.one_hot(batch.observations, O).float()
-        latents = trainer.world_model.belief_filter.unroll(actions, observations)[:, :-1].reshape(-1, D)
+        latents = trainer.belief_filter.unroll(actions, observations)[:, :-1].reshape(-1, D)
         logits = trainer.observation_head(latents.detach(), actions.reshape(-1, A))
         torch.nn.functional.cross_entropy(logits, batch.observations.reshape(-1)).backward()
-        assert all(p.grad is None for p in trainer.world_model.belief_filter.parameters())
+        assert all(p.grad is None for p in trainer.belief_filter.parameters())
+
+    def test_jepa_must_wrap_the_trained_filter(self):
+        belief_filter = BeliefFilter(A, O, D, H, 1)
+        foreign = RecurrentJEPA(BeliefFilter(A, O, D, H, 1), LatentPredictor(D, A, H, 1), 0.99)
+        with pytest.raises(ValueError):
+            WorldModelTrainer(belief_filter, foreign, ValueHead(D, H, 1, 255), RewardHead(D, A, H, 1, 255),
+                              ObservationHead(D, A, O, H, 1), TwoHotSymlog(255, 2000.0), A, O, 0.95, CONFIG, CPU)
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
     def test_train_step_on_cuda_with_bfloat16_autocast(self):
         trainer = _trainer(torch.device("cuda"))
         metrics = trainer.train_step(_episodes(8, 0, torch.device("cuda")))
         assert all(torch.isfinite(torch.tensor(v)) for v in metrics.values())
+
+
+class TestDecoderBaseline:
+    """Section 2b of training/trainer.py: the observation head shapes the filter; no JEPA parts."""
+
+    def test_no_jepa_parts_and_no_prediction_loss(self):
+        trainer = _trainer(representation=Representation.DECODER)
+        assert trainer.jepa is None and trainer.representation is Representation.DECODER
+        metrics = trainer.train_step(_episodes(8, 0))
+        assert "loss_prediction" not in metrics
+        assert {"loss_reward", "loss_value", "loss_observation"} <= metrics.keys()
+        assert all(torch.isfinite(torch.tensor(v)) for v in metrics.values())
+
+    def test_observation_likelihood_reaches_the_filter(self):
+        # With zero rewards the reward term cannot move the filter on the first step (its final
+        # layer is zero-initialised, so no gradient flows back into the latent). Without a JEPA
+        # term, any filter gradient must then come from the observation cross-entropy.
+        trainer = _trainer(representation=Representation.DECODER)
+        batch = _episodes(4, 0)
+        trainer.optimizer.step = lambda: None  # inspect the gradients, keep the weights
+        trainer.train_step(EpisodeBatch(batch.actions, batch.observations, torch.zeros_like(batch.rewards)))
+        assert sum(float(p.grad.abs().sum()) for p in trainer.belief_filter.parameters()) > 0.0

@@ -38,6 +38,8 @@ Whole episodes are unrolled and trained with the following terms:
 | observation cross-entropy, on detached latents | P(o′ \| z, a) for planning |
 | two-hot value regressing `max_a [R + γ Σ_o P(o) V̄(τ(z,a,o))]` through the learned model, EMA target head, detached latents | V for search leaves |
 
+**Decoder baseline** (`model.representation=decoder`): the JEPA term, predictor and EMA target filter are removed, and the observation head's next-observation cross-entropy shapes the filter instead (its gradients are not detached). Everything else is identical, so comparing the two isolates what replacing observation reconstruction with latent self-prediction buys.
+
 The two-hot codec decodes linearly in real space over symlog-spaced bins bounded by max|R|/(1−γ), so its means are unbiased.
 
 Findings that shaped this design are recorded in the module headers. For example, pure JEPA learns no belief without reward grounding. VICReg hurts. TD(λ) value targets make the greedy agent listen forever. Bellman targets with gradients into the filter collapse the representation.
@@ -90,6 +92,7 @@ The project uses [uv](https://docs.astral.sh/uv/) with Python 3.12 and CUDA 12.8
 uv run main.py                                   # train (Hydra); writes runs/<env>/<timestamp>_seed<seed>/
 uv run main.py seed=1 training.total_episodes=1280 mcts.num_simulations=20   # any config key can be overridden
 uv run main.py resume=runs/tiger/<run>/checkpoints/latest.pt                 # continue a run bit-for-bit
+uv run main.py model.representation=decoder                                 # the decoder baseline
 
 uv run analyze.py runs/tiger/<run>               # probes, bounds, returns, geometry -> <run>/analysis/
 uv run sweep.py <name> --seeds 0,1,2,3,4 [overrides ...]   # train + analyse each seed, 95% CIs -> runs/sweeps/<name>/
@@ -122,7 +125,7 @@ Every source file opens with a `DESIGN DECISIONS & THEORETICAL FOUNDATIONS` bloc
 
 ## Roadmap
 
-1. Multi-seed canonical Tiger, with confidence intervals on all of the results above.
-2. A baseline comparison.
+1. Multi-seed canonical Tiger, with confidence intervals on all of the results above (done).
+2. A baseline comparison against the decoder world model (in progress).
 3. Multi-agent Tiger, once its exact tables have been verified against Gmytrasiewicz & Doshi.
 4. I-POMDP levels, by folding a finite set of opponent models into the state (S × M_j). The same env, filter and solver then apply.

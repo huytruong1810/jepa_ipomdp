@@ -8,7 +8,7 @@ import torch
 
 from ipomdp.domain import build_tiger_pomdp
 from ipomdp.models import ema_update
-from ipomdp.training import (RunConfig, RunStream, TrainerConfig, TrainingRun, load_checkpoint, save_checkpoint,
+from ipomdp.training import (Representation, RunConfig, RunStream, TrainerConfig, TrainingRun, load_checkpoint, save_checkpoint,
                              stream_seed)
 
 CPU = torch.device("cpu")
@@ -17,7 +17,8 @@ CPU = torch.device("cpu")
 def _config(**overrides) -> RunConfig:
     values = dict(
         seed=7, episode_length=8, env_batch_size=4, warmup_episodes=4, buffer_capacity=64, batch_size=4,
-        updates_per_collection=2, eval_episodes=4, latent_dim=8, hidden_dim=16, num_blocks=1, ema_momentum=0.99,
+        updates_per_collection=2, eval_episodes=4, latent_dim=8, hidden_dim=16, num_blocks=1,
+        representation=Representation.JEPA, ema_momentum=0.99,
         acting_ema_momentum=0.9,
         num_bins=255, trainer=TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0,
                                             value_target_momentum=0.99),
@@ -50,18 +51,19 @@ class TestTrainingRun:
         fractions = [v for k, v in evaluation.items() if k.startswith("eval_action_fraction/")]
         assert sum(fractions) == pytest.approx(1.0)
 
-    def test_resume_continues_bit_for_bit(self, tmp_path: Path):
+    @pytest.mark.parametrize("representation", list(Representation))
+    def test_resume_continues_bit_for_bit(self, tmp_path: Path, representation: Representation):
         pomdp = build_tiger_pomdp()
-        uninterrupted = TrainingRun(pomdp, _config(), CPU)
+        uninterrupted = TrainingRun(pomdp, _config(representation=representation), CPU)
         reference = [uninterrupted.collect_and_train() for _ in range(4)]
         reference_eval = uninterrupted.evaluate()
 
-        first_half = TrainingRun(pomdp, _config(), CPU)
+        first_half = TrainingRun(pomdp, _config(representation=representation), CPU)
         for _ in range(2):
             first_half.collect_and_train()
         save_checkpoint(tmp_path / "latest.pt", first_half.state_dict())
 
-        resumed = TrainingRun(pomdp, _config(seed=123), CPU)  # different init, fully overwritten by the checkpoint
+        resumed = TrainingRun(pomdp, _config(seed=123, representation=representation), CPU)  # different init, fully overwritten by the checkpoint
         resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
         continued = [resumed.collect_and_train() for _ in range(2)]
         assert continued == reference[2:]
@@ -80,6 +82,22 @@ class TestTrainingRun:
         resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
         assert resumed.collection == 1
         resumed.collect_and_train()
+
+
+class TestRepresentation:
+    """training/run.py, section 5: the decoder baseline builds no JEPA parts; all else is shared."""
+
+    def test_decoder_run_has_no_jepa_parts(self):
+        run = TrainingRun(build_tiger_pomdp(), _config(representation=Representation.DECODER), CPU)
+        assert run.jepa is None and "world_model" not in run.networks and "belief_filter" in run.networks
+        assert run.trainer.belief_filter is run.belief_filter
+        assert "loss_prediction" not in run.collect_and_train()
+
+    def test_same_seed_gives_the_same_initial_filter(self):
+        jepa = TrainingRun(build_tiger_pomdp(), _config(), CPU)
+        decoder = TrainingRun(build_tiger_pomdp(), _config(representation=Representation.DECODER), CPU)
+        assert jepa.jepa.belief_filter is jepa.belief_filter
+        assert all(torch.equal(p, q) for p, q in zip(jepa.belief_filter.parameters(), decoder.belief_filter.parameters()))
 
 
 class TestCheckpointFiles:
