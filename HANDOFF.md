@@ -116,6 +116,11 @@ Rules the user set:
   - The exact margin Q*(door) − Q*(listen) there is only **+0.70**. The observation head is essentially exact (KL ≈ 0.002). The margin is flipped by the reward head (correct-door error −1.79) and a belief-dependent value bias (+0.5 at confident beliefs up to +2.6 at b = 0.5). The search cannot repair a root-edge reward error.
   - **The head errors are optimisation noise, not bias.** Between best.pt and latest.pt, door-reward and value errors at decision-relevant beliefs move by 1–3 with sign changes: seed 1 from −1.76 to +0.19, seed 2 from +0.48 to −2.79 (its evaluation dip to 14.58 at collection 40), seed 3 from −0.66 to +0.91.
   - The late-run evaluation dips have the same cause. The constant learning rate on high-variance bimodal door rewards (−100/+10) and bootstrapped values makes the heads jitter by more than the 0.70 decision margin.
+- **Polyak-averaged acting weights (`430f20c`), interim result on seeds 1 and 2** (`runs/sweeps/polyak`):
+  - Learned planner gap to optimal: seed 1 went from −1.97 to −0.015, seed 2 from −0.04 to −0.019.
+  - Cost: escape from always-listen moved from collection 10 to collection 15, the averaging lag.
+  - Correction to the "late dips" reading: a 128-episode in-training evaluation has a standard error of about 2.8 (per-episode return std ≈ 31), so scores of 13–24 are within noise of the optimum. Only seed 1's 11.4 at collection 30 of `default` stood out. The in-training evaluation is too noisy to diagnose dips; the analysis's common-episode gaps are the reliable measure.
+  - Running now: seeds 0, 3 and 4, extending `polyak` to 5 seeds.
 - The seed-0 numbers below predate the seeding fix and are kept for history.
 
 
