@@ -111,6 +111,11 @@ Rules the user set:
   - Every seed escaped always-listen by collection 10 (seed 4: 15).
   - The biased training selection score was 22.01 ± 2.26, against an unbiased 17.96 ± 1.02 for the same checkpoints.
   - Late-run evaluation dips persist: seed 1 scored 11.40 at collection 30, seed 2 scored 14.58 at collection 40. The final checkpoint is not the best one.
+- **Where the planner loses return (Phase 8 diagnosis, 2026-09-29):** a scratch script replayed greedy episodes with exact beliefs tracked alongside.
+  - Seed 1's entire shortfall is one decision. At posterior 0.97/0.03 (two net growls) it LISTENs instead of opening the correct door, at 18% of steps, with regret ≈ 0.7 each.
+  - The exact margin Q*(door) − Q*(listen) there is only **+0.70**. The observation head is essentially exact (KL ≈ 0.002). The margin is flipped by the reward head (correct-door error −1.79) and a belief-dependent value bias (+0.5 at confident beliefs up to +2.6 at b = 0.5). The search cannot repair a root-edge reward error.
+  - **The head errors are optimisation noise, not bias.** Between best.pt and latest.pt, door-reward and value errors at decision-relevant beliefs move by 1–3 with sign changes: seed 1 from −1.76 to +0.19, seed 2 from +0.48 to −2.79 (its evaluation dip to 14.58 at collection 40), seed 3 from −0.66 to +0.91.
+  - The late-run evaluation dips have the same cause. The constant learning rate on high-variance bimodal door rewards (−100/+10) and bootstrapped values makes the heads jitter by more than the 0.70 decision margin.
 - The seed-0 numbers below predate the seeding fix and are kept for history.
 
 
