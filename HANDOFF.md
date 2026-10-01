@@ -34,13 +34,14 @@ The project gate was that the learned agent must match the exact solver on canon
 
 ## 3. Current state
 
-- **Git:** `main` is pushed through `065b1c1`. The HANDOFF, CLAUDE.md and `reports/` commit that follows it is local; ask before pushing.
+- **Git:** `main` is pushed through `18f7454`. `d8871f1` (decoder baseline) and the HANDOFF commit after it are local; ask before pushing.
 - **Review phases:** 1 domain, 2 JEPA filter, 3 DreamerV3 parts, 4 planner/agent, 5 training loop, 6 interpretability, 7 scripts/layout: all done. 8 holistic: consistency review done, multi-seed validation done, remaining items in section 6.
 - **Tests:** the fast suite passes (123 at `430f20c`).
-  - The slow suite (`uv run pytest -m slow`, about 25 min on GPU) last passed at Phase 6.
-  - Phase 8 changed seeding and added Polyak acting weights inside `TrainingRun`. The acceptance test builds its components directly, so it is probably unaffected, but **it has not been rerun since Phase 8**. Rerun it once.
+  - The fast suite passes (129) at `d8871f1`.
+  - The slow suite (`uv run pytest -m slow`) passed 7/7 on 2026-09-30 at `18f7454` (post-Phase 8). It took 1 h 56 min under `ipomcp` load; about 25 min on an idle machine.
 - **Runs:**
-  - `runs/sweeps/default` and `runs/sweeps/polyak`: 5 seeds each, default config.
+  - **`runs/sweeps/decoder` is running** (launched 2026-09-30 19:44, detached; log `runs/sweeps/decoder.log`): the decoder baseline, `model.representation=decoder`, seeds 0–4. Re-running `uv run sweep.py decoder --seeds 0,1,2,3,4 model.representation=decoder` continues it if interrupted. Expect about 1 h per seed on an idle machine, more under `ipomcp` load.
+  - `runs/sweeps/default` and `runs/sweeps/polyak`: 5 seeds each, default config. Their saved `.hydra/config.yaml` files gained `representation: jepa` (what they were trained with) so they reload after the switch was added; `runs/` is untracked.
   - `polyak` is the current method and the numbers to cite.
   - Older `runs/tiger/phase5_*` runs predate the seeding fix and are not reproducible from their seed.
 - **Reviewer page:** https://claude.ai/artifact/Rboz6xV7xA7Ejrjomy4As5 (private, owner-shared). Reviewers loved it. Its source, data and generating scripts are in `reports/2026-09-30_reviewer_page/` (see its README).
@@ -81,6 +82,22 @@ All agents play the same 512 held-out episodes. The paired gap to the optimal ag
 - **Before Polyak averaging** (`runs/sweeps/default`): planner gap −0.51 ± 1.02, and seed 1 lost 1.97. The training-time `best.pt` score overstates performance (22.0 against an unbiased 18.0 for the same checkpoints).
 - **Exact references:** V_h(b₀) = −1, −1.95, 2.3098, 1.7955, 2.7631 for h = 1..5; V*(b₀) = 19.3713.
 
+## 4b. Baseline: decoder world model (in progress)
+
+The user chose the decoder baseline (2026-09-30): `model.representation=decoder` (`training/trainer.py`, section 2b). There is no JEPA predictor or EMA target filter, and the planner's observation head P(o′|z,a) is the decoder, with its cross-entropy flowing into the filter. Reward grounding, the detached value head, Polyak acting copies and the search are unchanged. Reconstructing the current o_t (the DreamerV3 decoder) was rejected because the GRU has just read o_t and could satisfy it by copying.
+
+Small-scale check: acceptance protocol, same seed and code for both conditions (`train_and_measure(representation)`). This is a single seed and off-policy, so it is not a result to cite:
+
+| | JEPA | Decoder |
+|---|---|---|
+| Linear / MLP probe KL | 0.0006 / 4.1e-5 | 0.0016 / 6.7e-5 |
+| Door-reward error | 0.88, 4.10 | 1.86, 1.01 |
+| Observation KL (listen) | 5.6e-4 | 3.8e-4 |
+| Mean \|V − V*\| | 6.39 | 0.85 |
+| Greedy planner return (V* = 19.28) | 21.56 ± 1.65 | 21.85 ± 1.63 |
+
+The decoder passes every threshold of the JEPA gate. The large value-error gap is unexplained and worth a look once the sweep reports. The user deferred the hybrid condition (JEPA + observation gradients) and wants it only if the two baselines come out close.
+
 ## 5. History (commit, then the gist)
 
 - `ba1d3fc`, **Phase 1:** canonical Tiger rebuilt as the single source of truth (the old one had a free t = 0 observation, informative post-door growls and γ = 0.99). Added the exact Bayes filter, the certified alpha-vector solver and a seeded batched env.
@@ -106,15 +123,14 @@ All agents play the same 512 held-out episodes. The paired gap to the optimal ag
   - Diagnosis: head optimisation noise flipped the 0.70-margin decision.
   - Fix: **Polyak-averaged acting weights** (`model.acting_ema_momentum = 0.99`), shared EMA helpers in `models/ema.py`.
   - The `polyak` sweep result.
-- Final commit of this session: this HANDOFF, CLAUDE.md, and `reports/2026-09-30_reviewer_page/` (page source, data, scripts).
+- `18f7454`: HANDOFF, CLAUDE.md, and `reports/2026-09-30_reviewer_page/` (page source, data, scripts).
+- `d8871f1`: decoder baseline (`model.representation`); `WorldModelTrainer(belief_filter, jepa | None, ...)`.
 
 ## 6. Next actions (in order)
 
-1. **Ask before pushing** the final commit of this session.
-2. **Rerun the slow suite once** (`uv run pytest -m slow`, about 25 min, idle GPU) to confirm Phase 8 did not disturb the acceptance gate.
-3. **Baseline comparison. The user must choose the baseline first; ask them.** Both options reuse `sweep.py` and cost about 5 GPU-hours per 5-seed condition.
-   - *Recommended:* a **decoder-based world model**: the same filter, heads and search, with the representation trained by next-observation reconstruction instead of JEPA. This isolates exactly what dropping the decoder buys.
-   - *Alternative:* a model-free recurrent Q-learner (answers whether planning helps at all).
+1. **Ask before pushing** `d8871f1` and the HANDOFF commit.
+2. **Finish the decoder sweep** (section 4b). Then aggregate (`runs/sweeps/decoder/aggregate.json`), compare it with `polyak` on the paired gaps, probes and policy agreement, report plainly, and ask the user about the hybrid condition and a reviewer-page update.
+3. Model-free recurrent Q-learner baseline: not chosen yet; offer it once the decoder comparison is in.
 4. **Small open questions worth one run each:**
    - **Observation-head detach ablation.** The observation head reads detached latents by design, never by measurement. One acceptance-protocol run with gradients allowed would settle it (about 25 min).
    - **Polyak momentum.** 0.99 delays the escape from always-listen by about 5 collections. Try 0.98 on seeds 1–2 as a cheap check. Ask before changing the default.
