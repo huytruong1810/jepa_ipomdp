@@ -40,7 +40,7 @@ The project gate was that the learned agent must match the exact solver on canon
   - The fast suite passes (129) at `d8871f1`.
   - The slow suite (`uv run pytest -m slow`) passed 7/7 on 2026-09-30 at `18f7454` (post-Phase 8). It took 1 h 56 min under `ipomcp` load; about 25 min on an idle machine.
 - **Runs:**
-  - **`runs/sweeps/decoder` is running** (launched 2026-09-30 19:44, detached; log `runs/sweeps/decoder.log`): the decoder baseline, `model.representation=decoder`, seeds 0–4. Re-running `uv run sweep.py decoder --seeds 0,1,2,3,4 model.representation=decoder` continues it if interrupted. Expect about 1 h per seed on an idle machine, more under `ipomcp` load.
+  - `runs/sweeps/decoder`: the decoder baseline (`model.representation=decoder`), seeds 0–4, finished 2026-10-01 at about 1 h 7 min per seed under `ipomcp` load. Results are in section 4b.
   - `runs/sweeps/default` and `runs/sweeps/polyak`: 5 seeds each, default config. Their saved `.hydra/config.yaml` files gained `representation: jepa` (what they were trained with) so they reload after the switch was added; `runs/` is untracked.
   - `polyak` is the current method and the numbers to cite.
   - Older `runs/tiger/phase5_*` runs predate the seeding fix and are not reproducible from their seed.
@@ -82,7 +82,7 @@ All agents play the same 512 held-out episodes. The paired gap to the optimal ag
 - **Before Polyak averaging** (`runs/sweeps/default`): planner gap −0.51 ± 1.02, and seed 1 lost 1.97. The training-time `best.pt` score overstates performance (22.0 against an unbiased 18.0 for the same checkpoints).
 - **Exact references:** V_h(b₀) = −1, −1.95, 2.3098, 1.7955, 2.7631 for h = 1..5; V*(b₀) = 19.3713.
 
-## 4b. Baseline: decoder world model (in progress)
+## 4b. Baseline: decoder world model (done 2026-10-01: indistinguishable from JEPA on Tiger)
 
 The user chose the decoder baseline (2026-09-30): `model.representation=decoder` (`training/trainer.py`, section 2b). There is no JEPA predictor or EMA target filter, and the planner's observation head P(o′|z,a) is the decoder, with its cross-entropy flowing into the filter. Reward grounding, the detached value head, Polyak acting copies and the search are unchanged. Reconstructing the current o_t (the DreamerV3 decoder) was rejected because the GRU has just read o_t and could satisfy it by copying.
 
@@ -96,7 +96,22 @@ Small-scale check: acceptance protocol, same seed and code for both conditions (
 | Mean \|V − V*\| | 6.39 | 0.85 |
 | Greedy planner return (V* = 19.28) | 21.56 ± 1.65 | 21.85 ± 1.63 |
 
-The decoder passes every threshold of the JEPA gate. The large value-error gap is unexplained and worth a look once the sweep reports. The user deferred the hybrid condition (JEPA + observation gradients) and wants it only if the two baselines come out close.
+The decoder passes every threshold of the JEPA gate. The value-error gap in this check (0.85 vs 6.39) is unexplained; it did not carry over to any policy-level difference in the sweep.
+
+**5-seed result** (`runs/sweeps/decoder` against `runs/sweeps/polyak`; same 512 held-out analysis episodes; Student-t 95% intervals):
+
+| | JEPA (`polyak`) | Decoder |
+|---|---|---|
+| Learned planner − optimal | −0.03 ± 0.06 | +0.06 ± 0.12 (per seed +0.07, +0.22, +0.02, −0.03, +0.03) |
+| MLP-decoded agent − optimal | −0.23 ± 0.53 | −0.10 ± 0.76 |
+| Linear probe KL (random / agent histories) | 0.0011 / 0.0005 | 0.0007 / 0.0005 |
+| MLP probe suboptimal decisions | 0.15% | 0.07% |
+| Linear probe suboptimal decisions | 1.26% | 1.71% |
+| Minimality ratio | 0.27 ± 0.03 | 0.31 ± 0.04 |
+
+- Every interval overlaps. On canonical Tiger, **JEPA buys nothing measurable over a next-observation decoder**: both reach the exact optimum, both latents are belief-sufficient, and neither is linearly sufficient.
+- The decoder escapes always-listen somewhat earlier. At collection 10, 4 of 5 decoder seeds had left −19.88 against 1 of 5 JEPA seeds. From collection 20 the in-training evaluations of the two conditions agree within noise, and at collections 35–40 within 0.05, since both play the optimal policy on the same evaluation episodes.
+- Interpretation (a hypothesis, not tested): Tiger's observation is one bit, so predicting it costs nothing and is itself a belief-sufficient target (P(o′|b, listen) is monotone in b). Separating JEPA from a decoder needs observations that are expensive or distracting to reconstruct. Tiger has a ceiling effect, so the hybrid condition cannot be informative on it either.
 
 ## 5. History (commit, then the gist)
 
@@ -129,7 +144,7 @@ The decoder passes every threshold of the JEPA gate. The large value-error gap i
 ## 6. Next actions (in order)
 
 1. **Ask before pushing** `d8871f1` and the HANDOFF commit.
-2. **Finish the decoder sweep** (section 4b). Then aggregate (`runs/sweeps/decoder/aggregate.json`), compare it with `polyak` on the paired gaps, probes and policy agreement, report plainly, and ask the user about the hybrid condition and a reviewer-page update.
+2. **Decoder baseline: done** (section 4b; no measurable difference). Ask the user what follows: the hybrid condition (not recommended on Tiger because of the ceiling effect), a reviewer-page update, or moving on.
 3. Model-free recurrent Q-learner baseline: not chosen yet; offer it once the decoder comparison is in.
 4. **Small open questions worth one run each:**
    - **Observation-head detach ablation.** The observation head reads detached latents by design, never by measurement. One acceptance-protocol run with gradients allowed would settle it (about 25 min).
