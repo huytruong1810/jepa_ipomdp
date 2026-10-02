@@ -60,8 +60,8 @@ class AlphaVectorAgent:
     """Exact belief + argmax over the precomputed per-action Q* vectors (the solver's policy)."""
     def __init__(self):
         self.batch_size = B
-        self.reset()
-    def reset(self):
+        self.reset(None)
+    def reset(self, initial_observation):
         self.b = initial_beliefs(pomdp, B, d)
     def act(self):
         return q_values(Q, self.b.cpu()).argmax(-1).to(d)
@@ -84,7 +84,7 @@ for name, make in ([] if CACHE.exists() else configs.items()):
                                      "ms_per_decision": 1000 * seconds / (B * STEPS)}
     print(name, runtime["per_decision"][name], flush=True)
 # learned filter step alone (the belief update the agent performs each step)
-z = learned.initial_states(B)
+z = learned.initial_states(B, None)
 a = torch.zeros(B, dtype=torch.int64, device=d); o = torch.zeros(B, dtype=torch.int64, device=d)
 secs = timed(lambda: [learned.update(z, a, o) for _ in range(1000)], repeats=3)
 bb = initial_beliefs(pomdp, B, d)
@@ -107,7 +107,7 @@ env = BatchedPOMDPEnv(pomdp, NE, 100, stream_seed(9001, 1), d)
 agent = PlanningAgent(learned, BeliefTreeSearch(learned, cfg.mcts.num_simulations, cfg.mcts.c_puct,
                                                 cfg.mcts.dirichlet_alpha, 0.0, stream_seed(9001, 2)), NE, 0.0,
                       stream_seed(9001, 3), d)
-env.reset(); agent.reset()
+agent.reset(env.reset())
 b = initial_beliefs(pomdp, NE, d)
 zs, bs, acts, obs, rews, states = [agent.state.clone()], [b[:, 0].clone()], [], [], [], [env.state]
 for _ in range(100):

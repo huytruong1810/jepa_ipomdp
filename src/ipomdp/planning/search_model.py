@@ -26,8 +26,9 @@
 #         Q(s, a) = R(s, a) + gamma * sum_o P(o | s, a) V(tau(s, a, o))
 #
 # 3. Belief Tracking Uses the Same Model:
-#    - initial_states(B) and update(states, a, o) are the model's filter: exact Bayes for the
-#      exact model, BeliefFilter for the learned one. The agent therefore plans from exactly the
+#    - initial_states(B, o_0) and update(states, a, o) are the model's filter: exact Bayes for
+#      the exact model, BeliefFilter for the learned one. o_0 is None for domains without an
+#      initial observation (a FinitePOMDP never has one; models/world_model.py section 1). The agent therefore plans from exactly the
 #      state representation it tracks.
 #
 # 4. Precision:
@@ -66,8 +67,8 @@ class SearchModel(Protocol):
     num_observations: int
     discount: float
 
-    def initial_states(self, batch_size: int) -> Tensor:
-        """States representing the prior, shape (B, ...)."""
+    def initial_states(self, batch_size: int, initial_observations: Tensor | None) -> Tensor:
+        """States representing the prior (conditioned on o_0, int64 (B,), if given), shape (B, ...)."""
         ...
 
     def update(self, states: Tensor, actions: Tensor, observations: Tensor) -> Tensor:
@@ -99,7 +100,9 @@ class ExactSearchModel:
         self._observation = model.observation.to(device)
         self._transition = model.transition.to(device)
 
-    def initial_states(self, batch_size: int) -> Tensor:
+    def initial_states(self, batch_size: int, initial_observations: Tensor | None) -> Tensor:
+        if initial_observations is not None:
+            raise ValueError("A FinitePOMDP emits no initial observation.")
         return initial_beliefs(self.model, batch_size, self.device)
 
     def update(self, states: Tensor, actions: Tensor, observations: Tensor) -> Tensor:
@@ -148,8 +151,10 @@ class LearnedSearchModel:
         self.discount = discount
 
     @torch.no_grad()
-    def initial_states(self, batch_size: int) -> Tensor:
-        return self.belief_filter.initial(batch_size).clone()
+    def initial_states(self, batch_size: int, initial_observations: Tensor | None) -> Tensor:
+        onehot = (None if initial_observations is None
+                  else F.one_hot(initial_observations, self.num_observations).float())
+        return self.belief_filter.start(batch_size, onehot).clone()
 
     @torch.no_grad()
     def update(self, states: Tensor, actions: Tensor, observations: Tensor) -> Tensor:

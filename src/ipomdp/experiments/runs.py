@@ -14,6 +14,11 @@
 #    - DOMAIN_BUILDERS and build_run_config were private to main.py, and analyze.py imported the
 #      training script to reach them. They live here so that every entry point (train, analyse,
 #      sweep) rebuilds a run identically and no script imports another script.
+#    - DOMAIN_BUILDERS maps conf/env/<name>.yaml to a DomainSetup (training/run.py, section 6):
+#      canonical Tiger is its exact FinitePOMDP sampled by BatchedPOMDPEnv; Wumpus World is
+#      the generative WumpusSimulator, summarised by its win/death rates. analyze_run is the
+#      Tiger analysis (it needs the exact solver); Wumpus runs are analysed by
+#      experiments/wumpus.py.
 #
 # 3. Analysis Uses Fresh Seeds, Not the Training Evaluation:
 #    - best.pt is the checkpoint with the highest greedy evaluation during training. That score
@@ -36,14 +41,32 @@ from omegaconf import DictConfig, OmegaConf
 import torch
 
 from ..agents import PlanningAgent, UniformRandomAgent
-from ..domain import BatchedPOMDPEnv, FinitePOMDP, action_value_functions, build_tiger_pomdp, solve_infinite_horizon
-from ..interpretability import BeliefAnalysis, analyze_beliefs, build_probe_dataset
+from ..domain import (BatchedPOMDPEnv, FinitePOMDP, WumpusSimulator, WumpusWorld, action_value_functions,
+                      build_tiger_pomdp, game_outcomes, solve_infinite_horizon)
+from ..interpretability import BeliefAnalysis, analyze_beliefs, build_probe_dataset, build_wumpus_dataset, plot_latent_pca
+from ..models import BeliefFilter
 from ..planning import BeliefTreeSearch
 from ..telemetry import BeliefGeometryVisualizer
-from ..training import Representation, RunConfig, TrainerConfig, TrainingRun, load_checkpoint, play_episodes, stream_seed
+from ..training import (Domain, DomainSetup, EpisodeBatch, Representation, RunConfig, TrainerConfig, TrainingRun,
+                        load_checkpoint, play_episodes, stream_seed)
 
-# Domains selectable through conf/env/<name>.yaml. Each builder returns the exact model.
-DOMAIN_BUILDERS = {"tiger": build_tiger_pomdp}
+
+def tiger_setup(device: torch.device) -> DomainSetup:
+    """Canonical Tiger: the exact FinitePOMDP and its sampler; no extra episode summary."""
+    pomdp = build_tiger_pomdp()
+    return DomainSetup(pomdp, lambda batch, steps, seed, dev: BatchedPOMDPEnv(pomdp, batch, steps, seed, dev),
+                       lambda episodes: {})
+
+
+def wumpus_setup(device: torch.device) -> DomainSetup:
+    """4x4 Wumpus World: generative simulator (tables on `device`), win/death rates per window."""
+    world = WumpusWorld(device)
+    return DomainSetup(world, lambda batch, steps, seed, dev: WumpusSimulator(world, batch, steps, seed, dev),
+                       lambda episodes: game_outcomes(episodes.rewards))
+
+
+# Domains selectable through conf/env/<name>.yaml (section 2).
+DOMAIN_BUILDERS = {"tiger": tiger_setup, "wumpus": wumpus_setup}
 
 
 def build_run_config(cfg: DictConfig) -> RunConfig:
@@ -57,14 +80,35 @@ def build_run_config(cfg: DictConfig) -> RunConfig:
         representation=Representation(m.representation), ema_momentum=m.ema_momentum,
         acting_ema_momentum=m.acting_ema_momentum,
         num_bins=m.num_bins, trainer=TrainerConfig(**cfg.trainer), num_simulations=s.num_simulations,
+        observation_prune=s.observation_prune,
         c_puct=s.c_puct, dirichlet_alpha=s.dirichlet_alpha, dirichlet_epsilon=s.dirichlet_epsilon,
         temperature=a.temperature, temperature_min=a.temperature_min, temperature_decay=a.temperature_decay)
 
 
-def build_training_run(cfg: DictConfig, device: torch.device) -> tuple[FinitePOMDP, TrainingRun]:
-    """The exact domain named by cfg.env.name and a freshly initialised TrainingRun over it."""
-    pomdp = DOMAIN_BUILDERS[cfg.env.name]()
-    return pomdp, TrainingRun(pomdp, build_run_config(cfg), device)
+def build_training_run(cfg: DictConfig, device: torch.device) -> tuple[DomainSetup, TrainingRun]:
+    """The domain named by cfg.env.name and a freshly initialised TrainingRun over it."""
+    setup = DOMAIN_BUILDERS[cfg.env.name](device)
+    return setup, TrainingRun(setup, build_run_config(cfg), device)
+
+
+def latent_figure(domain: Domain, belief_filter: BeliefFilter, episodes: EpisodeBatch, save_dir: Path,
+                  filename: str) -> plt.Figure:
+    """
+    The domain's latent-geometry figure, saved as <save_dir>/<filename>.png (for main.py's visualisation).
+
+    Tiger: one PCA plane coloured by the exact posterior of the first state. Wumpus World: one PCA
+    plane coloured by the hunter's cell and by the remaining layout uncertainty.
+    """
+    if isinstance(domain, FinitePOMDP):
+        dataset = build_probe_dataset(domain, belief_filter, episodes)
+        return BeliefGeometryVisualizer(str(save_dir)).plot(dataset.latents, dataset.posteriors[:, 0],
+                                                            domain.state_names[0], filename=filename)
+    if isinstance(domain, WumpusWorld):
+        save_dir.mkdir(parents=True, exist_ok=True)
+        figure = plot_latent_pca(build_wumpus_dataset(domain, belief_filter, episodes))
+        figure.savefig(save_dir / f"{filename}.png")
+        return figure
+    raise TypeError(f"No latent figure for domain {type(domain).__name__}.")
 
 
 @dataclass(frozen=True)
@@ -73,7 +117,7 @@ class TrainedRun:
 
     run_dir: Path
     cfg: DictConfig
-    pomdp: FinitePOMDP
+    setup: DomainSetup
     run: TrainingRun
     checkpoint_collection: int
     checkpoint_eval_return: float     # training-time selection score (biased upwards, section 3)
@@ -82,12 +126,12 @@ class TrainedRun:
 def load_trained_run(run_dir: Path, device: torch.device) -> TrainedRun:
     """Rebuilds the run from <run>/.hydra/config.yaml and loads <run>/checkpoints/best.pt."""
     cfg = OmegaConf.load(run_dir / ".hydra" / "config.yaml")
-    pomdp, run = build_training_run(cfg, device)
+    setup, run = build_training_run(cfg, device)
     best = load_checkpoint(run_dir / "checkpoints" / "best.pt")
     for name, net in run.networks.items():
         net.load_state_dict(best["networks"][name])
     run.belief_filter.eval()
-    return TrainedRun(run_dir, cfg, pomdp, run, best["collection"], best["eval_return"])
+    return TrainedRun(run_dir, cfg, setup, run, best["collection"], best["eval_return"])
 
 
 @dataclass(frozen=True)
@@ -111,7 +155,9 @@ class AnalysisSettings:
 def analyze_run(run_dir: Path, settings: AnalysisSettings, device: torch.device) -> BeliefAnalysis:
     """Runs interpretability.analyze_beliefs on a run's best.pt and writes <run>/analysis/ (section 4)."""
     trained = load_trained_run(run_dir, device)
-    pomdp, run, cfg = trained.pomdp, trained.run, trained.cfg
+    pomdp, run, cfg = trained.setup.domain, trained.run, trained.cfg
+    if not isinstance(pomdp, FinitePOMDP):
+        raise TypeError(f"analyze_run needs an exact FinitePOMDP; {cfg.env.name} runs use experiments/wumpus.py.")
     solution = solve_infinite_horizon(pomdp, tolerance=settings.solver_tolerance, prune_epsilon=1e-6)
     action_values = action_value_functions(pomdp, solution.value_function, 1e-6)
     model = run.eval_agent.model

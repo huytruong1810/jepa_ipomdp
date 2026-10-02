@@ -8,8 +8,10 @@
 #    - `uv run analyze.py runs/tiger/<run>` reloads the run from its resolved Hydra config and
 #      its best.pt and runs the interpretability analysis (ipomdp.experiments.runs.analyze_run,
 #      which documents the outputs under <run>/analysis/).
+#    - The domain is read from the run's config: Wumpus World runs go to
+#      ipomdp.experiments.wumpus.analyze_wumpus_run (no solver; --solver-tolerance is unused).
 #
-# 2. Exact References:
+# 2. Exact References (Tiger):
 #    - V* and the per-action Q* vector sets are computed by the certified solver; the certified
 #      error is written into the report and enters the error bounds as documented in
 #      interpretability/error_bounds.py.
@@ -22,9 +24,10 @@
 import argparse
 from pathlib import Path
 
+from omegaconf import OmegaConf
 import torch
 
-from ipomdp.experiments import AnalysisSettings, analyze_run
+from ipomdp.experiments import AnalysisSettings, WumpusAnalysisSettings, analyze_run, analyze_wumpus_run
 from ipomdp.interpretability import BeliefAnalysis
 
 
@@ -49,6 +52,16 @@ def print_summary(analysis: BeliefAnalysis) -> None:
               f"|Spearman(PC1..3, |log-odds|)| {[round(r, 3) for r in geometry.confidence_spearman]}")
 
 
+def print_wumpus_summary(report: dict) -> None:
+    for name, r in report["returns"].items():
+        print(f"  {name:<16} discounted return {r['discounted_return']:9.2f} +- {r['discounted_return_stderr']:.2f} | "
+              f"win {r['win_rate']:.3f} death {r['death_rate']:.3f} unfinished {r['unfinished_rate']:.3f}")
+    for name, p in report["probes"].items():
+        errors = " ".join(f"{k} {p['hazard_error'][k]:.4f}/{p['constant_error'][k]:.4f}" for k in p["hazard_error"])
+        print(f"  probe {name:<14} |P - P_exact| (probe/constant): {errors} | cell acc {p['cell_accuracy']:.3f} "
+              f"heading acc {p['heading_accuracy']:.3f}")
+
+
 def main() -> None:
     defaults = AnalysisSettings()
     parser = argparse.ArgumentParser(description="Belief analysis of a trained run (see module header).")
@@ -61,9 +74,15 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=defaults.seed)
     args = parser.parse_args()
 
-    settings = AnalysisSettings(args.episodes, args.solver_tolerance, args.mlp_probe_steps, args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print_summary(analyze_run(args.run_dir, settings, device))
+    domain = OmegaConf.load(args.run_dir / ".hydra" / "config.yaml").env.name
+    if domain == "wumpus":
+        report = analyze_wumpus_run(args.run_dir, WumpusAnalysisSettings(args.episodes, args.mlp_probe_steps, args.seed),
+                                    device)
+        print_wumpus_summary(report)
+    else:
+        settings = AnalysisSettings(args.episodes, args.solver_tolerance, args.mlp_probe_steps, args.seed)
+        print_summary(analyze_run(args.run_dir, settings, device))
     print(f"report: {args.run_dir / 'analysis' / 'report.json'}")
 
 

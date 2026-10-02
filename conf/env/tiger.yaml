@@ -1,3 +1,4 @@
+# @package _global_
 # ABSOLUTE PATH: conf/env/tiger.yaml
 # ==============================================================================
 # CANONICAL TIGER POMDP (tiger.95.POMDP)
@@ -22,7 +23,10 @@
 #      and was biased by 8% against the exact random-policy value -606.67. With 60 / 100
 #      steps the value is flat in t and off by 0.9% / 0.4%. 100 steps also makes the
 #      truncated tail negligible (gamma^100 = 0.006).
+#
+# 4. Package _global_ (conf/config.yaml, defaults): Tiger overrides no default; it only sets env.
 # ==============================================================================
 
-name: tiger
-max_steps: 100                # Truncation length of one episode (steps per episode)
+env:
+  name: tiger
+  max_steps: 100              # Truncation length of one episode (steps per episode)

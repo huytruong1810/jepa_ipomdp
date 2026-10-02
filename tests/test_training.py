@@ -24,7 +24,7 @@ def _episodes(batch: int, seed: int, device: torch.device = CPU) -> EpisodeBatch
         actions.append(action)
         observations.append(out.observation)
         rewards.append(out.reward)
-    return EpisodeBatch(torch.stack(actions, 1), torch.stack(observations, 1), torch.stack(rewards, 1))
+    return EpisodeBatch(torch.stack(actions, 1), torch.stack(observations, 1), torch.stack(rewards, 1), None)
 
 
 def _trainer(device: torch.device = CPU, representation: Representation = Representation.JEPA) -> WorldModelTrainer:
@@ -40,7 +40,7 @@ def _trainer(device: torch.device = CPU, representation: Representation = Repres
 class TestEpisodeBuffer:
 
     def test_add_sample_and_wraparound(self):
-        buffer = EpisodeBuffer(capacity=5, episode_length=T, device=CPU, seed=0)
+        buffer = EpisodeBuffer(capacity=5, episode_length=T, initial_observation=False, device=CPU, seed=0)
         with pytest.raises(RuntimeError):
             buffer.sample(1)
         first, second = _episodes(3, 0), _episodes(3, 1)
@@ -54,13 +54,13 @@ class TestEpisodeBuffer:
         assert sample.actions.shape == (8, T) and sample.rewards.dtype == torch.float32
 
     def test_rejects_wrong_episode_length(self):
-        buffer = EpisodeBuffer(capacity=5, episode_length=T + 1, device=CPU, seed=0)
+        buffer = EpisodeBuffer(capacity=5, episode_length=T + 1, initial_observation=False, device=CPU, seed=0)
         with pytest.raises(ValueError):
             buffer.add(_episodes(2, 0))
 
     def test_sampling_is_seeded(self):
         def draw(seed):
-            buffer = EpisodeBuffer(capacity=16, episode_length=T, device=CPU, seed=seed)
+            buffer = EpisodeBuffer(capacity=16, episode_length=T, initial_observation=False, device=CPU, seed=seed)
             buffer.add(_episodes(16, 0))
             return buffer.sample(8).actions
         assert torch.equal(draw(3), draw(3))
@@ -105,7 +105,7 @@ class TestWorldModelTrainer:
     def test_non_finite_loss_raises(self):
         trainer = _trainer()
         batch = _episodes(4, 0)
-        broken = EpisodeBatch(batch.actions, batch.observations, batch.rewards * float("nan"))
+        broken = EpisodeBatch(batch.actions, batch.observations, batch.rewards * float("nan"), None)
         with pytest.raises(FloatingPointError):
             trainer.train_step(broken)
 
@@ -116,7 +116,7 @@ class TestWorldModelTrainer:
         batch = _episodes(4, 0)
         actions = torch.nn.functional.one_hot(batch.actions, A).float()
         observations = torch.nn.functional.one_hot(batch.observations, O).float()
-        latents = trainer.belief_filter.unroll(actions, observations)[:, :-1].reshape(-1, D)
+        latents = trainer.belief_filter.unroll(actions, observations, None)[:, :-1].reshape(-1, D)
         logits = trainer.observation_head(latents.detach(), actions.reshape(-1, A))
         torch.nn.functional.cross_entropy(logits, batch.observations.reshape(-1)).backward()
         assert all(p.grad is None for p in trainer.belief_filter.parameters())
@@ -153,5 +153,5 @@ class TestDecoderBaseline:
         trainer = _trainer(representation=Representation.DECODER)
         batch = _episodes(4, 0)
         trainer.optimizer.step = lambda: None  # inspect the gradients, keep the weights
-        trainer.train_step(EpisodeBatch(batch.actions, batch.observations, torch.zeros_like(batch.rewards)))
+        trainer.train_step(EpisodeBatch(batch.actions, batch.observations, torch.zeros_like(batch.rewards), None))
         assert sum(float(p.grad.abs().sum()) for p in trainer.belief_filter.parameters()) > 0.0

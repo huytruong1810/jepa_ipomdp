@@ -110,7 +110,7 @@ class TestBeliefFilter:
         model = _world_model().belief_filter
         actions = F.one_hot(torch.randint(0, A, (5, 7)), A).float()
         observations = F.one_hot(torch.randint(0, O, (5, 7)), O).float()
-        unrolled = model.unroll(actions, observations)
+        unrolled = model.unroll(actions, observations, None)
         assert unrolled.shape == (5, 8, D)
         assert torch.equal(unrolled[:, 0], model.initial(5))
         latent = model.initial(5)
@@ -123,7 +123,7 @@ class TestBeliefFilter:
         model = _world_model().belief_filter
         listen = F.one_hot(torch.zeros(2, 3, dtype=torch.long), A).float()
         growls = F.one_hot(torch.tensor([[0, 0, 0], [1, 1, 1]]), O).float()
-        final = model.unroll(listen, growls)[:, -1]
+        final = model.unroll(listen, growls, None)[:, -1]
         assert not torch.allclose(final[0], final[1])
 
     def test_initial_latent_is_trainable(self):

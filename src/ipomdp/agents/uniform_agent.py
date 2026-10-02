@@ -27,8 +27,8 @@ class UniformRandomAgent:
         self._generator = torch.Generator(device=device)
         self._generator.manual_seed(seed)
 
-    def reset(self) -> None:
-        """Nothing to reset: the agent is memoryless."""
+    def reset(self, initial_observation: Tensor | None) -> None:
+        """Nothing to reset: the agent is memoryless and ignores o_0."""
 
     def act(self) -> Tensor:
         """a_t ~ Uniform(A), int64 shape (B,)."""

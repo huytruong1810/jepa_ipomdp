@@ -1,0 +1,34 @@
+# @package _global_
+# ABSOLUTE PATH: conf/env/wumpus.yaml
+# ==============================================================================
+# 4x4 WUMPUS WORLD, SINGLE HUNTER (src/ipomdp/domain/wumpus.py)
+# ==============================================================================
+#
+# DESIGN DECISIONS (user decisions, 2026-10-01):
+# 1. No Dynamics in Configuration:
+#    - Grid, placement rule (2 pits, 1 wumpus, 1 gold on distinct non-start cells), the five
+#      actions (no Climb), R&N rewards, the discount 0.99, the 5 percept bits, the initial
+#      start-cell percept and the absorbing end of game are fixed in domain/wumpus.py.
+#
+# 2. One Game per 100-Step Window:
+#    - The game usually ends (win or death) well inside the window; the absorbing GAME_OVER
+#      state fills the rest. 100 steps equals the effective horizon 1/(1 - 0.99).
+#
+# 3. Overrides of conf/config.yaml (package _global_):
+#    - model.latent_dim 128, model.hidden_dim 256: the latent must carry the hunter's position,
+#      heading, arrow and wumpus life plus beliefs over 16 cells for three objects (Tiger used
+#      32 / 64 for one binary hidden variable).
+#    - mcts.observation_prune 1e-3: 33 observations; branches the model deems negligible are
+#      dropped and the rest renormalised (planning/mcts.py, section 6).
+# ==============================================================================
+
+env:
+  name: wumpus
+  max_steps: 100              # Steps per window (one game, then the absorbing GAME_OVER state)
+
+model:
+  latent_dim: 128
+  hidden_dim: 256
+
+mcts:
+  observation_prune: 1.0e-3

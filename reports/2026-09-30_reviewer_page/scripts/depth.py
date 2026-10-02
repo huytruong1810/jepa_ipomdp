@@ -15,12 +15,12 @@ d = torch.device("cuda")
 ref = torch.load(Path(sys.argv[1]) / "qstar.pt", weights_only=False)
 t = load_trained_run(Path("runs/sweeps/polyak/seed0"), d)
 cfg = t.cfg
-for name, model in (("learned", t.run.eval_agent.model), ("exact", ExactSearchModel(t.pomdp, ref["v"], d))):
+for name, model in (("learned", t.run.eval_agent.model), ("exact", ExactSearchModel(t.setup.domain, ref["v"], d))):
     B = 128
     planner = BeliefTreeSearch(model, cfg.mcts.num_simulations, cfg.mcts.c_puct, cfg.mcts.dirichlet_alpha, 0.0, 1)
     agent = PlanningAgent(model, planner, B, 0.0, 2, d)
-    env = BatchedPOMDPEnv(t.pomdp, B, 100, stream_seed(5, 1), d)
-    env.reset(); agent.reset()
+    env = BatchedPOMDPEnv(t.setup.domain, B, 100, stream_seed(5, 1), d)
+    agent.reset(env.reset())
     means, maxes = [], []
     for _ in range(30):
         a = agent.act()

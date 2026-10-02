@@ -133,6 +133,11 @@ class FinitePOMDP:
         return len(self.observation_names)
 
     @property
+    def has_initial_observation(self) -> bool:
+        """Always False: canonical POMDP timing emits no observation before the first action (env.py, 2)."""
+        return False
+
+    @property
     def value_bound(self) -> float:
         """
         Bound on |r| and on |V^pi(b)| for every policy and belief: max|R| / (1 - gamma).

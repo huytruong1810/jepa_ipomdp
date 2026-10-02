@@ -65,7 +65,9 @@ class ExactBeliefAgent:
         self.model, self.action_values, self.batch_size, self.device = model, action_values, batch_size, device
         self.belief = initial_beliefs(model, batch_size, device)
 
-    def reset(self) -> None:
+    def reset(self, initial_observation: Tensor | None) -> None:
+        if initial_observation is not None:
+            raise ValueError("A FinitePOMDP emits no initial observation.")
         self.belief = initial_beliefs(self.model, self.batch_size, self.device)
 
     def act(self) -> Tensor:
@@ -84,7 +86,9 @@ class DecodedBeliefAgent:
         self.num_actions, self.num_observations, self.batch_size = num_actions, num_observations, batch_size
         self.latent = belief_filter.initial(batch_size)
 
-    def reset(self) -> None:
+    def reset(self, initial_observation: Tensor | None) -> None:
+        if initial_observation is not None:
+            raise ValueError("A FinitePOMDP emits no initial observation.")
         self.latent = self.belief_filter.initial(self.batch_size)
 
     @torch.no_grad()

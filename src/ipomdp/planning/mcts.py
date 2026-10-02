@@ -55,6 +55,17 @@
 #    - temperature > 0 (training collection): visit counts shaped by counts^(1/T), which
 #      follow PUCT's exploration and give a smoothed, exploratory policy.
 #    - Root visit counts and Q values are recorded for telemetry and tests.
+#
+# 6. Pruning Negligible Observations (Wumpus World, user decision 2026-10-01):
+#    - Wumpus World has 33 observations, so exact branching would create 5 x 33 = 165 Python
+#      child nodes per expansion although, in any given belief, most percept combinations are
+#      impossible. With observation_prune = eps > 0 an edge keeps only the observations with
+#      P(o | s, a) >= eps and renormalises their probabilities, so its Q is the exact
+#      expectimax over the outcomes the model considers possible. The neglected mass is at
+#      most |O| * eps per edge (0.033 at eps = 1e-3); the largest neglected mass of a search is
+#      reported in SearchStatistics.max_pruned_mass.
+#    - observation_prune = 0 keeps every observation, zero-probability ones included, and does
+#      NOT renormalise: canonical Tiger's search is bit-identical to the unpruned search.
 # ==============================================================================
 
 from dataclasses import dataclass, field
@@ -105,10 +116,11 @@ class DecisionNode:
 
 @dataclass
 class Edge:
-    """Action edge (s, a): expected reward, exact observation distribution, one child per o."""
+    """Action edge (s, a): expected reward, observation distribution, one child per kept o (section 6)."""
 
     reward: float
     observation_probs: np.ndarray
+    observations: np.ndarray
     children: list[DecisionNode]
     visits: int = 0
     q: float = 0.0
@@ -127,6 +139,7 @@ class SearchStatistics:
     q_values: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
     mean_depth: float = 0.0
     max_depth: int = 0
+    max_pruned_mass: float = 0.0
 
 
 class BeliefTreeSearch:
@@ -140,6 +153,7 @@ class BeliefTreeSearch:
         dirichlet_alpha: float,
         dirichlet_epsilon: float,
         seed: int,
+        observation_prune: float = 0.0,
     ):
         """
         Args:
@@ -149,9 +163,14 @@ class BeliefTreeSearch:
             dirichlet_alpha: Concentration of the root prior noise.
             dirichlet_epsilon: Weight of the root prior noise (0 disables it).
             seed: Seed of the planner's random generator.
+            observation_prune: Minimum P(o | s, a) of a kept observation branch (section 6); 0 keeps all.
         """
         if num_simulations < 1:
             raise ValueError(f"num_simulations must be >= 1, got {num_simulations}.")
+        if not 0.0 <= observation_prune < 1.0 / model.num_observations:
+            raise ValueError(f"observation_prune must lie in [0, 1/|O|), got {observation_prune}.")
+        self.observation_prune = observation_prune
+        self._max_pruned_mass = 0.0
         self.model = model
         self.num_simulations = num_simulations
         self.c_puct = c_puct
@@ -176,13 +195,20 @@ class BeliefTreeSearch:
         probs = expansion.observation_probs.double().cpu().numpy()
         values = expansion.next_values.double().cpu().numpy()
         next_states = expansion.next_states
+        all_observations = np.arange(self.model.num_observations)
         for i, (node, node_stats) in enumerate(zip(nodes, stats)):
-            node.edges = [
-                Edge(reward=float(rewards[i, a]), observation_probs=probs[i, a],
-                     children=[DecisionNode(next_states[i, a, o], float(values[i, a, o]))
-                               for o in range(self.model.num_observations)])
-                for a in range(self.model.num_actions)
-            ]
+            node.edges = []
+            for a in range(self.model.num_actions):
+                kept, kept_probs = all_observations, probs[i, a]
+                if self.observation_prune > 0.0:
+                    # Always non-empty: the largest of |O| probabilities is >= 1/|O| > observation_prune.
+                    kept = np.flatnonzero(kept_probs >= self.observation_prune)
+                    mass = kept_probs[kept].sum()
+                    self._max_pruned_mass = max(self._max_pruned_mass, 1.0 - mass / kept_probs.sum())
+                    kept_probs = kept_probs[kept] / mass
+                node.edges.append(Edge(reward=float(rewards[i, a]), observation_probs=kept_probs, observations=kept,
+                                       children=[DecisionNode(next_states[i, a, o], float(values[i, a, o]))
+                                                 for o in kept]))
             for edge in node.edges:
                 node_stats.update(edge.refresh(self.model.discount))
             node.refresh()
@@ -210,6 +236,7 @@ class BeliefTreeSearch:
             Action distributions of shape (B, |A|), float32 on the states' device.
         """
         num_roots, num_a = root_states.shape[0], self.model.num_actions
+        self._max_pruned_mass = 0.0
         roots = [DecisionNode(root_states[i], leaf_value=0.0) for i in range(num_roots)]
         stats = [MinMaxStats() for _ in range(num_roots)]
         self._expand(roots, stats)
@@ -252,6 +279,7 @@ class BeliefTreeSearch:
             q_values=np.array([[edge.q for edge in root.edges] for root in roots]),
             mean_depth=float(np.mean(depths)),
             max_depth=int(np.max(depths)),
+            max_pruned_mass=self._max_pruned_mass,
         )
         if temperature == 0.0:
             policy = np.zeros_like(counts)

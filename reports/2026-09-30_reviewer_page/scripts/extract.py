@@ -45,9 +45,9 @@ for seed in range(5):
     run_dir = Path(f"runs/sweeps/polyak/seed{seed}")
     t = load_trained_run(run_dir, d)
     run = t.run
-    ep, _ = play_episodes(BatchedPOMDPEnv(t.pomdp, 256, 100, stream_seed(4242, 1), d),
+    ep, _ = play_episodes(BatchedPOMDPEnv(t.setup.domain, 256, 100, stream_seed(4242, 1), d),
                           UniformRandomAgent(3, 256, stream_seed(4242, 2), d))
-    ds = build_probe_dataset(t.pomdp, run.acting_filter, ep)
+    ds = build_probe_dataset(t.setup.domain, run.acting_filter, ep)
     z, post = ds.latents, ds.posteriors
     key = post[:, 0].round(decimals=4)
     with torch.no_grad():

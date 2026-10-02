@@ -192,19 +192,24 @@ class TestPlanningAgent:
         model = ExactSearchModel(tiger, value_functions[4], CPU)
         planner = BeliefTreeSearch(model, 10, 1.25, 0.3, 0.0, seed=0)
         agent = PlanningAgent(model, planner, batch_size=3, temperature=0.0, seed=0, device=CPU)
-        assert torch.equal(agent.state, model.initial_states(3))
+        with pytest.raises(RuntimeError):
+            agent.act()                     # no belief before the first reset()
+        agent.reset(None)
+        assert torch.equal(agent.state, model.initial_states(3, None))
+        with pytest.raises(ValueError):
+            model.initial_states(3, torch.zeros(3, dtype=torch.int64))   # a FinitePOMDP has no o_0
         action = agent.act()
         assert action.tolist() == [TigerAction.LISTEN] * 3
         observation = torch.tensor([0, 1, 0])
         agent.update(action, observation)
-        assert torch.allclose(agent.state, belief_update(tiger, model.initial_states(3), action, observation))
-        agent.reset()
-        assert torch.equal(agent.state, model.initial_states(3))
+        assert torch.allclose(agent.state, belief_update(tiger, model.initial_states(3, None), action, observation))
+        agent.reset(None)
+        assert torch.equal(agent.state, model.initial_states(3, None))
 
 
 def _discounted_returns(tiger, agent, steps, seed):
     env = BatchedPOMDPEnv(tiger, agent.batch_size, steps, seed, CPU)
-    agent.reset()
+    agent.reset(None)
     returns = torch.zeros(agent.batch_size, dtype=torch.float64)
     for t in range(steps):
         action = agent.act()

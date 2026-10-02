@@ -33,9 +33,9 @@ for seed in range(5):
     agent = PlanningAgent(model, BeliefTreeSearch(model, cfg.mcts.num_simulations, cfg.mcts.c_puct,
                                                   cfg.mcts.dirichlet_alpha, 0.0, stream_seed(31337, 1)),
                           B, 0.0, stream_seed(31337, 2), d)
-    env = BatchedPOMDPEnv(t.pomdp, B, cfg.env.max_steps, stream_seed(31337, 3), d)
-    env.reset(); agent.reset()
-    b = initial_beliefs(t.pomdp, B, d)
+    env = BatchedPOMDPEnv(t.setup.domain, B, cfg.env.max_steps, stream_seed(31337, 3), d)
+    agent.reset(env.reset())
+    b = initial_beliefs(t.setup.domain, B, d)
     counts = defaultdict(lambda: [0, 0, 0])
     optimal = {}
     for _ in range(cfg.env.max_steps):
@@ -48,7 +48,7 @@ for seed in range(5):
             optimal[key] = oi
         out = env.step(a)
         agent.update(a, out.observation)
-        b = belief_update(t.pomdp, b, a, out.observation)
+        b = belief_update(t.setup.domain, b, a, out.observation)
     total = sum(sum(c) for c in counts.values())
     agree = sum(c[optimal[k]] for k, c in counts.items())
     print(f"seed {seed}: agrees with the exact policy on {agree}/{total} decisions ({100 * agree / total:.2f}%)")

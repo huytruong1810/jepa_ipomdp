@@ -342,6 +342,25 @@ class WumpusSimulator:
         return StepOutput(observation=observation, reward=reward, truncated=self._elapsed >= self.max_steps)
 
 
+def game_outcomes(rewards: Tensor) -> dict[str, float]:
+    """
+    Win, death and unfinished rates of played windows, read from their rewards (section 1).
+
+    Args:
+        rewards: r_0..r_{T-1} of shape (B, T); a win pays +999, a death -1001, nothing else exceeds |10|.
+
+    Returns:
+        win_rate, death_rate, unfinished_rate (game still running when the window ended) and
+        mean_win_step (steps until the winning grab, over won games; NaN if none was won).
+    """
+    win = rewards > 0.0
+    won, died = win.any(dim=1), (rewards < DEATH_REWARD / 2).any(dim=1)
+    win_step = win.float().argmax(dim=1) + 1
+    return {"win_rate": float(won.double().mean()), "death_rate": float(died.double().mean()),
+            "unfinished_rate": float((~won & ~died).double().mean()),
+            "mean_win_step": float(win_step[won].double().mean()) if bool(won.any()) else float("nan")}
+
+
 @dataclass(frozen=True)
 class WumpusMarginals:
     """Exact posterior marginals, each (B, 16) float64, and the hunter's exact own state (B,)."""
@@ -422,4 +441,4 @@ class WumpusBeliefTracker:
 
 
 __all__ = ["GAME_OVER", "NUM_CELLS", "Heading", "Percept", "WumpusAction", "WumpusBeliefTracker", "WumpusMarginals",
-           "WumpusSimulator", "WumpusState", "WumpusWorld"]
+           "WumpusSimulator", "WumpusState", "WumpusWorld", "game_outcomes"]

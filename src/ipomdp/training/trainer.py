@@ -5,8 +5,9 @@
 #
 # DESIGN DECISIONS & THEORETICAL FOUNDATIONS:
 # 1. Whole-Episode Unrolls:
-#    - Each update filters complete episodes from the learned z_0 (see episode_buffer.py),
-#      so training sees exactly the latents the online agent computes. There is no burn-in,
+#    - Each update filters complete episodes from the learned z_0, folding in o_0 for domains
+#      that emit one (models/world_model.py section 1; episode_buffer.py), so training sees
+#      exactly the latents the online agent computes. There is no burn-in,
 #      no mask, and no zero-initialised mid-episode state.
 #
 # 2. Loss Terms of the JEPA Agent (Representation.JEPA; averaged over the B x T transitions):
@@ -185,18 +186,20 @@ class WorldModelTrainer:
         self.belief_filter.train()
         actions = F.one_hot(episodes.actions, self.num_actions).float()
         observations = F.one_hot(episodes.observations, self.num_observations).float()
+        initial = (None if episodes.initial_observations is None
+                   else F.one_hot(episodes.initial_observations, self.num_observations).float())
         batch, steps = episodes.actions.shape
         losses: dict[str, Tensor] = {}
 
         with torch.autocast(self.device.type, dtype=torch.bfloat16, enabled=self.device.type == "cuda"):
-            latents = self.belief_filter.unroll(actions, observations)                     # (B, T+1, D)
+            latents = self.belief_filter.unroll(actions, observations, initial)            # (B, T+1, D)
             flat = lambda x: x.reshape(batch * steps, -1)  # noqa: E731
             current = flat(latents[:, :-1])
             action_flat = flat(actions)
 
             if self.jepa is not None:
                 with torch.no_grad():
-                    targets = self.jepa.target_filter.unroll(actions, observations)       # (B, T+1, D)
+                    targets = self.jepa.target_filter.unroll(actions, observations, initial)  # (B, T+1, D)
                 predicted = self.jepa.predictor(current, action_flat)
                 losses["prediction"] = F.mse_loss(predicted.float(), flat(targets[:, 1:]).float())
 

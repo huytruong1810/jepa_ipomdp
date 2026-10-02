@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from ipomdp.domain import build_tiger_pomdp
+from ipomdp.experiments import tiger_setup
 from ipomdp.models import ema_update
 from ipomdp.training import (Representation, RunConfig, RunStream, TrainerConfig, TrainingRun, load_checkpoint, save_checkpoint,
                              stream_seed)
@@ -22,7 +22,7 @@ def _config(**overrides) -> RunConfig:
         acting_ema_momentum=0.9,
         num_bins=255, trainer=TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0,
                                             value_target_momentum=0.99),
-        num_simulations=4, c_puct=1.25, dirichlet_alpha=0.3, dirichlet_epsilon=0.25, temperature=1.0,
+        num_simulations=4, observation_prune=0.0, c_puct=1.25, dirichlet_alpha=0.3, dirichlet_epsilon=0.25, temperature=1.0,
         temperature_min=0.1, temperature_decay=0.5)
     values.update(overrides)
     return RunConfig(**values)
@@ -35,7 +35,7 @@ def _parameters(run: TrainingRun) -> list[torch.Tensor]:
 class TestTrainingRun:
 
     def test_warmup_then_planning_and_temperature_annealing(self):
-        run = TrainingRun(build_tiger_pomdp(), _config(), CPU)
+        run = TrainingRun(tiger_setup(CPU), _config(), CPU)
         first = run.collect_and_train()
         assert first["warmup"] == 1.0 and run.train_agent.temperature == 1.0
         second = run.collect_and_train()
@@ -43,7 +43,7 @@ class TestTrainingRun:
         assert run.collection == 2 and run.buffer.size == 8
 
     def test_evaluation_reports_discounted_return(self):
-        run = TrainingRun(build_tiger_pomdp(), _config(), CPU)
+        run = TrainingRun(tiger_setup(CPU), _config(), CPU)
         run.collect_and_train()
         evaluation = run.evaluate()
         assert {"eval_discounted_return", "eval_discounted_return_stderr"} <= evaluation.keys()
@@ -53,17 +53,17 @@ class TestTrainingRun:
 
     @pytest.mark.parametrize("representation", list(Representation))
     def test_resume_continues_bit_for_bit(self, tmp_path: Path, representation: Representation):
-        pomdp = build_tiger_pomdp()
-        uninterrupted = TrainingRun(pomdp, _config(representation=representation), CPU)
+        setup = tiger_setup(CPU)
+        uninterrupted = TrainingRun(setup, _config(representation=representation), CPU)
         reference = [uninterrupted.collect_and_train() for _ in range(4)]
         reference_eval = uninterrupted.evaluate()
 
-        first_half = TrainingRun(pomdp, _config(representation=representation), CPU)
+        first_half = TrainingRun(setup, _config(representation=representation), CPU)
         for _ in range(2):
             first_half.collect_and_train()
         save_checkpoint(tmp_path / "latest.pt", first_half.state_dict())
 
-        resumed = TrainingRun(pomdp, _config(seed=123, representation=representation), CPU)  # different init, fully overwritten by the checkpoint
+        resumed = TrainingRun(setup, _config(seed=123, representation=representation), CPU)  # different init, fully overwritten by the checkpoint
         resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
         continued = [resumed.collect_and_train() for _ in range(2)]
         assert continued == reference[2:]
@@ -75,10 +75,10 @@ class TestTrainingRun:
     def test_resume_on_cuda(self, tmp_path: Path):
         # Generator states are CPU tensors; a CUDA run must still restore them (regression).
         cuda = torch.device("cuda")
-        run = TrainingRun(build_tiger_pomdp(), _config(), cuda)
+        run = TrainingRun(tiger_setup(cuda), _config(), cuda)
         run.collect_and_train()
         save_checkpoint(tmp_path / "latest.pt", run.state_dict())
-        resumed = TrainingRun(build_tiger_pomdp(), _config(), cuda)
+        resumed = TrainingRun(tiger_setup(cuda), _config(), cuda)
         resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
         assert resumed.collection == 1
         resumed.collect_and_train()
@@ -88,14 +88,14 @@ class TestRepresentation:
     """training/run.py, section 5: the decoder baseline builds no JEPA parts; all else is shared."""
 
     def test_decoder_run_has_no_jepa_parts(self):
-        run = TrainingRun(build_tiger_pomdp(), _config(representation=Representation.DECODER), CPU)
+        run = TrainingRun(tiger_setup(CPU), _config(representation=Representation.DECODER), CPU)
         assert run.jepa is None and "world_model" not in run.networks and "belief_filter" in run.networks
         assert run.trainer.belief_filter is run.belief_filter
         assert "loss_prediction" not in run.collect_and_train()
 
     def test_same_seed_gives_the_same_initial_filter(self):
-        jepa = TrainingRun(build_tiger_pomdp(), _config(), CPU)
-        decoder = TrainingRun(build_tiger_pomdp(), _config(representation=Representation.DECODER), CPU)
+        jepa = TrainingRun(tiger_setup(CPU), _config(), CPU)
+        decoder = TrainingRun(tiger_setup(CPU), _config(representation=Representation.DECODER), CPU)
         assert jepa.jepa.belief_filter is jepa.belief_filter
         assert all(torch.equal(p, q) for p, q in zip(jepa.belief_filter.parameters(), decoder.belief_filter.parameters()))
 
@@ -123,8 +123,8 @@ class TestSeedStreams:
 
     def test_neighbouring_runs_do_not_share_simulator_streams(self):
         # Under base + offset seeding, run 1's collection env replayed run 0's evaluation env.
-        run_0 = TrainingRun(build_tiger_pomdp(), _config(seed=0), CPU)
-        run_1 = TrainingRun(build_tiger_pomdp(), _config(seed=1), CPU)
+        run_0 = TrainingRun(tiger_setup(CPU), _config(seed=0), CPU)
+        run_1 = TrainingRun(tiger_setup(CPU), _config(seed=1), CPU)
         generators = [run_0.env.state_dict()["generator"], run_0.eval_env.state_dict()["generator"],
                       run_1.env.state_dict()["generator"], run_1.eval_env.state_dict()["generator"]]
         for i, first in enumerate(generators):
@@ -142,7 +142,7 @@ class TestActingWeights:
         assert all(torch.allclose(t, e) for t, e in zip(target.parameters(), expected))
 
     def test_agents_plan_with_the_acting_copies(self):
-        run = TrainingRun(build_tiger_pomdp(), _config(), CPU)
+        run = TrainingRun(tiger_setup(CPU), _config(), CPU)
         for agent in (run.train_agent, run.eval_agent):
             model = agent.model
             assert model.belief_filter is run.acting_filter and model.value_head is run.acting_value_head

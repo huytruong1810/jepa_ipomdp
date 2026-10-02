@@ -191,3 +191,82 @@ class TestExactFilter:
             stderr = error.std(0) / error.shape[0] ** 0.5
             assert bool((error.mean(0).abs() <= 5 * stderr + 1e-12).all())
         assert bool((marginals.consistent_layouts < world.num_layouts).any())    # the percepts were informative
+
+
+class TestLearningStack:
+    """The shared training stack on Wumpus World: o_0, pruned search, exact resume, probes."""
+
+    @staticmethod
+    def _config(**overrides):
+        from ipomdp.training import Representation, RunConfig, TrainerConfig
+        values = dict(
+            seed=3, episode_length=12, env_batch_size=4, warmup_episodes=4, buffer_capacity=32, batch_size=4,
+            updates_per_collection=2, eval_episodes=4, latent_dim=16, hidden_dim=32, num_blocks=1,
+            representation=Representation.JEPA, ema_momentum=0.99, acting_ema_momentum=0.9, num_bins=255,
+            trainer=TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0, value_target_momentum=0.99),
+            num_simulations=4, observation_prune=1e-3, c_puct=1.25, dirichlet_alpha=0.3, dirichlet_epsilon=0.25,
+            temperature=1.0, temperature_min=0.1, temperature_decay=0.5)
+        values.update(overrides)
+        return RunConfig(**values)
+
+    def test_training_stores_o0_and_resumes_bit_for_bit(self, tmp_path):
+        from ipomdp.experiments import wumpus_setup
+        from ipomdp.training import TrainingRun, load_checkpoint, save_checkpoint
+        setup = wumpus_setup(CPU)
+        reference = TrainingRun(setup, self._config(), CPU)
+        expected = [reference.collect_and_train() for _ in range(3)] + [reference.evaluate()]
+        assert reference.buffer.sample(2).initial_observations.shape == (2,)
+        assert {"eval_win_rate", "eval_death_rate", "collect_win_rate"} <= (expected[-1].keys() | expected[0].keys())
+        first = TrainingRun(setup, self._config(), CPU)
+        first.collect_and_train()
+        save_checkpoint(tmp_path / "latest.pt", first.state_dict())
+        resumed = TrainingRun(setup, self._config(seed=99), CPU)
+        resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
+        continued = [resumed.collect_and_train() for _ in range(2)] + [resumed.evaluate()]
+        assert repr(continued) == repr(expected[1:])      # repr: NaN (no game won yet) equals NaN
+
+    def test_agent_starts_from_the_o0_conditioned_latent(self):
+        from ipomdp.experiments import wumpus_setup
+        from ipomdp.training import TrainingRun
+        run = TrainingRun(wumpus_setup(CPU), self._config(), CPU)
+        model = run.eval_agent.model
+        breezy, quiet = torch.tensor([Percept.BREEZE]), torch.tensor([0])
+        assert not torch.equal(model.initial_states(1, breezy), model.initial_states(1, quiet))
+        expected = run.acting_filter.step(run.acting_filter.initial(1), torch.zeros(1, 5),
+                                          torch.nn.functional.one_hot(breezy, 33).float())
+        assert torch.allclose(model.initial_states(1, breezy), expected)
+
+    def test_pruned_search_keeps_likely_branches_renormalised(self):
+        from ipomdp.experiments import wumpus_setup
+        from ipomdp.planning import BeliefTreeSearch
+        from ipomdp.training import TrainingRun
+        run = TrainingRun(wumpus_setup(CPU), self._config(), CPU)
+        model = run.eval_agent.model
+        search = BeliefTreeSearch(model, 8, 1.25, 0.3, 0.0, seed=0, observation_prune=0.02)
+        search.search(model.initial_states(2, torch.tensor([0, 3])), temperature=0.0)
+        for root in search.roots:
+            for edge in root.edges:
+                assert len(edge.children) == len(edge.observations) < 33
+                assert edge.observation_probs.sum() == pytest.approx(1.0)
+        assert 0.0 < search.statistics.max_pruned_mass <= 33 * 0.02
+        with pytest.raises(ValueError):
+            BeliefTreeSearch(model, 8, 1.25, 0.3, 0.0, seed=0, observation_prune=1 / 33)
+
+    def test_probe_dataset_and_figures(self):
+        import matplotlib.pyplot as plt
+        from ipomdp.agents import UniformRandomAgent
+        from ipomdp.interpretability import (build_wumpus_dataset, evaluate_wumpus_probe, fit_linear_wumpus_probe,
+                                             plot_belief_maps, plot_latent_pca)
+        from ipomdp.models import BeliefFilter
+        from ipomdp.training import play_episodes
+        world = WumpusWorld(CPU)
+        episodes, states = play_episodes(WumpusSimulator(world, 16, 10, 0, CPU), UniformRandomAgent(5, 16, 0, CPU))
+        data = build_wumpus_dataset(world, BeliefFilter(5, 33, 8, 16, 1), episodes, chunk=5)
+        running = ~WumpusState.from_tensor(states).done
+        assert data.latents.shape == (int(running.sum()), 8) and data.hazards.shape[1] == 48
+        assert torch.allclose(data.hazards[:, :16].sum(1), torch.full((len(data.cell),), 2.0, dtype=torch.float64))
+        report = evaluate_wumpus_probe(fit_linear_wumpus_probe(data), data, data)
+        assert set(report.hazard_error) == {"pit", "wumpus", "gold"} and 0.0 <= report.cell_accuracy <= 1.0
+        probe = fit_linear_wumpus_probe(data)
+        plt.close(plot_belief_maps(data, probe, episode=int(data.episode[0]), num_steps=3))
+        plt.close(plot_latent_pca(data))

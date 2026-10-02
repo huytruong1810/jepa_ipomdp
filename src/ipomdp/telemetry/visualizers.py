@@ -145,10 +145,10 @@ class MCTSGraphVisualizer:
                        text=(f"<b>{action_names[action]}</b><br>Visits: {edge.visits}<br>"
                              f"Q: {edge.q:.3f}<br>R: {edge.reward:.3f}"))
             G.add_edge(node_id, action_id)
-            for observation, child in enumerate(edge.children):
+            for observation, probability, child in zip(edge.observations, edge.observation_probs, edge.children):
                 self._add_nodes_edges(
                     G, child, discount, action_names, observation_names, depth + 1, max_depth, action_id,
-                    f"o = {observation_names[observation]} (p = {edge.observation_probs[observation]:.3f})<br>")
+                    f"o = {observation_names[observation]} (p = {probability:.3f})<br>")
 
 
 class RewardTrajectoryVisualizer:

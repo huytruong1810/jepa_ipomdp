@@ -2,12 +2,16 @@
 
 from .checkpointing import load_checkpoint, save_checkpoint
 from .episode_buffer import EpisodeBatch, EpisodeBuffer
-from .rollout import discounted_returns, play_episodes
-from .run import RunConfig, TrainingRun
+from .rollout import Agent, Simulator, discounted_returns, play_episodes
+from .run import Domain, DomainSetup, RunConfig, TrainingRun
 from .seeding import RunStream, stream_seed
 from .trainer import Representation, TrainerConfig, WorldModelTrainer
 
 __all__ = [
+    "Agent",
+    "Domain",
+    "DomainSetup",
+    "Simulator",
     "EpisodeBatch",
     "EpisodeBuffer",
     "Representation",

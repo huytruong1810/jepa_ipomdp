@@ -41,11 +41,8 @@ from omegaconf import DictConfig
 import torch
 from tqdm import tqdm
 
-from ipomdp.domain import FinitePOMDP
-from ipomdp.experiments import build_training_run
-from ipomdp.interpretability import build_probe_dataset
+from ipomdp.experiments import build_training_run, latent_figure
 from ipomdp.telemetry import (
-    BeliefGeometryVisualizer,
     ExecutionGuardrail,
     MCTSGraphVisualizer,
     MetricsLogger,
@@ -57,18 +54,17 @@ from ipomdp.training import TrainingRun, load_checkpoint, play_episodes, save_ch
 
 torch.set_float32_matmul_precision('high')
 
-def visualize(run: TrainingRun, pomdp: FinitePOMDP, collection: int, plots: Path, metrics_logger: MetricsLogger) -> None:
-    """Belief geometry, search tree and cumulative rewards of greedy evaluation episodes."""
+def visualize(run: TrainingRun, collection: int, plots: Path, metrics_logger: MetricsLogger) -> None:
+    """Latent geometry, search tree and cumulative rewards of greedy evaluation episodes."""
+    domain = run.domain
     episodes, _ = play_episodes(run.eval_env, run.eval_agent)
-    dataset = build_probe_dataset(pomdp, run.acting_filter, episodes)
-    figure = BeliefGeometryVisualizer(save_dir=str(plots / "geometry")).plot(
-        dataset.latents, dataset.posteriors[:, 0], pomdp.state_names[0], filename=f"geometry_c{collection}")
+    figure = latent_figure(domain, run.acting_filter, episodes, plots / "geometry", f"geometry_c{collection}")
     metrics_logger.log_figure("Visuals/belief_geometry", figure, collection)
     plt.close(figure)
     MCTSGraphVisualizer(save_dir=str(plots / "trees")).visualize(
-        run.eval_agent.planner.roots[0], pomdp.discount, pomdp.action_names, pomdp.observation_names,
+        run.eval_agent.planner.roots[0], domain.discount, domain.action_names, domain.observation_names,
         filename=f"mcts_tree_c{collection}")
-    action_map = dict(enumerate(pomdp.action_names))
+    action_map = dict(enumerate(domain.action_names))
     trajectories = [{"actions": acts, "rewards": rews, "cum_rewards": np.concatenate([[0.0], np.cumsum(rews)]).tolist()}
                     for acts, rews in zip(episodes.actions[:16].tolist(), episodes.rewards[:16].tolist())]
     figure = RewardTrajectoryVisualizer(save_dir=str(plots)).plot_cumulative_rewards(
@@ -83,7 +79,7 @@ def main(cfg: DictConfig):
     run_dir = Path(HydraConfig.get().runtime.output_dir)
     logger = logging.getLogger("ipomdp")  # Hydra writes it to the console and <run dir>/main.log
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    pomdp, run = build_training_run(cfg, device)
+    _, run = build_training_run(cfg, device)
     if cfg.resume is not None:
         run.load_state_dict(load_checkpoint(Path(cfg.resume)))
         logger.info(f"Resumed from {cfg.resume} at collection {run.collection}")
@@ -115,9 +111,11 @@ def main(cfg: DictConfig):
                 with profiler.profile("evaluate"):
                     evaluation = run.evaluate()
                 metrics_logger.log_metrics(evaluation, collection, prefix="Eval")
+                outcomes = "".join(f", {k.removeprefix('eval_')} {v:.3f}" for k, v in evaluation.items()
+                                   if k.removeprefix("eval_") in run.domain_metric_names)
                 logger.info(f"collection {collection}: greedy eval discounted return "
                             f"{evaluation['eval_discounted_return']:.2f} +- {evaluation['eval_discounted_return_stderr']:.2f} "
-                            f"(best {run.best_eval_return:.2f})")
+                            f"(best {run.best_eval_return:.2f}){outcomes}")
                 if evaluation["eval_discounted_return"] >= run.best_eval_return:
                     save_checkpoint(checkpoints / "best.pt", {
                         "collection": collection, "eval_return": evaluation["eval_discounted_return"],
@@ -125,7 +123,7 @@ def main(cfg: DictConfig):
                 pbar.set_postfix({"eval": f"{evaluation['eval_discounted_return']:.2f}",
                                   "best": f"{run.best_eval_return:.2f}", "loss": f"{metrics['loss_total']:.3f}"})
             if collection % t.viz_every == 0:
-                visualize(run, pomdp, collection, run_dir / "plots", metrics_logger)
+                visualize(run, collection, run_dir / "plots", metrics_logger)
             if collection % t.save_every == 0:
                 save_checkpoint(checkpoints / "latest.pt", run.state_dict())
 

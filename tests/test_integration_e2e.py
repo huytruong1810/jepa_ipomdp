@@ -35,11 +35,10 @@ def test_tiger_collection_and_training_cycle():
     agent = PlanningAgent(model, BeliefTreeSearch(model, 5, 1.25, 0.3, 0.25, seed=0), num_envs, temperature=1.0,
                           seed=0, device=device)
     env = BatchedPOMDPEnv(pomdp, num_envs, max_steps=episode_length, seed=0, device=device)
-    buffer = EpisodeBuffer(capacity=16, episode_length=episode_length, device=device, seed=0)
+    buffer = EpisodeBuffer(capacity=16, episode_length=episode_length, initial_observation=False, device=device, seed=0)
 
     for _ in range(2):
-        env.reset()
-        agent.reset()
+        agent.reset(env.reset())
         actions, observations, rewards = [], [], []
         for _ in range(episode_length):
             action = agent.act()
@@ -49,6 +48,6 @@ def test_tiger_collection_and_training_cycle():
             observations.append(out.observation)
             rewards.append(out.reward)
         assert bool(out.truncated.all())
-        buffer.add(EpisodeBatch(torch.stack(actions, 1), torch.stack(observations, 1), torch.stack(rewards, 1)))
+        buffer.add(EpisodeBatch(torch.stack(actions, 1), torch.stack(observations, 1), torch.stack(rewards, 1), None))
         metrics = trainer.train_step(buffer.sample(4))
         assert {"loss_prediction", "loss_reward", "loss_value", "loss_observation"} <= metrics.keys()

@@ -24,7 +24,7 @@ pomdp = None
 results = {}
 for seed in seeds:
     trained = load_trained_run(Path(f"runs/sweeps/default/seed{seed}"), device)
-    pomdp, run, cfg = trained.pomdp, trained.run, trained.cfg
+    pomdp, run, cfg = trained.setup.domain, trained.run, trained.cfg
     if not cache.exists():
         sol = solve_infinite_horizon(pomdp, tolerance=0.01, prune_epsilon=1e-6)
         torch.save({"v": sol.value_function, "q": action_value_functions(pomdp, sol.value_function, 1e-6)}, cache)
@@ -35,7 +35,7 @@ for seed in seeds:
                                                   cfg.mcts.dirichlet_alpha, 0.0, stream_seed(BASE, 1)),
                           EPISODES, 0.0, stream_seed(BASE, 2), device)
     env = BatchedPOMDPEnv(pomdp, EPISODES, cfg.env.max_steps, stream_seed(BASE, 3), device)
-    env.reset(); agent.reset()
+    agent.reset(env.reset())
     b = initial_beliefs(pomdp, EPISODES, device)
     rec = {k: [] for k in ["b", "qstar", "root_q", "act", "r_err", "o_kl", "v_err", "onestep_q"]}
     rewards = []

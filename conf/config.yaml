@@ -33,8 +33,8 @@
 #      exact optimum (19.37 for canonical Tiger). best.pt tracks the best such evaluation.
 #
 # 3. No Domain Constants Here:
-#    - |A|, |O|, action names and the discount come from the FinitePOMDP (conf/env/*.yaml
-#      only selects the domain and the episode length).
+#    - |A|, |O|, action names and the discount come from the domain (conf/env/*.yaml selects the
+#      domain and the episode length, and may override defaults for that domain).
 #
 # 4. World Model (see src/ipomdp/models/world_model.py and src/ipomdp/training/trainer.py):
 #    - A single belief latent of latent_dim features (no object slots).
@@ -49,9 +49,11 @@
 #      learned observation head, and steps the belief filter (planning/mcts.py).
 # ==============================================================================
 
+# The env file comes AFTER _self_: a domain file (conf/env/<name>.yaml, package _global_)
+# may override any default below, e.g. Wumpus World's model size and observation pruning.
 defaults:
-  - env: tiger
   - _self_
+  - env: tiger
 
 # Every artifact of a run (checkpoints, TensorBoard, plots, main.log, resolved config) goes here.
 hydra:
@@ -95,6 +97,7 @@ model:
 
 mcts:
   num_simulations: 50         # Search simulations per decision (per parallel episode)
+  observation_prune: 0.0      # Drop observation branches with P(o|s,a) below this (planning/mcts.py, 6); 0 = exact
   c_puct: 1.25                # PUCT exploration constant (Q is min-max normalised per tree)
   dirichlet_alpha: 0.3        # Root prior noise concentration
   dirichlet_epsilon: 0.25     # Root prior noise weight during training collection

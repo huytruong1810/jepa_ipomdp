@@ -8,7 +8,12 @@
 #    - Exact:   b0 given,        b_{t+1} = tau(b_t, a_t, o_{t+1})   (src/ipomdp/domain/belief.py)
 #    - Learned: z_0 = learned,   z_{t+1} = GRU([a_t, o_{t+1}], z_t)
 #      The learned initial latent z_0 is the network's representation of the prior b0. There
-#      is no observation at t = 0 (canonical Tiger), so no placeholder input is needed.
+#      is no observation at t = 0 in canonical Tiger, so no placeholder input is needed.
+#    - Domains with an initial observation o_0 (Wumpus World's start-cell percept,
+#      domain/wumpus.py section 2) fold it in before the first decision with the SAME cell and
+#      an all-zero action vector ("no action taken"): z_start = f(z_0, 0, o_0), the
+#      counterpart of the exact b_0(s) proportional to b0(s) P(o_0 | s). start() is the one
+#      place that knows whether a domain has o_0; every latent sequence begins at z_start.
 #      z_t = phi(h_t) is a function of the history h_t = (a_0, o_1, ..., a_{t-1}, o_t), and
 #      the Phase-2 acceptance test probes it against the exact posterior b*(h_t).
 #
@@ -82,6 +87,7 @@ class BeliefFilter(nn.Module):
             num_blocks: SwiGLU residual blocks in the input network.
         """
         super().__init__()
+        self.num_actions = num_actions
         self.latent_dim = latent_dim
         self.initial_latent = nn.Parameter(torch.zeros(latent_dim))
         self.input_net = build_residual_stack(num_actions + num_observations, hidden_dim, hidden_dim, num_blocks)
@@ -90,6 +96,23 @@ class BeliefFilter(nn.Module):
     def initial(self, batch_size: int) -> Tensor:
         """z_0 replicated to shape (batch_size, D)."""
         return self.initial_latent.expand(batch_size, -1)
+
+    def start(self, batch_size: int, initial_observation: Tensor | None) -> Tensor:
+        """
+        The latent the first decision is made from (section 1).
+
+        Args:
+            batch_size: B.
+            initial_observation: One-hot o_0 of shape (B, |O|), or None for domains without one.
+
+        Returns:
+            z_0 (no o_0) or f(z_0, 0, o_0), shape (B, D).
+        """
+        latent = self.initial(batch_size)
+        if initial_observation is None:
+            return latent
+        no_action = initial_observation.new_zeros(batch_size, self.num_actions)
+        return self.step(latent, no_action, initial_observation)
 
     def step(self, latent: Tensor, action: Tensor, observation: Tensor) -> Tensor:
         """
@@ -105,18 +128,19 @@ class BeliefFilter(nn.Module):
         """
         return self.cell(self.input_net(torch.cat([action, observation], dim=-1)), latent)
 
-    def unroll(self, actions: Tensor, observations: Tensor) -> Tensor:
+    def unroll(self, actions: Tensor, observations: Tensor, initial_observation: Tensor | None) -> Tensor:
         """
-        Filters whole episodes from z_0.
+        Filters whole episodes from the start latent.
 
         Args:
             actions: One-hot a_0..a_{T-1}, shape (B, T, |A|).
             observations: One-hot o_1..o_T, shape (B, T, |O|).
+            initial_observation: One-hot o_0 of shape (B, |O|), or None (see start()).
 
         Returns:
-            z_0..z_T, shape (B, T + 1, D).
+            The latents after the histories up to t = 0..T, shape (B, T + 1, D).
         """
-        latent = self.initial(actions.shape[0])
+        latent = self.start(actions.shape[0], initial_observation)
         latents = [latent]
         for t in range(actions.shape[1]):
             latent = self.step(latent, actions[:, t], observations[:, t])

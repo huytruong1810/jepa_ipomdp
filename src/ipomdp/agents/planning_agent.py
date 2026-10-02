@@ -50,7 +50,7 @@ class PlanningAgent:
         self.device = device
         self._generator = torch.Generator(device=device)
         self._generator.manual_seed(seed)
-        self.state = model.initial_states(batch_size)
+        self.state: Tensor | None = None      # set by reset() at the start of every episode
 
     def state_dict(self) -> dict:
         """Temperature and action-sampling generator state (checkpointing)."""
@@ -63,9 +63,9 @@ class PlanningAgent:
         self._generator.set_state(state["generator"])
         self.planner.load_state_dict(state["planner"])
 
-    def reset(self) -> None:
-        """Starts new episodes in every row from the prior state."""
-        self.state = self.model.initial_states(self.batch_size)
+    def reset(self, initial_observation: Tensor | None) -> None:
+        """Starts new episodes in every row from the model's prior state, conditioned on o_0 if any."""
+        self.state = self.model.initial_states(self.batch_size, initial_observation)
 
     def update(self, action: Tensor, observation: Tensor) -> None:
         """Filter step with (a_t, o_{t+1}); int64 tensors of shape (B,)."""
@@ -73,6 +73,8 @@ class PlanningAgent:
 
     def act(self) -> Tensor:
         """Plans from the current states and samples a_t; returns int64 shape (B,)."""
+        if self.state is None:
+            raise RuntimeError("act() before reset(): the agent has no belief state.")
         policy = self.planner.search(self.state, self.temperature)
         return torch.multinomial(policy, num_samples=1, generator=self._generator).squeeze(-1)
 

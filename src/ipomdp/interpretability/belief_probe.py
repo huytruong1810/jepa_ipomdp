@@ -84,8 +84,10 @@ def build_probe_dataset(model: FinitePOMDP, belief_filter: BeliefFilter, episode
     for t in range(steps):
         exact = belief_update(model, exact, episodes.actions[:, t], episodes.observations[:, t])
         posteriors.append(exact)
+    if episodes.initial_observations is not None:
+        raise ValueError("A FinitePOMDP emits no initial observation.")
     latents = belief_filter.unroll(F.one_hot(episodes.actions, model.num_actions).float(),
-                                   F.one_hot(episodes.observations, model.num_observations).float())
+                                   F.one_hot(episodes.observations, model.num_observations).float(), None)
     return ProbeDataset(latents.reshape(batch * (steps + 1), -1).float(),
                         torch.stack(posteriors, 1).reshape(batch * (steps + 1), -1))
 

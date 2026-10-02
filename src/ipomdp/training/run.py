@@ -53,23 +53,68 @@
 #      the JEPA predictor (keeping the JEPA runs' initialisation, and thus the cited results,
 #      reproducible), so the decoder baseline's initial head weights are a different draw --
 #      no more than the difference between two seeds.
+#
+# 6. Any Domain, Through a DomainSetup:
+#    - The run needs only the Domain protocol below (sizes, names, discount, value bound,
+#      whether o_0 exists), a simulator factory and a per-domain episode summary. Canonical
+#      Tiger supplies its FinitePOMDP and BatchedPOMDPEnv; Wumpus World its WumpusWorld,
+#      WumpusSimulator and win/death rates (ipomdp.experiments builds both). Nothing in the
+#      training loop reads exact model tensors, so domains without an exact model (and
+#      without a solver) train identically.
 # ==============================================================================
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 import numpy as np
 import torch
 
 from ..agents import PlanningAgent, UniformRandomAgent
-from ..domain import BatchedPOMDPEnv, FinitePOMDP
 from ..models import (BeliefFilter, LatentPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueHead,
                       ema_update, frozen_copy)
 from ..planning import BeliefTreeSearch, LearnedSearchModel
-from .episode_buffer import EpisodeBuffer
-from .rollout import discounted_returns, play_episodes
+from .episode_buffer import EpisodeBatch, EpisodeBuffer
+from .rollout import Simulator, discounted_returns, play_episodes
 from .seeding import RunStream, stream_seed
 from .trainer import Representation, TrainerConfig, WorldModelTrainer
 
+
+
+class Domain(Protocol):
+    """What a training run needs to know about a domain (section 6)."""
+
+    action_names: tuple[str, ...]
+    observation_names: tuple[str, ...]
+    discount: float
+
+    @property
+    def num_actions(self) -> int: ...
+
+    @property
+    def num_observations(self) -> int: ...
+
+    @property
+    def value_bound(self) -> float: ...
+
+    @property
+    def has_initial_observation(self) -> bool: ...
+
+
+@dataclass(frozen=True)
+class DomainSetup:
+    """
+    A domain wired for training (section 6).
+
+    Attributes:
+        domain: Sizes, names, discount, value bound and o_0 flag.
+        make_simulator: (batch_size, max_steps, seed, device) -> a seeded Simulator.
+        episode_metrics: Domain-specific summary of played episodes (e.g. win rate); may be empty.
+    """
+
+    domain: Domain
+    make_simulator: Callable[[int, int, int, torch.device], Simulator]
+    episode_metrics: Callable[[EpisodeBatch], dict[str, float]]
 
 
 @dataclass(frozen=True)
@@ -93,6 +138,7 @@ class RunConfig:
     num_bins: int
     trainer: TrainerConfig
     num_simulations: int
+    observation_prune: float          # planning/mcts.py, section 6
     c_puct: float
     dirichlet_alpha: float
     dirichlet_epsilon: float
@@ -104,11 +150,12 @@ class RunConfig:
 class TrainingRun:
     """Builds and advances one experiment (module header)."""
 
-    def __init__(self, pomdp: FinitePOMDP, cfg: RunConfig, device: torch.device):
-        self.pomdp, self.cfg, self.device = pomdp, cfg, device
+    def __init__(self, setup: DomainSetup, cfg: RunConfig, device: torch.device):
+        self.setup, self.cfg, self.device = setup, cfg, device
+        domain = self.domain = setup.domain
         seed = lambda stream: stream_seed(cfg.seed, stream)  # noqa: E731
         torch.manual_seed(seed(RunStream.NETWORK_INIT))
-        num_a, num_o = pomdp.num_actions, pomdp.num_observations
+        num_a, num_o = domain.num_actions, domain.num_observations
 
         self.belief_filter = BeliefFilter(num_a, num_o, cfg.latent_dim, cfg.hidden_dim, cfg.num_blocks).to(device)
         self.jepa = (RecurrentJEPA(self.belief_filter,
@@ -118,9 +165,9 @@ class TrainingRun:
         self.value_head = ValueHead(cfg.latent_dim, cfg.hidden_dim, cfg.num_blocks, cfg.num_bins).to(device)
         self.reward_head = RewardHead(cfg.latent_dim, num_a, cfg.hidden_dim, cfg.num_blocks, cfg.num_bins).to(device)
         self.observation_head = ObservationHead(cfg.latent_dim, num_a, num_o, cfg.hidden_dim, cfg.num_blocks).to(device)
-        self.codec = TwoHotSymlog(cfg.num_bins, pomdp.value_bound).to(device)
+        self.codec = TwoHotSymlog(cfg.num_bins, domain.value_bound).to(device)
         self.trainer = WorldModelTrainer(self.belief_filter, self.jepa, self.value_head, self.reward_head, self.observation_head,
-                                         self.codec, num_a, num_o, pomdp.discount, cfg.trainer, device)
+                                         self.codec, num_a, num_o, domain.discount, cfg.trainer, device)
 
         # Polyak-averaged copies the agent acts with (section 4).
         self.acting_filter = frozen_copy(self.belief_filter)
@@ -128,21 +175,23 @@ class TrainingRun:
         self.acting_observation_head = frozen_copy(self.observation_head)
         self.acting_value_head = frozen_copy(self.value_head)
         model = LearnedSearchModel(self.acting_filter, self.acting_reward_head, self.acting_observation_head,
-                                   self.acting_value_head, self.codec, num_a, num_o, pomdp.discount)
+                                   self.acting_value_head, self.codec, num_a, num_o, domain.discount)
         self.train_agent = PlanningAgent(
             model, BeliefTreeSearch(model, cfg.num_simulations, cfg.c_puct, cfg.dirichlet_alpha, cfg.dirichlet_epsilon,
-                                    seed=seed(RunStream.TRAIN_PLANNER)),
+                                    seed=seed(RunStream.TRAIN_PLANNER), observation_prune=cfg.observation_prune),
             cfg.env_batch_size, cfg.temperature, seed(RunStream.TRAIN_AGENT), device)
         self.eval_agent = PlanningAgent(
             model, BeliefTreeSearch(model, cfg.num_simulations, cfg.c_puct, cfg.dirichlet_alpha, dirichlet_epsilon=0.0,
-                                    seed=seed(RunStream.EVAL_PLANNER)),
+                                    seed=seed(RunStream.EVAL_PLANNER), observation_prune=cfg.observation_prune),
             cfg.eval_episodes, temperature=0.0, seed=seed(RunStream.EVAL_AGENT), device=device)
         self.warmup_agent = UniformRandomAgent(num_a, cfg.env_batch_size, seed(RunStream.WARMUP_AGENT), device)
-        self.env = BatchedPOMDPEnv(pomdp, cfg.env_batch_size, cfg.episode_length, seed(RunStream.COLLECTION_ENV), device)
-        self.eval_env = BatchedPOMDPEnv(pomdp, cfg.eval_episodes, cfg.episode_length, seed(RunStream.EVAL_ENV), device)
-        self.buffer = EpisodeBuffer(cfg.buffer_capacity, cfg.episode_length, device, seed(RunStream.BUFFER))
+        self.env = setup.make_simulator(cfg.env_batch_size, cfg.episode_length, seed(RunStream.COLLECTION_ENV), device)
+        self.eval_env = setup.make_simulator(cfg.eval_episodes, cfg.episode_length, seed(RunStream.EVAL_ENV), device)
+        self.buffer = EpisodeBuffer(cfg.buffer_capacity, cfg.episode_length, domain.has_initial_observation, device,
+                                    seed(RunStream.BUFFER))
         self.collection = 0
         self.best_eval_return = -float("inf")
+        self.domain_metric_names: tuple[str, ...] = ()     # keys of setup.episode_metrics, set by evaluate()
 
     @property
     def networks(self) -> dict[str, torch.nn.Module]:
@@ -177,9 +226,10 @@ class TrainingRun:
         if not warmup:
             agent = self.train_agent
             agent.temperature = max(self.cfg.temperature_min, agent.temperature * self.cfg.temperature_decay)
-        returns = discounted_returns(episodes.rewards, self.pomdp.discount)
+        returns = discounted_returns(episodes.rewards, self.domain.discount)
         metrics["collect_discounted_return"] = float(returns.mean())
-        for a, name in enumerate(self.pomdp.action_names):
+        metrics |= {f"collect_{k}": v for k, v in self.setup.episode_metrics(episodes).items()}
+        for a, name in enumerate(self.domain.action_names):
             metrics[f"collect_action_fraction/{name}"] = float((episodes.actions == a).double().mean())
         metrics["warmup"] = float(warmup)
         metrics["temperature"] = self.train_agent.temperature
@@ -189,11 +239,14 @@ class TrainingRun:
     def evaluate(self) -> dict[str, float]:
         """Greedy evaluation (section 2); updates best_eval_return."""
         episodes, _ = play_episodes(self.eval_env, self.eval_agent)
-        returns = discounted_returns(episodes.rewards, self.pomdp.discount)
+        returns = discounted_returns(episodes.rewards, self.domain.discount)
         mean, stderr = float(returns.mean()), float(returns.std()) / np.sqrt(len(returns))
         self.best_eval_return = max(self.best_eval_return, mean)
         metrics = {"eval_discounted_return": mean, "eval_discounted_return_stderr": stderr}
-        for a, name in enumerate(self.pomdp.action_names):
+        domain_metrics = self.setup.episode_metrics(episodes)
+        self.domain_metric_names = tuple(domain_metrics)
+        metrics |= {f"eval_{k}": v for k, v in domain_metrics.items()}
+        for a, name in enumerate(self.domain.action_names):
             metrics[f"eval_action_fraction/{name}"] = float((episodes.actions == a).double().mean())
         return metrics
 
