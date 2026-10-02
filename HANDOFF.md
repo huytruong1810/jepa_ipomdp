@@ -125,6 +125,26 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 - The `best.pt` score of 107 is a winner's-curse maximum of 20 noisy evaluations; re-estimate it on fresh seeds.
 - Planned collections took about 3 min each under load.
 
+**Baseline on the new setup, `runs/wumpus/north50_seed0`** (100 collections, 1 h 18 min after the resume; `best.pt` from collection 85; analysis with 512 fresh games):
+- In-training evaluations wander between −83 and +134 with no trend after collection 55.
+
+| | Return | Win | Death | Unfinished |
+|---|---|---|---|---|
+| Learned planner | 110 ± 20 | 19.3% | 3.7% | 77.0% |
+| Reference, risk 0 / 0.4 / 1 | 526 / 573 / 517 | 62 / 70 / 81% | 0 / 1.8 / 19% | |
+| Random hunter | −388 ± 26 | 12.9% | 55.5% | 31.6% |
+
+- **The representation is good on the agent's own histories** (MLP probe): heading 85% (chance 25%), cell 95%; pit error 0.017 vs constant 0.100, wumpus 0.008 vs 0.063, gold 0.007 vs 0.016. The belief map matches the exact one closely.
+- **Split by start percept** (256 games, scratch diagnostic):
+
+| | Quiet start (66%) | Percept at start (34%) |
+|---|---|---|
+| Planner | 204, win 26%, unfinished 74% | −72, win 3%, unfinished 91% |
+| Reference (risk 0.4) | 826, win 98% | 124, win 19% |
+
+- With a quiet start the planner **does move** (FORWARD is 49% of all its actions; every quiet-start game has a FORWARD) but rarely finds the gold. It wanders instead of exploring new safe cells. GRAB is 22% of actions. **The gap is directed exploration toward unvisited cells, not representation and not search depth.**
+- The value support is loose for Wumpus: `value_bound` = 1001/(1 − γ) = 100,100, so only 153 of 255 bins lie in the reachable return range ±1001 and the spacing near 500 is 49.
+
 **Analysis of `full_seed0`** (2026-10-02; 512 fresh games, old setup; `runs/wumpus/full_seed0_c100` is a copy holding collection 100's networks as `best.pt`):
 
 | | Return | Win | Death | Unfinished |
@@ -217,8 +237,7 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 
 ## 6. Next actions (in order)
 
-1. **Baseline on the new setup:** `runs/wumpus/north50_seed0` (seed 0, default config, `env=wumpus`), launched 2026-10-02 15:35 with the default 2560 episodes (40 collections; evaluations 47, 24, 31, −18, −22, 44 at collections 5–40, no clear trend), then resumed bit-for-bit at 16:34 with `training.total_episodes=6400` to match `full_seed0`'s 100 collections (temperature decays per collection, independent of the total). `main_part1.log` and `.hydra_part1/` keep the first launch's log and config. When it finishes, run `uv run analyze.py runs/wumpus/north50_seed0`; the report now includes the reference agents on the same layouts.
-2. **Report plainly to the user**, then **ask** which fix to try for the flat value / idling (section 4c), with a recommendation.
+1. **Ask the user** which fix to try for the planner's undirected wandering (section 4c, baseline). The options presented on 2026-10-02 are in the next commit's message, or in the user's answer recorded in memory.
 3. Once Wumpus plays well: build a Wumpus seed sweep and aggregation, then a reviewer-page section with the latent figures.
 4. **Ask before pushing** `4d1ace5` onward.
 5. **Deferred:**
