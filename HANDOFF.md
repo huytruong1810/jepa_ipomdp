@@ -138,6 +138,7 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 - **Value head** (scratch diagnostic, random histories): V̂(z₀) = 251 (collection 20) and 529 (collection 100). V̂ correlates 0.32 with realised return-to-go and scores idling states at ≈ 250, where idling is worth −63 over 100 steps. V̂ equals its own one-step Bellman backup through the model, so the model is self-consistent, but V̂ is nearly flat across states. Mean Q per action (collection 20): FORWARD 148, turns, GRAB and SHOOT ≈ 251–253, so any move with death risk loses to waiting.
 - **Reward head is accurate:** GRAB predicts 25.4 on average against the exact 25.4; −1.00 where P(gold here) = 0; +998 where P(gold here) > 0.5.
 - **Telemetry:** the target value mean rose from 124 (collection 13) to 332 (collection 100) while collection returns stayed negative; collection action fractions stayed near uniform even at temperature 0.1; greedy evaluation spent 30–58% of actions on GRAB.
+- **Search depth is not the bottleneck:** `best.pt` with 200 simulations (instead of 50; 256 games, same analysis seed) earned 77 ± 24, with 17.2% wins, 1.6% deaths and 81% unfinished, the same as with 50. 73% of its actions were TURN_LEFT.
 - **Working diagnosis (untested):** the flat value makes progress look nearly free to postpone, so the planner prefers zero-risk idling to any move with death risk. The planner learned "don't die", not "find the gold".
 
 **Reference bounds (new setup, 512 games, `agents/wumpus_reference.py`):**
@@ -155,7 +156,7 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 - **Probe error against a constant guess, MLP probe on agent histories:** pit 0.040 vs 0.094, wumpus 0.027 vs 0.065, gold 0.011 vs 0.013. Cell decoded 76% correctly. **Heading at chance, 31%.**
 - **On random-policy histories** the probes barely beat the constant guess. Random games are short, because the random hunter dies quickly.
 
-**Hypotheses for the plateau** (before the analysis above; 1 is weakened by the heading result at collection 100, 2–4 still stand):
+**Hypotheses for the plateau** (before the analysis above; 1 is weakened by the heading result at collection 100, 2 is refuted by the 200-simulation check above; 3 and 4 still stand):
 1. **The latent may not track heading or position well enough.** The smoke heading accuracy was 31%. Without heading the hunter cannot plan routes, and caution is the safe fixed point.
 2. **The search is too shallow** for routes of 6–15 actions, which include turns; leaves rely on a value head trained by fitted VI at reward scale ±1000.
 3. **Exploration:** after warm-up, Dirichlet noise and the visit-count temperature over 5 actions may rarely produce long successful excursions. Unwinnable layouts also reward caution.
@@ -217,7 +218,7 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 ## 6. Next actions (in order)
 
 1. **Baseline on the new setup:** `runs/wumpus/north50_seed0` (seed 0, default config, `env=wumpus`), launched 2026-10-02 15:35. When it finishes, run `uv run analyze.py runs/wumpus/north50_seed0`; the report now includes the reference agents on the same layouts.
-2. **Report plainly to the user**, then **ask** which fix to try for the flat value / idling (section 4c), with a recommendation. A 200-simulation greedy evaluation of `full_seed0/best.pt` (search depth) was running at handoff time; its scratch output is not kept.
+2. **Report plainly to the user**, then **ask** which fix to try for the flat value / idling (section 4c), with a recommendation.
 3. Once Wumpus plays well: build a Wumpus seed sweep and aggregation, then a reviewer-page section with the latent figures.
 4. **Ask before pushing** `4d1ace5` onward.
 5. **Deferred:**
