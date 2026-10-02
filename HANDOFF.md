@@ -233,11 +233,13 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
   - `main.py`, `analyze.py` (dispatch by `env.name`), `conf/config.yaml` and `conf/env/tiger.yaml`.
   - `telemetry/visualizers.py`.
   - The reviewer scripts in `reports/2026-09-30_reviewer_page/scripts/`, ported to the new API.
+- **Diagnostics of 2026-10-02** (all reproducible): `reports/2026-10-02_wumpus_diagnostics/` (value and reward heads, full-information bound, simulation count, start-percept split, off-policy diagnostic).
 - **Not yet generic:** `sweep.py` and `experiments/aggregate.py` are still Tiger-only (they call `analyze_run`, which needs the solver). A Wumpus sweep needs a Wumpus aggregation first.
 
 ## 6. Next actions (in order)
 
-1. **Ask the user** which fix to try for the planner's undirected wandering (section 4c, baseline). The options presented on 2026-10-02 are in the next commit's message, or in the user's answer recorded in memory.
+1. **Off-policy diagnostic (user's choice, 2026-10-02, over: tighter value support, real-return value anchor, exploration schedule).** `reports/2026-10-02_wumpus_diagnostics/offpolicy_reference.py` trains the unchanged stack with the baseline's config on 32 reference-agent (risk 0.4) + 32 random games per collection (the planner never collects), launched 18:23 into `runs/wumpus/offpolicy_reference_seed0`. When it finishes, run `uv run analyze.py runs/wumpus/offpolicy_reference_seed0` and compare with the baseline. Planner near the reference → data/exploration is the bottleneck; near the baseline → value learning is.
+2. **Report plainly, then ask** which fix to pursue given the answer (the remaining options are listed in step 1).
 3. Once Wumpus plays well: build a Wumpus seed sweep and aggregation, then a reviewer-page section with the latent figures.
 4. **Ask before pushing** `4d1ace5` onward.
 5. **Deferred:**
