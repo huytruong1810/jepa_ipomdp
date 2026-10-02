@@ -65,7 +65,7 @@ class TestLayouts:
 
 
 class TestRules:
-    # Cells: c = x + 4 y. Start c = 0 facing East; c = 1 is East of it, c = 4 North of it.
+    # Cells: c = x + 4 y. Start c = 0 facing North; c = 1 is East of it, c = 4 North of it.
 
     def test_initial_percepts(self, world):
         breezy = _layout(world, (1, 10), wumpus=15, gold=14)      # pit East of the start
@@ -75,35 +75,37 @@ class TestRules:
 
     def test_bump_turns_and_death_in_pit(self, world):
         layout = _layout(world, (5, 10), wumpus=15, gold=14)      # pit at (1,1), diagonal to the start
-        steps = _play(world, layout, [A.TURN_RIGHT, A.FORWARD, A.TURN_LEFT, A.FORWARD, A.TURN_LEFT, A.FORWARD])
-        assert steps[0][2].heading.item() == Heading.SOUTH and steps[0][1] == -1.0
-        assert steps[1][0] == Percept.BUMP and steps[1][2].cell.item() == 0            # wall to the South
-        assert steps[3][2].cell.item() == 1 and steps[3][0] == Percept.BREEZE           # (1,0) is next to the pit
-        observation, reward, state = steps[5]                                            # North into (1,1): the pit
+        steps = _play(world, layout, [A.TURN_LEFT, A.FORWARD, A.TURN_RIGHT, A.TURN_RIGHT, A.FORWARD, A.TURN_LEFT,
+                                      A.FORWARD])
+        assert steps[0][2].heading.item() == Heading.WEST and steps[0][1] == -1.0
+        assert steps[1][0] == Percept.BUMP and steps[1][2].cell.item() == 0            # wall to the West
+        assert steps[3][2].heading.item() == Heading.EAST
+        assert steps[4][2].cell.item() == 1 and steps[4][0] == Percept.BREEZE           # (1,0) is next to the pit
+        observation, reward, state = steps[6]                                            # North into (1,1): the pit
         assert observation == GAME_OVER and reward == -1001.0 and bool(state.done)
 
     def test_game_over_is_absorbing(self, world):
-        layout = _layout(world, (1, 10), wumpus=15, gold=14)
+        layout = _layout(world, (4, 10), wumpus=15, gold=14)      # pit North of the start
         steps = _play(world, layout, [A.FORWARD, A.FORWARD, A.SHOOT, A.TURN_LEFT])
         assert steps[0][:2] == (GAME_OVER, -1001.0)
         assert [s[:2] for s in steps[1:]] == [(GAME_OVER, 0.0)] * 3
         assert bool(steps[-1][2].arrow)                                                  # nothing changes once over
 
     def test_arrow_scream_and_safe_dead_wumpus(self, world):
-        layout = _layout(world, (10, 11), wumpus=2, gold=3)       # wumpus two cells East, gold behind it
+        layout = _layout(world, (10, 11), wumpus=8, gold=12)      # wumpus two cells North, gold behind it
         steps = _play(world, layout, [A.SHOOT, A.SHOOT, A.FORWARD, A.FORWARD, A.FORWARD, A.GRAB])
         assert steps[0][:2] == (Percept.SCREAM, -10.0)            # killed from two cells away
         assert not bool(steps[0][2].arrow) and not bool(steps[0][2].wumpus_alive)
         assert steps[1][:2] == (0, -1.0)                           # no arrow left: a plain -1 action
-        assert steps[2][0] == Percept.STENCH                       # (1,0): next to the dead wumpus
+        assert steps[2][0] == Percept.STENCH                       # (0,1): next to the dead wumpus
         assert steps[3][0] == Percept.STENCH and not bool(steps[3][2].done)   # its own cell still smells, safe
-        assert steps[4][0] == Percept.STENCH | Percept.GLITTER     # (3,0): the gold, next to the dead wumpus
+        assert steps[4][0] == Percept.STENCH | Percept.GLITTER     # (0,3): the gold, next to the dead wumpus
         assert steps[5][:2] == (GAME_OVER, 999.0)
 
     def test_missed_shot_and_live_wumpus_kills(self, world):
-        layout = _layout(world, (10, 11), wumpus=4, gold=3)       # wumpus North of the start
-        steps = _play(world, layout, [A.SHOOT, A.TURN_LEFT, A.FORWARD])
-        assert steps[0][:2] == (Percept.STENCH, -10.0) and bool(steps[0][2].wumpus_alive)   # shot East: missed
+        layout = _layout(world, (10, 11), wumpus=1, gold=3)       # wumpus East of the start
+        steps = _play(world, layout, [A.SHOOT, A.TURN_RIGHT, A.FORWARD])
+        assert steps[0][:2] == (Percept.STENCH, -10.0) and bool(steps[0][2].wumpus_alive)   # shot North: missed
         assert steps[2][:2] == (GAME_OVER, -1001.0)
 
     def test_grab_off_the_gold_does_nothing(self, world):
@@ -124,7 +126,7 @@ class TestSimulator:
             return first, start, torch.stack([o.observation for o in outs]), outs[-1].truncated
         first, start, observations, truncated = run(3)
         assert torch.equal(first, world.initial_observation(start)) and bool(truncated.all())
-        assert start.cell.eq(0).all() and start.heading.eq(Heading.EAST).all()
+        assert start.cell.eq(0).all() and start.heading.eq(Heading.NORTH).all()
         again = run(3)
         assert torch.equal(first, again[0]) and torch.equal(observations, again[2])
         assert not torch.equal(start.layout, run(4)[1].layout)

@@ -92,7 +92,7 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 ## 4c. Wumpus World (current work)
 
 **Domain:** the user's decisions of 2026-10-01, implemented in `src/ipomdp/domain/wumpus.py`.
-- **Layout:** a 4x4 grid with the start at cell 0 = R&N's [1,1], facing East. Cell index c = x + 4y.
+- **Layout:** a 4x4 grid with the start at cell 0 = R&N's [1,1], **facing North** (user decision 2026-10-02; R&N and every run before that date face East). Cell index c = x + 4y.
 - **Placement:** 2 pits, 1 wumpus and 1 gold on pairwise distinct non-start cells, giving 16,380 equally likely layouts. Unwinnable layouts are allowed.
 - **Actions:** FORWARD, TURN_LEFT, TURN_RIGHT, GRAB, SHOOT. **No Climb** (the user's choice, against the recommendation); grabbing the gold wins.
 - **Rewards:**
@@ -104,14 +104,14 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
   - The 5 percept bits (STENCH, BREEZE, GLITTER, BUMP, SCREAM), giving observations 0..31, plus GAME_OVER = 32.
   - Position and heading are **not** observed; the hunter must dead-reckon.
   - **An initial observation o₀** (the start-cell percept) is emitted by `reset()`. Tiger emits none.
-- **End of game:** win or death leads to an **absorbing GAME_OVER state** with reward 0 for the rest of the fixed 100-step window, which holds one game.
+- **End of game:** win or death leads to an **absorbing GAME_OVER state** with reward 0 for the rest of the fixed **50-step window** (user decision 2026-10-02; was 100), which holds one game. With the layout known, every winnable layout (98.8%) is won within 50 steps, and the full-information bound is V*(b₀) ≤ 936.
 - **Ground truth:**
   - An exact enumeration filter, `WumpusBeliefTracker`, provides marginals P(pit / wumpus / gold at c) and the hunter's exact own state.
   - One `step_rules()` serves both the simulator and the filter.
   - There is no solver.
 - **Model and search** (`conf/env/wumpus.yaml`): latent 128 and hidden 256 (Tiger uses 32 / 64), and observation branches with P̂ < 1e-3 pruned and renormalised (`mcts.observation_prune`). Everything else uses Tiger's defaults: 64 games per collection, 64 updates per collection, 50 simulations, 256 warm-up games and JEPA representation.
 
-**Full run `runs/wumpus/full_seed0`:** greedy in-training evaluation, 128 games each, standard error about 30:
+**Full run `runs/wumpus/full_seed0`** (old setup: East start, 100-step window; not comparable with runs after 2026-10-02): greedy in-training evaluation, 128 games each, standard error about 30:
 
 | Collection | Return | Win | Death | Unfinished |
 |---|---|---|---|---|

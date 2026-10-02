@@ -6,7 +6,8 @@
 # DESIGN DECISIONS & THEORETICAL FOUNDATIONS:
 # 1. The World (Russell & Norvig's Wumpus World, the variant chosen by the user, 2026-10-01):
 #    - A 4x4 grid. Cell index c = x + 4 y with x, y in 0..3; R&N's square [1,1] is c = 0,
-#      [2,1] is c = 1, [1,2] is c = 4. The hunter starts at c = 0 facing East.
+#      [2,1] is c = 1, [1,2] is c = 4. The hunter starts at c = 0 facing North (user decision,
+#      2026-10-02; R&N's own agent starts facing East).
 #    - Exactly 2 pits, 1 wumpus and 1 gold, on pairwise distinct cells, none at the start.
 #      Every such layout is equally likely: 105 pit pairs x 13 wumpus cells x 12 gold cells =
 #      16,380 layouts. Unwinnable layouts (gold walled off by pits) are kept, as in R&N.
@@ -18,8 +19,9 @@
 #      if the wumpus is anywhere on that line. A shot without the arrow costs -1 and does
 #      nothing. The dead wumpus's cell is safe to enter.
 #    - Discount gamma = 0.99 (user decision). R&N's performance measure is undiscounted; the
-#      discount keeps values finite and its effective horizon (100) matches the 100-step
-#      window (conf/env/wumpus.yaml).
+#      discount keeps values finite. The window is 50 steps (user decision, 2026-10-02;
+#      conf/env/wumpus.yaml), shorter than the effective horizon 1/(1 - gamma) = 100 but ample
+#      for a 4x4 game: with the layout known, every winnable layout is won within 50 steps.
 #
 # 2. Percepts (the 5 R&N bits, user decision; position and heading are NOT observed):
 #      STENCH   the wumpus (alive or dead) is in the hunter's cell or a 4-neighbour
@@ -36,7 +38,7 @@
 #
 # 3. End of the Game Is an Absorbing State (user decision):
 #    - After a win or a death the row stays in an absorbing state: observation GAME_OVER and
-#      reward 0 on every remaining step of the fixed 100-step window. The window holds exactly
+#      reward 0 on every remaining step of the fixed 50-step window. The window holds exactly
 #      one game, the training objective is the standard episodic discounted return, and the
 #      replay buffer still stores fixed-length episodes (no masks). The learned model has to
 #      learn that GAME_OVER is absorbing with value 0; its Bellman targets reach that fixed
@@ -97,6 +99,8 @@ class Heading(IntEnum):
     NORTH = 1
     WEST = 2
     SOUTH = 3
+
+START_HEADING = Heading.NORTH
 
 
 class Percept(IntEnum):
@@ -223,9 +227,9 @@ class WumpusWorld:
         return (abs(DEATH_REWARD) + abs(STEP_COST)) / (1.0 - self.discount)
 
     def initial_state(self, layout: Tensor) -> WumpusState:
-        """The hunter at the start cell facing East with its arrow, the wumpus alive."""
+        """The hunter at the start cell facing North with its arrow, the wumpus alive."""
         zeros = torch.zeros_like(layout)
-        return WumpusState(layout, zeros + START_CELL, zeros + Heading.EAST, torch.ones_like(layout, dtype=torch.bool),
+        return WumpusState(layout, zeros + START_CELL, zeros + START_HEADING, torch.ones_like(layout, dtype=torch.bool),
                            torch.ones_like(layout, dtype=torch.bool), torch.zeros_like(layout, dtype=torch.bool))
 
     def percepts(self, state: WumpusState, bump: Tensor, scream: Tensor) -> Tensor:
