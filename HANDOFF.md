@@ -113,6 +113,36 @@ The decoder passes every threshold of the JEPA gate. The value-error gap in this
 - The decoder escapes always-listen somewhat earlier. At collection 10, 4 of 5 decoder seeds had left −19.88 against 1 of 5 JEPA seeds. From collection 20 the in-training evaluations of the two conditions agree within noise, and at collections 35–40 within 0.05, since both play the optimal policy on the same evaluation episodes.
 - Interpretation (a hypothesis, not tested): Tiger's observation is one bit, so predicting it costs nothing and is itself a belief-sufficient target (P(o′|b, listen) is monotone in b). Separating JEPA from a decoder needs observations that are expensive or distracting to reconstruct. Tiger has a ceiling effect, so the hybrid condition cannot be informative on it either.
 
+## 4c. Wumpus World (started 2026-10-01)
+
+The user moved on from Tiger to the single-hunter 4x4 Wumpus World, with no exact solver. Their decisions:
+- 2 pits, 1 wumpus and 1 gold on distinct non-start cells; unwinnable worlds allowed.
+- 5 actions (no Climb; grabbing the gold wins).
+- R&N rewards, γ = 0.99.
+- The 5 percept bits only, plus an initial start-cell percept o_0.
+- Absorbing GAME_OVER state.
+- Exact enumeration filter as ground truth.
+- Observation pruning at 1e-3.
+- Latent 128, hidden 256.
+
+The code is done and tested (`90b489d`). Tiger is bit-identical (GPU fingerprint). Train with `uv run main.py env=wumpus`; analyse with `uv run analyze.py <run>`.
+
+Smoke run (`runs/wumpus/smoke_seed0`, 10 collections, about 2.5 min per planned collection; analysed with 128 games):
+
+| | Return | Win | Death | Unfinished |
+|---|---|---|---|---|
+| Learned planner | 36.5 ± 27.1 | 10% | 0% | 90% |
+| Random hunter | −462 | 16% | 73% | — |
+
+The planner is cautious: it never dies but rarely wins.
+
+On agent histories the MLP probe's hazard error beats the constant baseline (pit 0.040 vs 0.094, wumpus 0.027 vs 0.065), and it decodes the hunter's cell at 76%. Heading is near chance (31%), and on random histories the probes barely beat the constant baseline.
+
+**Next:**
+1. Launch a full single-seed run (about 100 collections, about 4–5 h).
+2. Analyse it and look at `analysis/belief_maps.png`.
+3. Report honestly, including whether heading and position are learned.
+
 ## 5. History (commit, then the gist)
 
 - `ba1d3fc`, **Phase 1:** canonical Tiger rebuilt as the single source of truth (the old one had a free t = 0 observation, informative post-door growls and γ = 0.99). Added the exact Bayes filter, the certified alpha-vector solver and a seeded batched env.

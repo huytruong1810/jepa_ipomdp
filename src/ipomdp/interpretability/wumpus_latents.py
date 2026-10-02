@@ -237,10 +237,11 @@ def plot_latent_pca(data: WumpusLatentDataset) -> plt.Figure:
     coords = (centred @ vh[:2].T).cpu().numpy()
     ratios = (singular ** 2 / (singular ** 2).sum())[:2].tolist()
     fig, axes = plt.subplots(1, 2, figsize=(13, 5.5), dpi=130)
-    panels = ((data.cell, "tab20", "hunter cell (x + 4y)"),
-              (data.log_layouts, "viridis", "log10 consistent layouts (uncertainty)"))
-    for ax, (colour, cmap, label) in zip(axes, panels):
-        points = ax.scatter(coords[:, 0], coords[:, 1], c=colour.cpu().numpy(), cmap=cmap, s=3, alpha=0.5)
+    panels = ((data.cell, "tab20", "hunter cell (x + 4y)", (0, NUM_CELLS - 1)),
+              (data.log_layouts, "viridis", "log10 consistent layouts (uncertainty)", (None, None)))
+    for ax, (colour, cmap, label, (low, high)) in zip(axes, panels):
+        points = ax.scatter(coords[:, 0], coords[:, 1], c=colour.cpu().numpy(), cmap=cmap, vmin=low, vmax=high, s=3,
+                            alpha=0.5)
         fig.colorbar(points, ax=ax, label=label)
         ax.set_xlabel(f"PC1 ({ratios[0]:.1%} of variance)")
         ax.set_ylabel(f"PC2 ({ratios[1]:.1%} of variance)")
