@@ -9,6 +9,8 @@ What is verified, and why it matters downstream:
     3. The simulator is seeded, checkpointable, and returns the start-cell percept from reset().
     4. The exact enumeration filter never loses the true layout, tracks the hunter's own state
        exactly, and its marginals are calibrated (5-standard-error test on random play).
+    5. The exact-belief reference agent never dies when it does not gamble, walks to visible
+       gold and shoots a possible wumpus to clear a cell (it is the lower bound on V*).
 The filter is the ground truth the learned latent is probed against, so an error here would
 silently invalidate every latent figure.
 """
@@ -17,7 +19,7 @@ import pytest
 import torch
 
 from ipomdp.domain.wumpus import (GAME_OVER, Heading, Percept, WumpusAction, WumpusBeliefTracker, WumpusSimulator,
-                                  WumpusState, WumpusWorld)
+                                  WumpusState, WumpusWorld, game_outcomes)
 
 CPU = torch.device("cpu")
 A = WumpusAction
@@ -272,3 +274,39 @@ class TestLearningStack:
         probe = fit_linear_wumpus_probe(data)
         plt.close(plot_belief_maps(data, probe, episode=int(data.episode[0]), num_steps=3))
         plt.close(plot_latent_pca(data))
+
+
+class TestReferenceAgent:
+    """The exact-belief reference agent (agents/wumpus_reference.py): safe by construction, and it uses the arrow."""
+
+    @staticmethod
+    def _play_layout(world, layout: int, agent, steps: int) -> list[tuple[int, int, float]]:
+        state = world.initial_state(torch.tensor([layout]))
+        agent.reset(world.initial_observation(state))
+        out = []
+        for _ in range(steps):
+            action = agent.act()
+            state, observation, reward = world.step_rules(state, action)
+            agent.update(action, observation)
+            out.append((int(action), int(observation), float(reward)))
+        return out
+
+    def test_never_dies_without_gambling(self, world):
+        from ipomdp.agents import WumpusReferenceAgent
+        from ipomdp.training import play_episodes
+        episodes, _ = play_episodes(WumpusSimulator(world, 128, 30, 5, CPU), WumpusReferenceAgent(world, 128, 0.0))
+        outcomes = game_outcomes(episodes.rewards)
+        assert outcomes["death_rate"] == 0.0 and outcomes["win_rate"] > 0.3
+
+    def test_walks_to_visible_gold(self, world):
+        from ipomdp.agents import WumpusReferenceAgent
+        layout = _layout(world, (10, 11), wumpus=15, gold=4)      # quiet start, gold straight ahead (North)
+        steps = self._play_layout(world, layout, WumpusReferenceAgent(world, 1, 0.0), 2)
+        assert [s[0] for s in steps] == [A.FORWARD, A.GRAB] and steps[1][2] == 999.0
+
+    def test_shoots_a_possible_wumpus_ahead(self, world):
+        from ipomdp.agents import WumpusReferenceAgent
+        layout = _layout(world, (10, 11), wumpus=4, gold=14)      # stench, no breeze: the wumpus is at c = 1 or 4
+        steps = self._play_layout(world, layout, WumpusReferenceAgent(world, 1, 0.0), 2)
+        assert steps[0] == (A.SHOOT, Percept.STENCH | Percept.SCREAM, -10.0)
+        assert steps[1][0] == A.FORWARD and steps[1][2] == -1.0     # (0,1) is safe now: the wumpus is dead

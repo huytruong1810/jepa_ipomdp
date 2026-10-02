@@ -2,7 +2,7 @@
 
 Read `CLAUDE.md` first. It describes the architecture, commands and conventions. This file covers the project's goals, current state, results, history, dead ends and next steps. The module headers (`DESIGN DECISIONS & THEORETICAL FOUNDATIONS` blocks) record the evidence behind each design choice; read the relevant header before changing a module.
 
-**Where we are in one paragraph.** The learned agent matches the exact optimum on canonical Tiger across 5 seeds. A decoder-based baseline matches it too, so Tiger cannot tell the two representations apart. The project has moved on to the single-hunter 4x4 **Wumpus World**, which has no exact solver. The code is done and tested. One full training run finished (`runs/wumpus/full_seed0`), but **it plateaued**: it wins 10–20% of games and leaves about 80% unfinished. **It has not been analysed yet.** The next session starts by analysing it (section 6, step 1).
+**Where we are in one paragraph.** The learned agent matches the exact optimum on canonical Tiger across 5 seeds. A decoder-based baseline matches it too, so Tiger cannot tell the two representations apart. The project has moved on to the single-hunter 4x4 **Wumpus World**, which has no exact solver. On 2026-10-02 the user changed the setup to a **North start and a 50-step window**. The first full run (old setup) was analysed: **the learned planner wins no more often than a random hunter (18% vs 17%)**; it learned not to die by idling at the start. An **exact-belief reference agent** now bounds V*(b₀) from below (≈ 573; the full-information upper bound is 936). A baseline run on the new setup (`runs/wumpus/north50_seed0`) was launched 2026-10-02 15:35 (section 6, step 1).
 
 ## 1. Goals
 
@@ -44,9 +44,9 @@ Stages:
 
 ## 3. Current state
 
-- **Git:** `main` is pushed through `61991c7`. Local and unpushed (ask before pushing): `4d1ace5`, `90b489d`, `a1506f0` and this HANDOFF commit.
+- **Git:** `main` is pushed through `61991c7`. Everything after it is local and unpushed (ask before pushing), from `4d1ace5` to the latest HANDOFF commit.
 - **Tests:**
-  - The fast suite passes (146 tests, about 45 s). `tests/conftest.py` pins torch to one CPU thread; with 24 threads, a loaded machine made it 204 s.
+  - The fast suite passes (149 tests, about 45 s unloaded, 80 s under load). `tests/conftest.py` pins torch to one CPU thread; with 24 threads, a loaded machine made it 204 s.
   - The slow suite passed 7/7 on 2026-09-30 (post-Phase 8, Tiger). It has not been rerun since the Wumpus refactor. Tiger is proven unchanged by a GPU fingerprint instead (section 5).
 - **Runs** (`runs/` is untracked):
   - `runs/sweeps/polyak`: Tiger JEPA, 5 seeds, **the numbers to cite**.
@@ -125,12 +125,37 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 - The `best.pt` score of 107 is a winner's-curse maximum of 20 noisy evaluations; re-estimate it on fresh seeds.
 - Planned collections took about 3 min each under load.
 
+**Analysis of `full_seed0`** (2026-10-02; 512 fresh games, old setup; `runs/wumpus/full_seed0_c100` is a copy holding collection 100's networks as `best.pt`):
+
+| | Return | Win | Death | Unfinished |
+|---|---|---|---|---|
+| Planner, collection 20 (`best.pt`) | 83 ± 17 | 18.4% | 2.1% | 79.5% |
+| Planner, collection 100 | −241 ± 14 | 0.4% | 25.6% | 74.0% |
+| Random hunter | −441 ± 27 | 17.4% | 69.7% | 12.9% |
+
+- **Probes on agent histories (MLP, collection 20 / 100):** pit error 0.046 / 0.029 vs constant 0.093 / 0.097; wumpus 0.030 / 0.015 vs 0.061 / 0.077; gold no better than constant at collection 20. Heading 32% / 65% (chance 25%). Cell 72% / 86%, probably inflated by the hunter rarely leaving cell 0 (majority baseline not computed). On random histories the probes barely beat the constant.
+- **Belief map** of the longest held-out game: breeze and stench at the start; the hunter turns in place for 100 steps and never shoots. The decoded hazard maps follow the exact ones but are overconfident.
+- **Value head** (scratch diagnostic, random histories): V̂(z₀) = 251 (collection 20) and 529 (collection 100). V̂ correlates 0.32 with realised return-to-go and scores idling states at ≈ 250, where idling is worth −63 over 100 steps. V̂ equals its own one-step Bellman backup through the model, so the model is self-consistent, but V̂ is nearly flat across states. Mean Q per action (collection 20): FORWARD 148, turns, GRAB and SHOOT ≈ 251–253, so any move with death risk loses to waiting.
+- **Reward head is accurate:** GRAB predicts 25.4 on average against the exact 25.4; −1.00 where P(gold here) = 0; +998 where P(gold here) > 0.5.
+- **Telemetry:** the target value mean rose from 124 (collection 13) to 332 (collection 100) while collection returns stayed negative; collection action fractions stayed near uniform even at temperature 0.1; greedy evaluation spent 30–58% of actions on GRAB.
+- **Working diagnosis (untested):** the flat value makes progress look nearly free to postpone, so the planner prefers zero-risk idling to any move with death risk. The planner learned "don't die", not "find the gold".
+
+**Reference bounds (new setup, 512 games, `agents/wumpus_reference.py`):**
+- **Upper:** with the layout known, mean V(b₀) = 936.3, and 98.83% of layouts are winnable, all within 50 steps (scratch value iteration over all 16,380 layouts with `step_rules`).
+- **Lower:** the exact-belief reference agent (safe exploration by shortest path, shoot to clear, gamble below a risk threshold):
+
+| Risk threshold | Return | Win | Death |
+|---|---|---|---|
+| 0 (never gambles) | 526 ± 20 | 62.3% | 0% |
+| 0.4 (best of the grid) | 573 ± 20 | 69.7% | 1.8% |
+| 1 (always gambles) | 517 ± 32 | 81.2% | 18.8% |
+
 **Smoke run** (`runs/wumpus/smoke_seed0`, 10 collections; `analyze.py` with 128 games):
 - **Returns:** the planner earned 36.5 ± 27.1 (win 10%, death 0%). A random hunter earned −462 (win 16%, death 73%).
 - **Probe error against a constant guess, MLP probe on agent histories:** pit 0.040 vs 0.094, wumpus 0.027 vs 0.065, gold 0.011 vs 0.013. Cell decoded 76% correctly. **Heading at chance, 31%.**
 - **On random-policy histories** the probes barely beat the constant guess. Random games are short, because the random hunter dies quickly.
 
-**Hypotheses for the plateau**, all untested; analysis comes first:
+**Hypotheses for the plateau** (before the analysis above; 1 is weakened by the heading result at collection 100, 2–4 still stand):
 1. **The latent may not track heading or position well enough.** The smoke heading accuracy was 31%. Without heading the hunter cannot plan routes, and caution is the safe fixed point.
 2. **The search is too shallow** for routes of 6–15 actions, which include turns; leaves rely on a value head trained by fitted VI at reward scale ±1000.
 3. **Exploration:** after warm-up, Dirichlet noise and the visit-count temperature over 5 actions may rarely produce long successful excursions. Unwinnable layouts also reward caution.
@@ -161,6 +186,8 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
   - Tests pinned to one thread.
   - **Tiger verified bit-identical:** a 3-collection GPU fingerprint of metrics and parameter sums matches the pre-refactor commit exactly.
 - `a1506f0`: fixed colour range for the latent-PCA cell panel; HANDOFF.
+- `ae2d108`: North start and 50-step window (user decision).
+- `HEAD`: exact-belief reference agent (`agents/wumpus_reference.py`, 3 tests) in the Wumpus analysis; analysis of `full_seed0`.
 
 ## 5b. Files touched in the Wumpus work (`4d1ace5`, `90b489d`, `a1506f0`)
 
@@ -189,16 +216,8 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 
 ## 6. Next actions (in order)
 
-1. **Analyse `runs/wumpus/full_seed0`.** Check `uptime` first.
-   - Run `uv run analyze.py runs/wumpus/full_seed0`: 512 fresh games, MLP probes for 3000 steps, about 30 min or more under load.
-   - Look at `analysis/belief_maps.png` and `analysis/latent_pca.png`.
-   - Check whether the latent tracks **heading and cell** on the agent's own histories, and whether the hazard marginals beat the constant baseline.
-   - The analysis uses `best.pt` (collection 20). Also consider analysing `latest.pt` (collection 100) to see the collapse. That needs a small helper or a temporary copy, because `load_trained_run` reads `best.pt`.
-2. **Report plainly to the user**, then **ask** which diagnosis or fix to try. Present the hypotheses in section 4c with a recommendation; the choice is theirs. Candidate cheap checks:
-   - **Representation:** a heading/cell probe over training, or an acceptance-style off-policy test on Wumpus random data.
-   - **Search depth:** more simulations at evaluation only, on the same checkpoint.
-   - **Value scale:** inspect value-head predictions against returns.
-   - **Exploration:** the action and outcome histograms in TensorBoard (`collect_*`).
+1. **Baseline on the new setup:** `runs/wumpus/north50_seed0` (seed 0, default config, `env=wumpus`), launched 2026-10-02 15:35. When it finishes, run `uv run analyze.py runs/wumpus/north50_seed0`; the report now includes the reference agents on the same layouts.
+2. **Report plainly to the user**, then **ask** which fix to try for the flat value / idling (section 4c), with a recommendation. A 200-simulation greedy evaluation of `full_seed0/best.pt` (search depth) was running at handoff time; its scratch output is not kept.
 3. Once Wumpus plays well: build a Wumpus seed sweep and aggregation, then a reviewer-page section with the latent figures.
 4. **Ask before pushing** `4d1ace5` onward.
 5. **Deferred:**

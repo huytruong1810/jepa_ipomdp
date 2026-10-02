@@ -8,7 +8,9 @@
 #    - Performance: discounted return, win, death and unfinished rates of the greedy learned
 #      planner on fresh simulator seeds (runs.py, section 3: the training-time best.pt score
 #      is a biased maximum). A uniformly random hunter on the SAME layouts (same seed) is the
-#      floor; there is no optimum to report a gap against.
+#      floor. There is no optimum; the exact-belief reference agent (agents/wumpus_reference.py)
+#      on the same layouts is the yardstick from below (any policy's return <= V*), one entry
+#      per risk threshold in the settings.
 #    - Representation: probes from the agent's acting latents to the exact enumeration filter
 #      (interpretability/wumpus_latents.py), fitted and evaluated on disjoint episodes, on
 #      random-policy histories (broad coverage, but short: a random hunter dies quickly) and on
@@ -27,7 +29,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import torch
 
-from ..agents import PlanningAgent, UniformRandomAgent
+from ..agents import PlanningAgent, UniformRandomAgent, WumpusReferenceAgent
 from ..domain import WumpusSimulator, WumpusWorld, game_outcomes
 from ..interpretability import (build_wumpus_dataset, evaluate_wumpus_probe, fit_linear_wumpus_probe,
                                 fit_mlp_wumpus_probe, plot_belief_maps, plot_latent_pca)
@@ -43,11 +45,14 @@ class WumpusAnalysisSettings:
         episodes: Games per return estimate and per probe data set (split in halves for fit / held-out).
         mlp_probe_steps: Adam steps of each MLP probe fit.
         seed: Base seed of the analysis streams (training/seeding.py); never a training stream.
+        reference_risk_thresholds: Risk thresholds of the reference agents (agents/wumpus_reference.py,
+            section 2d): 0 never gambles, 1 always does.
     """
 
     episodes: int = 512
     mlp_probe_steps: int = 3000
     seed: int = 12345
+    reference_risk_thresholds: tuple[float, ...] = (0.0, 0.4, 1.0)
 
 
 def _halves(episodes: EpisodeBatch) -> tuple[EpisodeBatch, EpisodeBatch]:
@@ -89,6 +94,9 @@ def analyze_wumpus_run(run_dir: Path, settings: WumpusAnalysisSettings, device: 
                     "returns": {"learned_planner": _summary(agent_episodes, world.discount),
                                 "random": _summary(random_episodes, world.discount)},
                     "probes": {}}
+    for threshold in settings.reference_risk_thresholds:
+        reference_episodes, _ = play_episodes(simulator(), WumpusReferenceAgent(world, n, threshold))
+        report["returns"][f"reference_risk{threshold:g}"] = _summary(reference_episodes, world.discount)
 
     out = run_dir / "analysis"
     out.mkdir(exist_ok=True)
