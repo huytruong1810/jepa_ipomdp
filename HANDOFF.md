@@ -40,7 +40,7 @@ Stages:
   - `~/projects/ipomcp` often runs CPU-heavy jobs here (load average 10–24 on 24 cores). Check `uptime` and `pgrep -af "python.*(main|sweep|analyze).py"` before long runs.
   - The search is CPU/Python-bound, so load stretches wall time but not results, because everything is seeded.
   - **Detach long runs** with `setsid nohup uv run main.py ... > log 2>&1 < /dev/null &`, and then confirm the process is alive. The "Done" job line printed by `setsid` refers to the launcher, not the run.
-  - **Background "wait until exit" watchers may never notify** across idle periods: the Wumpus run finished at 05:39, and nobody noticed until the user asked. Check the processes and logs directly.
+  - **Never wait on a run with `pgrep -f "<pattern>"` inside a shell loop.** The loop's own `bash -c` command line contains the pattern, so `pgrep` always matches itself and the loop never ends. That is why no watcher ever reported the Wumpus run finishing at 05:39. Match the python process instead, e.g. `ps -eo args | grep "^[^ ]*python[^ ]* main.py env=wumpus"`, or wait on the PID with `while kill -0 <pid>; do sleep 60; done`.
 
 ## 3. Current state
 
@@ -238,4 +238,4 @@ Methodology and tooling:
 - **Changing initialisation order in `TrainingRun`** would break bit-exact reproduction of the cited Tiger runs. New modules must be built after the existing ones.
 - **Hydra `@package` placed below a header comment** is silently ignored. It must be line 1.
 - **Comparing metric dicts with `==`:** `mean_win_step` is NaN when no game is won, and NaN ≠ NaN. Compare `repr()`.
-- **Relying on a background watcher's completion notification:** check processes and logs directly.
+- **`pgrep -f` in a watcher loop matches the loop itself** and never exits (section 2, Machine). Match the python process or wait on its PID.
