@@ -217,7 +217,7 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 
 ## 6. Next actions (in order)
 
-1. **Baseline on the new setup:** `runs/wumpus/north50_seed0` (seed 0, default config, `env=wumpus`), launched 2026-10-02 15:35. When it finishes, run `uv run analyze.py runs/wumpus/north50_seed0`; the report now includes the reference agents on the same layouts.
+1. **Baseline on the new setup:** `runs/wumpus/north50_seed0` (seed 0, default config, `env=wumpus`), launched 2026-10-02 15:35 with the default 2560 episodes (40 collections; evaluations 47, 24, 31, −18, −22, 44 at collections 5–40, no clear trend), then resumed bit-for-bit at 16:34 with `training.total_episodes=6400` to match `full_seed0`'s 100 collections (temperature decays per collection, independent of the total). `main_part1.log` and `.hydra_part1/` keep the first launch's log and config. When it finishes, run `uv run analyze.py runs/wumpus/north50_seed0`; the report now includes the reference agents on the same layouts.
 2. **Report plainly to the user**, then **ask** which fix to try for the flat value / idling (section 4c), with a recommendation.
 3. Once Wumpus plays well: build a Wumpus seed sweep and aggregation, then a reviewer-page section with the latent figures.
 4. **Ask before pushing** `4d1ace5` onward.
