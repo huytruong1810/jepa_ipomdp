@@ -145,6 +145,21 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 - With a quiet start the planner **does move** (FORWARD is 49% of all its actions; every quiet-start game has a FORWARD) but rarely finds the gold. It wanders instead of exploring new safe cells. GRAB is 22% of actions. **The gap is directed exploration toward unvisited cells, not representation and not search depth.**
 - The value support is loose for Wumpus: `value_bound` = 1001/(1 − γ) = 100,100, so only 153 of 255 bins lie in the reachable return range ±1001 and the spacing near 500 is 49.
 
+**Decoder run, `runs/wumpus/north50_decoder_seed0`** (`model.representation=decoder`, otherwise identical to `north50_seed0`; 2 h 35 min under load; `best.pt` from collection 25; logs of the checks in the run directory):
+
+| | JEPA (`north50_seed0`) | Decoder |
+|---|---|---|
+| Planner, 512 games | 110 ± 20, win 19.3%, death 3.7% | 85 ± 21, win 21.7%, death 9.0% |
+| Quiet start: win / death | 26% / 1% | 35% / 11% |
+| Predicted P(GAME_OVER) at exact danger 0 / 0.99 | 0.19 / 0.39 | 0.15 / 0.46 |
+| Q(FORWARD) − Q(TURN_LEFT) at provably safe states | −199 | −132 |
+| Danger probe decodes exact 0.99 as | 0.47 | 0.54 |
+| Agent-history probe: cell / heading | 95% / 85% | 89% / 75% |
+
+- **The decoder does not fix it; the hypothesis is refuted.** Observation gradients into the filter do not make the danger ahead decodable. The limitation is shared by both representations.
+- Decoder FORWARD fraction is only 9.5% (JEPA 49%).
+- A small error in P(death) is amplified by the ±1000 rewards: predicting 0.15 instead of 0 on a safe step costs about 150, which outweighs exploring.
+
 **Off-policy diagnostic, `runs/wumpus/offpolicy_reference_seed0`** (`reports/2026-10-02_wumpus_diagnostics/offpolicy_reference.py`; 32 reference + 32 random games per collection, the planner never collects; otherwise the baseline's config):
 - **The planner got worse, not better.** In-training evaluations: best −20 (collection 45); 0% wins from collection 55 on; deaths 26–81%. Analysis of `best.pt` (512 games): −75 ± 32, win 29%, death 35%, unfinished 36%. Good data does not fix it, so **the bottleneck is what the model learns, not the exploration that generates the data.**
 - **Death prediction is badly calibrated** (`death_calibration.py`, baseline `best.pt`, states of reference games): exact P(death | FORWARD) 0 / 0.5 / 0.99 → predicted P(GAME_OVER) 0.19 / 0.37 / 0.39, and Q(FORWARD) − Q(TURN_LEFT) = −199 / −394 / −598. The model barely separates a provably safe step from certain death and penalises every step, which explains the wandering.
@@ -246,7 +261,7 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 ## 6. Next actions (in order)
 
 1. **Off-policy diagnostic: done** (section 4c). The latent does not encode the danger ahead. Options offered next (2026-10-02): the decoder representation on Wumpus (recommended; existing switch), a hybrid JEPA plus observation gradients (new code), or longer training.
-2. **Decoder run (user's choice, 2026-10-02, over the hybrid and longer training):** `runs/wumpus/north50_decoder_seed0` (`model.representation=decoder`, otherwise identical to `north50_seed0`: seed 0, 6400 episodes), launched 21:10. When it finishes: `uv run analyze.py runs/wumpus/north50_decoder_seed0`, then `death_calibration.py`, `danger_probe.py` and `split_diag.py` on its `best.pt`; compare with the JEPA baseline.
+2. **Decoder run: done; it does not fix the latent** (section 4c). Next step options offered 2026-10-02 (ask the user): a supervised upper bound for the filter architecture (train the same GRU filter directly on the exact belief and danger; privileged diagnostic: is it the objective or the architecture/capacity?), longer training, or pausing Wumpus.
 3. Once Wumpus plays well: build a Wumpus seed sweep and aggregation, then a reviewer-page section with the latent figures.
 4. **Ask before pushing** `4d1ace5` onward.
 5. **Deferred:**
