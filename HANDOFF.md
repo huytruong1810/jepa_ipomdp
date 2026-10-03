@@ -246,7 +246,7 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 ## 6. Next actions (in order)
 
 1. **Off-policy diagnostic: done** (section 4c). The latent does not encode the danger ahead. Options offered next (2026-10-02): the decoder representation on Wumpus (recommended; existing switch), a hybrid JEPA plus observation gradients (new code), or longer training.
-2. **Report plainly, then ask**; record the user's choice here.
+2. **Decoder run (user's choice, 2026-10-02, over the hybrid and longer training):** `runs/wumpus/north50_decoder_seed0` (`model.representation=decoder`, otherwise identical to `north50_seed0`: seed 0, 6400 episodes), launched 21:10. When it finishes: `uv run analyze.py runs/wumpus/north50_decoder_seed0`, then `death_calibration.py`, `danger_probe.py` and `split_diag.py` on its `best.pt`; compare with the JEPA baseline.
 3. Once Wumpus plays well: build a Wumpus seed sweep and aggregation, then a reviewer-page section with the latent figures.
 4. **Ask before pushing** `4d1ace5` onward.
 5. **Deferred:**
