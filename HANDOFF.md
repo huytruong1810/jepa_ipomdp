@@ -145,6 +145,13 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 - With a quiet start the planner **does move** (FORWARD is 49% of all its actions; every quiet-start game has a FORWARD) but rarely finds the gold. It wanders instead of exploring new safe cells. GRAB is 22% of actions. **The gap is directed exploration toward unvisited cells, not representation and not search depth.**
 - The value support is loose for Wumpus: `value_bound` = 1001/(1 − γ) = 100,100, so only 153 of 255 bins lie in the reachable return range ±1001 and the spacing near 500 is 49.
 
+**Off-policy diagnostic, `runs/wumpus/offpolicy_reference_seed0`** (`reports/2026-10-02_wumpus_diagnostics/offpolicy_reference.py`; 32 reference + 32 random games per collection, the planner never collects; otherwise the baseline's config):
+- **The planner got worse, not better.** In-training evaluations: best −20 (collection 45); 0% wins from collection 55 on; deaths 26–81%. Analysis of `best.pt` (512 games): −75 ± 32, win 29%, death 35%, unfinished 36%. Good data does not fix it, so **the bottleneck is what the model learns, not the exploration that generates the data.**
+- **Death prediction is badly calibrated** (`death_calibration.py`, baseline `best.pt`, states of reference games): exact P(death | FORWARD) 0 / 0.5 / 0.99 → predicted P(GAME_OVER) 0.19 / 0.37 / 0.39, and Q(FORWARD) − Q(TURN_LEFT) = −199 / −394 / −598. The model barely separates a provably safe step from certain death and penalises every step, which explains the wandering.
+- **The latent is the bottleneck, not the head** (`danger_probe.py`, reference + random states, held-out): a fresh MLP probe trained directly on the exact danger ahead decodes 0.06 / 0.34 / 0.47 for exact 0 / 0.5 / 0.99 (mean error 0.112 vs head 0.141 vs constant 0.212). Same for the off-policy run.
+- **Localisation is partial on travelling histories** (`reference_probe.py`, reference games): cell 87% (majority 57%), heading 62–66% (majority 31%). The danger ahead needs both, plus the hazard map.
+- **Hypothesis:** in JEPA mode only the JEPA loss and the reward shape the latent. Observation cross-entropy (BUMP, BREEZE, STENCH, GAME_OVER) does not reach the filter, and those percepts are what pin down cell, heading and danger. The decoder baseline (`model.representation=decoder`) routes exactly that gradient into the filter.
+
 **Analysis of `full_seed0`** (2026-10-02; 512 fresh games, old setup; `runs/wumpus/full_seed0_c100` is a copy holding collection 100's networks as `best.pt`):
 
 | | Return | Win | Death | Unfinished |
@@ -238,8 +245,8 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 
 ## 6. Next actions (in order)
 
-1. **Off-policy diagnostic (user's choice, 2026-10-02, over: tighter value support, real-return value anchor, exploration schedule).** `reports/2026-10-02_wumpus_diagnostics/offpolicy_reference.py` trains the unchanged stack with the baseline's config on 32 reference-agent (risk 0.4) + 32 random games per collection (the planner never collects), launched 18:23 into `runs/wumpus/offpolicy_reference_seed0`. When it finishes, run `uv run analyze.py runs/wumpus/offpolicy_reference_seed0` and compare with the baseline. Planner near the reference → data/exploration is the bottleneck; near the baseline → value learning is.
-2. **Report plainly, then ask** which fix to pursue given the answer (the remaining options are listed in step 1).
+1. **Off-policy diagnostic: done** (section 4c). The latent does not encode the danger ahead. Options offered next (2026-10-02): the decoder representation on Wumpus (recommended; existing switch), a hybrid JEPA plus observation gradients (new code), or longer training.
+2. **Report plainly, then ask**; record the user's choice here.
 3. Once Wumpus plays well: build a Wumpus seed sweep and aggregation, then a reviewer-page section with the latent figures.
 4. **Ask before pushing** `4d1ace5` onward.
 5. **Deferred:**
