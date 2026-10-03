@@ -262,7 +262,8 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 
 1. **Off-policy diagnostic: done** (section 4c). The latent does not encode the danger ahead. Options offered next (2026-10-02): the decoder representation on Wumpus (recommended; existing switch), a hybrid JEPA plus observation gradients (new code), or longer training.
 2. **Decoder run: done; it does not fix the latent** (section 4c). Next step options offered 2026-10-02 (ask the user): a supervised upper bound for the filter architecture (train the same GRU filter directly on the exact belief and danger; privileged diagnostic: is it the objective or the architecture/capacity?), longer training, or pausing Wumpus.
-3. Once Wumpus plays well: build a Wumpus seed sweep and aggregation, then a reviewer-page section with the latent figures.
+3. **Supervised upper bound (user's choice, 2026-10-03, over longer training, a larger filter and pausing Wumpus):** `reports/2026-10-02_wumpus_diagnostics/supervised_filter.py` trains the same `BeliefFilter` (128/256/1) directly on exact targets; it is running at 3000 and 12000 steps, with logs in `runs/wumpus/supervised_filter/`. Smoke test (256 games, 500 steps): heading 47% (majority 29%), certain death decoded as 0.39, so it is not trivially easy.
+4. Once Wumpus plays well: build a Wumpus seed sweep and aggregation, then a reviewer-page section with the latent figures.
 4. **Ask before pushing** `4d1ace5` onward.
 5. **Deferred:**
    - The hybrid JEPA+decoder condition (only on a domain where it can separate the two).
