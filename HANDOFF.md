@@ -145,6 +145,18 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 - With a quiet start the planner **does move** (FORWARD is 49% of all its actions; every quiet-start game has a FORWARD) but rarely finds the gold. It wanders instead of exploring new safe cells. GRAB is 22% of actions. **The gap is directed exploration toward unvisited cells, not representation and not search depth.**
 - The value support is loose for Wumpus: `value_bound` = 1001/(1 − γ) = 100,100, so only 153 of 255 bins lie in the reachable return range ±1001 and the spacing near 500 is 49.
 
+**Supervised upper bound** (`reports/2026-10-02_wumpus_diagnostics/supervised_filter.py`; the agent's `BeliefFilter` 128/256/1 trained directly on exact targets from 4096 reference + 4096 random games; 1024 held-out games):
+
+| Held-out | Agent latent (JEPA, probe) | Supervised GRU, 3000 steps | 12000 steps |
+|---|---|---|---|
+| Cell / heading | 87% / 66% (reference games) | 99.9% / 100% | 99.9% / 99.9% |
+| Danger ahead, mean error | 0.112 | 0.032 | 0.016 |
+| Exact 0.99 decoded as | 0.47 | 0.69 | 0.90 |
+| Pit / wumpus error (constant 0.103 / 0.061) | | 0.061 / 0.046 | 0.032 / 0.021 |
+
+- **The GRU architecture and capacity suffice; the training objectives are the bottleneck.** JEPA plus reward, or the decoder's observation loss, never force the latent to track position, heading and the danger ahead precisely.
+- **User guidance (2026-10-03, in memory):** the architecture must never be the bottleneck; A/B-test state-of-the-art upgrades (Transformer over history tokens with a KV-cache, residuals, MoE, GQA, MLA) with good statistics. A GRU-vs-Transformer A/B (3 seeds each, 3000 steps, paired) of the supervised filter is running; summarise with `ab_summary.py`.
+
 **Decoder run, `runs/wumpus/north50_decoder_seed0`** (`model.representation=decoder`, otherwise identical to `north50_seed0`; 2 h 35 min under load; `best.pt` from collection 25; logs of the checks in the run directory):
 
 | | JEPA (`north50_seed0`) | Decoder |
