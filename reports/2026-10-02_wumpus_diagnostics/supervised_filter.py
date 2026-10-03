@@ -36,6 +36,9 @@
 #      MLP. The output at position t is the latent after the history up to t, as for the GRU.
 #    - The data pools are fixed (their seeds do not depend on --seed); --seed only changes the
 #      initialisation and the minibatch order, so arms compare paired across seeds.
+#    - --pool-cache stores the pools on disk on first use and loads them afterwards. Building them
+#      takes ~2.5 min and several GB of GPU memory, so parallel runs must share one cache.
+#      Six simultaneous builds filled the 16 GB card and stalled for two hours (2026-10-03).
 #
 # 5. Usage:
 #    uv run python reports/2026-10-02_wumpus_diagnostics/supervised_filter.py [--arch gru|transformer]
@@ -44,6 +47,7 @@
 
 import argparse
 import time
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -142,6 +146,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--layers", type=int, default=4)
     parser.add_argument("--heads", type=int, default=4)
+    parser.add_argument("--pool-cache", type=Path, default=None, help="Torch file with the pools (built if missing).")
     args = parser.parse_args()
 
     device = torch.device("cuda")
@@ -149,8 +154,16 @@ def main() -> None:
     world = WumpusWorld(device)
     length, num_a, num_o = cfg.env.max_steps, world.num_actions, world.num_observations
     t0 = time.time()
-    train, held = pool(world, args.games, length, 2026, device), pool(world, 512, length, 2027, device)
-    print(f"pools built in {time.time() - t0:.0f}s: {train['actions'].shape[0]} training, {held['actions'].shape[0]} held-out games")
+    if args.pool_cache is not None and args.pool_cache.exists():
+        cached = torch.load(args.pool_cache, map_location=device)
+        if cached["games"] != args.games or cached["length"] != length:
+            raise ValueError(f"{args.pool_cache} holds {cached['games']} games of {cached['length']} steps.")
+        train, held = cached["train"], cached["held"]
+    else:
+        train, held = pool(world, args.games, length, 2026, device), pool(world, 512, length, 2027, device)
+        if args.pool_cache is not None:
+            torch.save({"games": args.games, "length": length, "train": train, "held": held}, args.pool_cache)
+    print(f"pools ready in {time.time() - t0:.0f}s: {train['actions'].shape[0]} training, {held['actions'].shape[0]} held-out games")
 
     torch.manual_seed(args.seed)
     belief_filter = (BeliefFilter(num_a, num_o, cfg.model.latent_dim, cfg.model.hidden_dim, cfg.model.num_blocks)

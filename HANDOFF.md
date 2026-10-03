@@ -155,7 +155,7 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 | Pit / wumpus error (constant 0.103 / 0.061) | | 0.061 / 0.046 | 0.032 / 0.021 |
 
 - **The GRU architecture and capacity suffice; the training objectives are the bottleneck.** JEPA plus reward, or the decoder's observation loss, never force the latent to track position, heading and the danger ahead precisely.
-- **User guidance (2026-10-03, in memory):** the architecture must never be the bottleneck; A/B-test state-of-the-art upgrades (Transformer over history tokens with a KV-cache, residuals, MoE, GQA, MLA) with good statistics. A GRU-vs-Transformer A/B (3 seeds each, 3000 steps, paired) of the supervised filter is running; summarise with `ab_summary.py`.
+- **User guidance (2026-10-03, in memory):** the architecture must never be the bottleneck; A/B-test state-of-the-art upgrades (Transformer over history tokens with a KV-cache, residuals, MoE, GQA, MLA) with good statistics. A GRU-vs-Transformer A/B (3 seeds each, 3000 steps, paired) of the supervised filter is running via `runs/wumpus/supervised_filter/run_ab.sh` (pools cached in `pools.pt`; seed pairs run side by side); summarise with `ab_summary.py`. **Pitfall:** six parallel pool builds filled the 16 GB GPU and stalled for 2 h; build the pools once with `--pool-cache`.
 
 **Decoder run, `runs/wumpus/north50_decoder_seed0`** (`model.representation=decoder`, otherwise identical to `north50_seed0`; 2 h 35 min under load; `best.pt` from collection 25; logs of the checks in the run directory):
 
