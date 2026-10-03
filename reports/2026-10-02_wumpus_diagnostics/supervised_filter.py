@@ -27,8 +27,19 @@
 #      analysis probes: hazard error vs the constant, cell / heading accuracy, and the binned
 #      calibration of the danger ahead, so the numbers sit next to the learned latents'.
 #
-# 4. Usage:
-#    uv run python reports/2026-10-02_wumpus_diagnostics/supervised_filter.py [--steps 3000]
+# 4. Architecture A/B (user guidance, 2026-10-03: the architecture must never be the bottleneck):
+#    - --arch gru: the agent's BeliefFilter (GRU cell after an input network).
+#    - --arch transformer: a causal Transformer over the history as tokens. Token t embeds the
+#      same input the GRU step receives, (a_{t-1}, o_t), with (no action, o_0) at t = 0, plus a
+#      learned position embedding. Pre-norm residual blocks with RMSNorm, causal multi-head
+#      attention (F.scaled_dot_product_attention, flash kernels when available) and a SwiGLU
+#      MLP. The output at position t is the latent after the history up to t, as for the GRU.
+#    - The data pools are fixed (their seeds do not depend on --seed); --seed only changes the
+#      initialisation and the minibatch order, so arms compare paired across seeds.
+#
+# 5. Usage:
+#    uv run python reports/2026-10-02_wumpus_diagnostics/supervised_filter.py [--arch gru|transformer]
+#        [--steps 3000] [--seed 0]
 # ==============================================================================
 
 import argparse
@@ -74,12 +85,63 @@ def pool(world: WumpusWorld, games: int, length: int, seed: int, device: torch.d
     return {k: torch.cat([p[k] for p in parts]) for k in parts[0]}
 
 
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + 1e-6) * self.weight
+
+
+class Block(nn.Module):
+    """Pre-norm residual block: causal self-attention, then a SwiGLU MLP."""
+
+    def __init__(self, dim: int, heads: int, mlp_dim: int):
+        super().__init__()
+        self.heads = heads
+        self.attn_norm, self.mlp_norm = RMSNorm(dim), RMSNorm(dim)
+        self.qkv, self.proj = nn.Linear(dim, 3 * dim, bias=False), nn.Linear(dim, dim, bias=False)
+        self.gate_up, self.down = nn.Linear(dim, 2 * mlp_dim, bias=False), nn.Linear(mlp_dim, dim, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, t, d = x.shape
+        q, k, v = self.qkv(self.attn_norm(x)).view(b, t, 3, self.heads, d // self.heads).permute(2, 0, 3, 1, 4)
+        x = x + self.proj(F.scaled_dot_product_attention(q, k, v, is_causal=True).transpose(1, 2).reshape(b, t, d))
+        gate, up = self.gate_up(self.mlp_norm(x)).chunk(2, -1)
+        return x + self.down(F.silu(gate) * up)
+
+
+class TransformerFilter(nn.Module):
+    """Causal Transformer over (a_{t-1}, o_t) tokens; latents of shape (B, T + 1, D) like BeliefFilter.unroll."""
+
+    def __init__(self, num_actions: int, num_observations: int, dim: int, layers: int, heads: int, max_len: int):
+        super().__init__()
+        self.num_actions = num_actions
+        self.embed = nn.Linear(num_actions + num_observations, dim)
+        self.position = nn.Parameter(torch.randn(max_len, dim) * 0.02)
+        self.blocks = nn.ModuleList(Block(dim, heads, 4 * dim) for _ in range(layers))
+        self.norm = RMSNorm(dim)
+
+    def unroll(self, actions: torch.Tensor, observations: torch.Tensor, initial: torch.Tensor) -> torch.Tensor:
+        first = torch.cat([initial.new_zeros(initial.shape[0], self.num_actions), initial], -1).unsqueeze(1)
+        tokens = torch.cat([first, torch.cat([actions, observations], -1)], 1)
+        x = self.embed(tokens) + self.position[: tokens.shape[1]]
+        for block in self.blocks:
+            x = block(x)
+        return self.norm(x)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="runs/wumpus/north50_seed0/.hydra/config.yaml")
     parser.add_argument("--games", type=int, default=4096, help="Training games per behaviour policy.")
     parser.add_argument("--steps", type=int, default=3000)
     parser.add_argument("--batch", type=int, default=64)
+    parser.add_argument("--arch", choices=("gru", "transformer"), default="gru")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--layers", type=int, default=4)
+    parser.add_argument("--heads", type=int, default=4)
     args = parser.parse_args()
 
     device = torch.device("cuda")
@@ -90,8 +152,11 @@ def main() -> None:
     train, held = pool(world, args.games, length, 2026, device), pool(world, 512, length, 2027, device)
     print(f"pools built in {time.time() - t0:.0f}s: {train['actions'].shape[0]} training, {held['actions'].shape[0]} held-out games")
 
-    torch.manual_seed(0)
-    belief_filter = BeliefFilter(num_a, num_o, cfg.model.latent_dim, cfg.model.hidden_dim, cfg.model.num_blocks).to(device)
+    torch.manual_seed(args.seed)
+    belief_filter = (BeliefFilter(num_a, num_o, cfg.model.latent_dim, cfg.model.hidden_dim, cfg.model.num_blocks)
+                     if args.arch == "gru" else
+                     TransformerFilter(num_a, num_o, cfg.model.latent_dim, args.layers, args.heads, length + 1)).to(device)
+    print(f"arch {args.arch}, seed {args.seed}: {sum(p.numel() for p in belief_filter.parameters()):,} filter parameters")
     readout = nn.Sequential(nn.Linear(cfg.model.latent_dim, 256), nn.SiLU(),
                             nn.Linear(256, 3 * NUM_CELLS + NUM_CELLS + 4 + 1)).to(device)
     optimizer = torch.optim.Adam([*belief_filter.parameters(), *readout.parameters()], lr=3e-4)
@@ -111,7 +176,7 @@ def main() -> None:
                 + F.cross_entropy(cell, target["cell"]) + F.cross_entropy(heading, target["heading"])
                 + F.binary_cross_entropy_with_logits(danger, target["danger"]))
 
-    generator = torch.Generator(device=device).manual_seed(0)
+    generator = torch.Generator(device=device).manual_seed(args.seed)
     for step in range(1, args.steps + 1):
         rows = torch.randint(0, train["actions"].shape[0], (args.batch,), device=device, generator=generator)
         loss = losses(*forward(train, rows))
