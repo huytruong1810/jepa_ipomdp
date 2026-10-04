@@ -155,7 +155,20 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 | Pit / wumpus error (constant 0.103 / 0.061) | | 0.061 / 0.046 | 0.032 / 0.021 |
 
 - **The GRU architecture and capacity suffice; the training objectives are the bottleneck.** JEPA plus reward, or the decoder's observation loss, never force the latent to track position, heading and the danger ahead precisely.
-- **Offline objective A/B (user's choice, 2026-10-03; running):** `reports/2026-10-02_wumpus_diagnostics/objective_ab.py` trains the real `TrainingRun`/trainer offline on the cached pool (6400 updates, batch 16) and scores the acting latent (probes) and the acting observation head's death prediction on held-out games. Arms: `a_jepa_k0` (baseline), `b_decoder_k0`, `c_jepa_k5`, `d_decoder_k5`; k is the new `model.observation_horizon` (multi-step observation term into the filter, commit `2bbebac`; default 0, Tiger unchanged). 3 seeds each via `runs/wumpus/objective_ab/run.sh`; summarise with `ab_summary.py runs/wumpus/objective_ab/obj_*.log`. The winner gets a full agent run against `north50_seed0`.
+- **Offline objective A/B** (user's choice, 2026-10-03; `objective_ab.py`; real trainer offline on the cached pool, 6400 updates; 3 seeds per arm; about 70 min per run under load; summary: `ab_summary.py runs/wumpus/objective_ab/obj_*.log`). k is `model.observation_horizon` (multi-step observation term, commit `2bbebac`).
+
+| Held-out | a JEPA | b decoder | c JEPA k=5 | d decoder k=5 | supervised |
+|---|---|---|---|---|---|
+| Heading | 54% ± 5 | 74% ± 6 | 56% ± 3 | 75% ± 22 | 100% |
+| Cell | 75% ± 1 | 81% ± 4 | 75% ± 1 | 80% ± 4 | 99.9% |
+| Danger probe error | 0.110 ± 0.004 | 0.094 ± 0.008 | 0.109 ± 0.003 | 0.076 ± 0.081 | 0.033 |
+| Certain death decoded | 0.53 | 0.62 | 0.54 | 0.62 | 0.69 |
+| Head danger error | 0.124 ± 0.006 | 0.108 ± 0.001 | 0.119 ± 0.004 | 0.102 ± 0.031 | |
+
+  - Decoder − JEPA (paired, significant): heading +20 ± 7 points, cell +6.6 ± 5.0, danger probe −0.016 ± 0.012, head danger error −0.016 ± 0.005, certain death +0.086 ± 0.054.
+  - Multi-step on JEPA: no effect (all paired differences near 0).
+  - Decoder + k=5 varies by seed: seeds 1 and 2 are like the decoder; **seed 3 reaches heading 84% and danger error 0.039, close to the supervised 0.033.** A near-supervised latent is reachable from a non-privileged objective, but not reliably in 6400 updates.
+  - Caveat: the full decoder agent run (on its own data) did not play better than JEPA (85 vs 110).
 - **User guidance (2026-10-03, in memory):** the architecture must never be the bottleneck; A/B-test state-of-the-art upgrades (Transformer over history tokens with a KV-cache, residuals, MoE, GQA, MLA) with good statistics. **GRU vs Transformer A/B** (supervised, 3 seeds each, 3000 steps, identical cached pools; Student-t 95% intervals; `ab_summary.py`): GRU (618k parameters) vs causal Transformer (1.06M; 4 pre-norm blocks, RMSNorm, SwiGLU, flash SDPA; untuned, same learning rate, no warm-up). Danger error 0.033 ± 0.003 vs 0.044 ± 0.020; certain death decoded 0.69 ± 0.07 vs 0.71 ± 0.04; **cell 99.9% vs 92.0% (paired −7.8 ± 3.3 points)**; heading 100% vs 96.5% ± 6.4; **gold error 0.0225 vs 0.0253 (paired +0.0028 ± 0.0007)**. The GRU is equal or significantly better, so the architecture is not the bottleneck on this task. Pitfall: six parallel pool builds filled the 16 GB GPU and stalled for 2 h; build the pools once with `--pool-cache`.
 
 **Decoder run, `runs/wumpus/north50_decoder_seed0`** (`model.representation=decoder`, otherwise identical to `north50_seed0`; 2 h 35 min under load; `best.pt` from collection 25; logs of the checks in the run directory):
