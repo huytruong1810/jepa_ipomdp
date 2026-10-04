@@ -9,6 +9,9 @@
 #      the data pools are identical, so the arms are compared per seed (paired difference
 #      B - A with its own interval) as well as by arm means.
 #    - Usage: uv run python <this> runs/wumpus/supervised_filter/ab_{arch}_seed{n}.log ...
+#      or objective_ab.py logs named obj_{arm}_seed{n}.log, whose "RESULT name value" lines are
+#      read instead. With more than two arms every arm is paired against the first one in
+#      sorted order (name the baseline arm so that it sorts first, e.g. "a_jepa_k0").
 # ==============================================================================
 
 import re
@@ -40,15 +43,19 @@ def interval(values: list[float]) -> str:
 
 runs: dict[str, dict[int, dict[str, float]]] = defaultdict(dict)
 for path in sys.argv[1:]:
-    arch, seed = re.search(r"ab_(\w+)_seed(\d+)\.log", path).groups()
+    arm, seed = re.search(r"(?:ab|obj)_(\w+?)_seed(\d+)\.log", path).groups()
     text = open(path).read()
-    runs[arch][int(seed)] = {k: float(re.search(p, text).group(1)) for k, p in METRICS.items()}
+    results = dict(re.findall(r"^RESULT (\w+) ([-\d.]+)$", text, re.MULTILINE))
+    runs[arm][int(seed)] = ({k: float(v) for k, v in results.items()} if results
+                            else {k: float(re.search(p, text).group(1)) for k, p in METRICS.items()})
 arms = sorted(runs)
-print(f"{'metric':<24}" + "".join(f"{a + f' (n={len(runs[a])})':<26}" for a in arms)
-      + ("paired " + f"{arms[1]} - {arms[0]}" if len(arms) == 2 else ""))
-for metric in METRICS:
-    row = f"{metric:<24}" + "".join(f"{interval([r[metric] for r in runs[a].values()]):<26}" for a in arms)
-    if len(arms) == 2:
-        common = sorted(set(runs[arms[0]]) & set(runs[arms[1]]))
-        row += interval([runs[arms[1]][s][metric] - runs[arms[0]][s][metric] for s in common])
-    print(row)
+metrics = list(next(iter(runs[arms[0]].values())))
+base = arms[0]
+print(f"{'metric':<22}" + "".join(f"{a + f' (n={len(runs[a])})':<22}" for a in arms))
+for metric in metrics:
+    print(f"{metric:<22}" + "".join(f"{interval([r[metric] for r in runs[a].values()]):<22}" for a in arms))
+for arm in arms[1:]:
+    common = sorted(set(runs[base]) & set(runs[arm]))
+    print(f"paired {arm} - {base} (seeds {common}):")
+    for metric in metrics:
+        print(f"  {metric:<22}{interval([runs[arm][s][metric] - runs[base][s][metric] for s in common])}")

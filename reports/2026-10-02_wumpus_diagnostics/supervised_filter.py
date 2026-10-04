@@ -82,7 +82,7 @@ def pool(world: WumpusWorld, games: int, length: int, seed: int, device: torch.d
         ahead = (x + GRID * y).clamp(0, NUM_CELLS - 1).unsqueeze(-1)
         danger = torch.where(inside, pit.gather(2, ahead).squeeze(-1)
                              + stack("wumpus_alive").double() * wumpus.gather(2, ahead).squeeze(-1), 0.0)
-        parts.append({"actions": episodes.actions, "observations": episodes.observations,
+        parts.append({"actions": episodes.actions, "observations": episodes.observations, "rewards": episodes.rewards,
                       "initial": episodes.initial_observations, "alive": ~stack("done"),
                       "hazards": torch.cat([pit, wumpus, stack("gold")], -1).float(),
                       "cell": cell, "heading": heading, "danger": danger.float()})
@@ -156,7 +156,7 @@ def main() -> None:
     t0 = time.time()
     if args.pool_cache is not None and args.pool_cache.exists():
         cached = torch.load(args.pool_cache, map_location=device)
-        if cached["games"] != args.games or cached["length"] != length:
+        if cached["games"] != args.games or cached["length"] != length or "rewards" not in cached["train"]:
             raise ValueError(f"{args.pool_cache} holds {cached['games']} games of {cached['length']} steps.")
         train, held = cached["train"], cached["held"]
     else:
