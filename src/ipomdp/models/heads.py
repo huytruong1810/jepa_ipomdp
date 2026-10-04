@@ -25,6 +25,17 @@
 #      filter (world_model.py, section 6). It is trained on DETACHED latents, so it never
 #      shapes the representation. On canonical Tiger it reaches a mean KL to the exact
 #      P(o' | b, a) of 0.001-0.007 nats (LISTEN) and < 0.0002 (door actions).
+#
+# 4. Multi-Step Observation Predictor (optional representation term, model.observation_horizon):
+#    - P(o_{t+j} | z_t, a_t..a_{t+j-1}) for j = 1..k, by an open-loop action-conditioned
+#      rollout h_0 = z_t, h_j = GRUCell(a_{t+j-1}, h_{j-1}), read out by a residual MLP. Its
+#      cross-entropy flows INTO the belief filter (training/trainer.py, section 2c).
+#    - Why: on Wumpus World neither JEPA nor one-step observation prediction makes the latent
+#      track the hunter's cell, heading and the danger ahead, although the same filter learns
+#      them almost perfectly from privileged supervision (HANDOFF.md, section 4c, 2026-10-03).
+#      Predicting future percepts under arbitrary future actions requires exactly that
+#      information. It is a self-supervised, non-privileged signal: actions and observations only.
+#    - It is not a planning model: the planner never reads it. With k = 0 it is not built at all.
 # ==============================================================================
 
 import torch
@@ -75,3 +86,35 @@ class ObservationHead(nn.Module):
     def forward(self, latent: Tensor, action: Tensor) -> Tensor:
         """(B, D), one-hot (B, |A|) -> (B, |O|) logits."""
         return self.net(torch.cat([latent, action], dim=-1))
+
+
+class MultiStepObservationPredictor(nn.Module):
+    """Open-loop P(o_{t+j} | z_t, a_t..a_{t+j-1}), j = 1..k (section 4)."""
+
+    def __init__(self, latent_dim: int, num_actions: int, num_observations: int, hidden_dim: int, num_blocks: int,
+                 horizon: int):
+        super().__init__()
+        if horizon < 1:
+            raise ValueError(f"horizon must be >= 1, got {horizon}.")
+        self.horizon = horizon
+        self.cell = nn.GRUCell(num_actions, latent_dim)
+        self.readout = build_residual_stack(latent_dim, hidden_dim, num_observations, num_blocks)
+
+    def forward(self, latents: Tensor, actions: Tensor) -> list[Tensor]:
+        """
+        Args:
+            latents: z_0..z_{T-1} of shape (B, T, D), the start of every rollout.
+            actions: One-hot a_0..a_{T-1} of shape (B, T, |A|).
+
+        Returns:
+            For j = 1..min(k, T): logits of o_{t+j} for t = 0..T-j, shape (B, T - j + 1, |O|).
+        """
+        batch, steps, dim = latents.shape
+        hidden = latents
+        out = []
+        for j in range(1, min(self.horizon, steps) + 1):
+            valid = steps - j + 1                                     # rollouts that still have a target
+            hidden = self.cell(actions[:, j - 1:j - 1 + valid].reshape(batch * valid, -1),
+                               hidden[:, :valid].reshape(batch * valid, dim)).view(batch, valid, dim)
+            out.append(self.readout(hidden))
+        return out

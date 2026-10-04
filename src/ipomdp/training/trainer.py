@@ -47,6 +47,16 @@
 #      (DreamerV3's posterior decoder): the filter has just read o_t, so reconstructing it can
 #      be satisfied by copying the last input and carries no belief pressure.
 #
+# 2c. Optional Multi-Step Observation Term (RunConfig.observation_horizon = k > 0; either representation):
+#      MultiStep    mean_j CE( P(o_{t+j} | z_t, a_t..a_{t+j-1}), o_{t+j} ),  j = 1..k, t + j <= T
+#                   gradients INTO the filter (models/heads.py, section 4)
+#    - Added because on Wumpus World neither JEPA nor one-step observation prediction makes the
+#      latent track the hunter's position, heading and the danger ahead, while the same filter
+#      learns them from privileged supervision (HANDOFF.md, section 4c). Each horizon j is
+#      averaged over its valid starts, then the k horizons are averaged, so the term has the
+#      scale of one cross-entropy whatever k is.
+#    - k = 0 (the default, and canonical Tiger) builds nothing and leaves training unchanged.
+#
 # 3. Value Target: the Bellman Optimality Backup Through the Learned Model (Phase-5 decision):
 #      V_target(z) = max_a [ R(z, a) + gamma * sum_o P(o | z, a) * V-bar(tau(z, a, o)) ]
 #    - R and P(o | z, a) are the reward and observation heads, tau is the belief filter, and
@@ -88,7 +98,7 @@ from torch import Tensor
 
 from ..models.distributions import TwoHotSymlog
 from ..models.ema import ema_update, frozen_copy
-from ..models.heads import ObservationHead, RewardHead, ValueHead
+from ..models.heads import MultiStepObservationPredictor, ObservationHead, RewardHead, ValueHead
 from ..models.world_model import BeliefFilter, RecurrentJEPA
 from ..planning.search_model import LearnedSearchModel
 from .episode_buffer import EpisodeBatch
@@ -127,12 +137,14 @@ class WorldModelTrainer:
         discount: float,
         config: TrainerConfig,
         device: torch.device,
+        multistep_predictor: MultiStepObservationPredictor | None = None,
     ):
         """
         Args:
             belief_filter: The online filter z_{t+1} = f(z_t, a_t, o_{t+1}).
             jepa: The JEPA parts built around belief_filter (Representation.JEPA), or None for
                 the decoder baseline (Representation.DECODER, section 2b).
+            multistep_predictor: The optional multi-step observation term (section 2c), or None.
         """
         if jepa is not None and jepa.belief_filter is not belief_filter:
             raise ValueError("jepa must wrap the trained belief_filter")
@@ -142,6 +154,7 @@ class WorldModelTrainer:
         self.value_head = value_head
         self.reward_head = reward_head
         self.observation_head = observation_head
+        self.multistep_predictor = multistep_predictor
         self.twohot = codec
         self.num_actions = num_actions
         self.num_observations = num_observations
@@ -154,6 +167,7 @@ class WorldModelTrainer:
             *value_head.parameters(),
             *reward_head.parameters(),
             *observation_head.parameters(),
+            *(multistep_predictor.parameters() if multistep_predictor is not None else ()),
         ]
         self.optimizer = torch.optim.AdamW(self.parameters, lr=config.learning_rate, weight_decay=config.weight_decay)
         self.target_value_head = frozen_copy(value_head)
@@ -215,6 +229,13 @@ class WorldModelTrainer:
             decoded = current if self.representation is Representation.DECODER else current.detach()
             losses["observation"] = F.cross_entropy(self.observation_head(decoded, action_flat).float(),
                                                     episodes.observations.reshape(-1))
+
+            if self.multistep_predictor is not None:
+                horizons = self.multistep_predictor(latents[:, :-1], actions)
+                losses["multistep_observation"] = sum(
+                    F.cross_entropy(logits.float().reshape(-1, self.num_observations),
+                                    episodes.observations[:, j:].reshape(-1))
+                    for j, logits in enumerate(horizons)) / len(horizons)
 
             total = sum(losses.values())
 

@@ -18,7 +18,7 @@ def _config(**overrides) -> RunConfig:
     values = dict(
         seed=7, episode_length=8, env_batch_size=4, warmup_episodes=4, buffer_capacity=64, batch_size=4,
         updates_per_collection=2, eval_episodes=4, latent_dim=8, hidden_dim=16, num_blocks=1,
-        representation=Representation.JEPA, ema_momentum=0.99,
+        representation=Representation.JEPA, observation_horizon=0, ema_momentum=0.99,
         acting_ema_momentum=0.9,
         num_bins=255, trainer=TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0,
                                             value_target_momentum=0.99),

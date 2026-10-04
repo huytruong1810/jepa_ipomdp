@@ -53,6 +53,10 @@
 #      the JEPA predictor (keeping the JEPA runs' initialisation, and thus the cited results,
 #      reproducible), so the decoder baseline's initial head weights are a different draw --
 #      no more than the difference between two seeds.
+#    - cfg.observation_horizon = k > 0 adds the multi-step observation term (trainer.py,
+#      section 2c). Its predictor is drawn after every existing network, just before the
+#      trainer, so runs with k = 0 (canonical Tiger) initialise exactly as before; it is
+#      checkpointed as "multistep_observation" and never read by the planner.
 #
 # 6. Any Domain, Through a DomainSetup:
 #    - The run needs only the Domain protocol below (sizes, names, discount, value bound,
@@ -71,7 +75,7 @@ import numpy as np
 import torch
 
 from ..agents import PlanningAgent, UniformRandomAgent
-from ..models import (BeliefFilter, LatentPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueHead,
+from ..models import (BeliefFilter, LatentPredictor, MultiStepObservationPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueHead,
                       ema_update, frozen_copy)
 from ..planning import BeliefTreeSearch, LearnedSearchModel
 from .episode_buffer import EpisodeBatch, EpisodeBuffer
@@ -133,6 +137,7 @@ class RunConfig:
     hidden_dim: int
     num_blocks: int
     representation: Representation
+    observation_horizon: int          # multi-step observation term (trainer.py, 2c); 0 = off
     ema_momentum: float               # JEPA target filter; unused by the decoder baseline
     acting_ema_momentum: float
     num_bins: int
@@ -166,8 +171,12 @@ class TrainingRun:
         self.reward_head = RewardHead(cfg.latent_dim, num_a, cfg.hidden_dim, cfg.num_blocks, cfg.num_bins).to(device)
         self.observation_head = ObservationHead(cfg.latent_dim, num_a, num_o, cfg.hidden_dim, cfg.num_blocks).to(device)
         self.codec = TwoHotSymlog(cfg.num_bins, domain.value_bound).to(device)
+        self.multistep_predictor = (MultiStepObservationPredictor(cfg.latent_dim, num_a, num_o, cfg.hidden_dim,
+                                                                  cfg.num_blocks, cfg.observation_horizon).to(device)
+                                    if cfg.observation_horizon > 0 else None)
         self.trainer = WorldModelTrainer(self.belief_filter, self.jepa, self.value_head, self.reward_head, self.observation_head,
-                                         self.codec, num_a, num_o, domain.discount, cfg.trainer, device)
+                                         self.codec, num_a, num_o, domain.discount, cfg.trainer, device,
+                                         self.multistep_predictor)
 
         # Polyak-averaged copies the agent acts with (section 4).
         self.acting_filter = frozen_copy(self.belief_filter)
@@ -196,7 +205,8 @@ class TrainingRun:
     @property
     def networks(self) -> dict[str, torch.nn.Module]:
         representation = {"world_model": self.jepa} if self.jepa is not None else {"belief_filter": self.belief_filter}
-        return {**representation, "value": self.value_head, "reward": self.reward_head,
+        multistep = {"multistep_observation": self.multistep_predictor} if self.multistep_predictor is not None else {}
+        return {**representation, **multistep, "value": self.value_head, "reward": self.reward_head,
                 "observation": self.observation_head, "target_value": self.trainer.target_value_head,
                 "acting_filter": self.acting_filter, "acting_reward": self.acting_reward_head,
                 "acting_observation": self.acting_observation_head, "acting_value": self.acting_value_head}

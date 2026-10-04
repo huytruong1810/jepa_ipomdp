@@ -206,7 +206,7 @@ class TestLearningStack:
         values = dict(
             seed=3, episode_length=12, env_batch_size=4, warmup_episodes=4, buffer_capacity=32, batch_size=4,
             updates_per_collection=2, eval_episodes=4, latent_dim=16, hidden_dim=32, num_blocks=1,
-            representation=Representation.JEPA, ema_momentum=0.99, acting_ema_momentum=0.9, num_bins=255,
+            representation=Representation.JEPA, observation_horizon=0, ema_momentum=0.99, acting_ema_momentum=0.9, num_bins=255,
             trainer=TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0, value_target_momentum=0.99),
             num_simulations=4, observation_prune=1e-3, c_puct=1.25, dirichlet_alpha=0.3, dirichlet_epsilon=0.25,
             temperature=1.0, temperature_min=0.1, temperature_decay=0.5)
@@ -228,6 +228,35 @@ class TestLearningStack:
         resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
         continued = [resumed.collect_and_train() for _ in range(2)] + [resumed.evaluate()]
         assert repr(continued) == repr(expected[1:])      # repr: NaN (no game won yet) equals NaN
+
+    def test_multistep_observation_term_trains_and_resumes(self, tmp_path):
+        from ipomdp.experiments import wumpus_setup
+        from ipomdp.training import TrainingRun, load_checkpoint, save_checkpoint
+        setup = wumpus_setup(CPU)
+        reference = TrainingRun(setup, self._config(observation_horizon=3), CPU)
+        expected = [reference.collect_and_train() for _ in range(2)]
+        assert "loss_multistep_observation" in expected[0] and "multistep_observation" in reference.networks
+        first = TrainingRun(setup, self._config(observation_horizon=3), CPU)
+        first.collect_and_train()
+        save_checkpoint(tmp_path / "latest.pt", first.state_dict())
+        resumed = TrainingRun(setup, self._config(observation_horizon=3, seed=99), CPU)
+        resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
+        assert repr([resumed.collect_and_train()]) == repr(expected[1:])
+
+    def test_multistep_predictor_aligns_targets_and_reaches_the_filter(self):
+        from ipomdp.models import BeliefFilter, MultiStepObservationPredictor
+        torch.manual_seed(0)
+        belief_filter, predictor = BeliefFilter(5, 33, 8, 16, 1), MultiStepObservationPredictor(8, 5, 33, 16, 1, 4)
+        actions = torch.nn.functional.one_hot(torch.randint(0, 5, (2, 6)), 5).float()
+        observations = torch.nn.functional.one_hot(torch.randint(0, 33, (2, 6)), 33).float()
+        latents = belief_filter.unroll(actions, observations, observations[:, 0])
+        horizons = predictor(latents[:, :-1], actions)
+        assert [h.shape for h in horizons] == [torch.Size([2, 6 - j, 33]) for j in range(4)]
+        sum(h.sum() for h in horizons).backward()
+        # The GRU cell and the learned z_0 receive gradient (inner residual weights get none at
+        # initialisation: the block's output projection is zero-initialised, models/layers.py).
+        reached = [p for n, p in belief_filter.named_parameters() if n.startswith("cell.") or n == "initial_latent"]
+        assert all(p.grad is not None and p.grad.abs().sum() > 0 for p in reached)
 
     def test_agent_starts_from_the_o0_conditioned_latent(self):
         from ipomdp.experiments import wumpus_setup
