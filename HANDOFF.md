@@ -9,7 +9,8 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
   1. Search depth, rewards, data coverage for the representation, and network architecture are **not** the bottleneck.
   2. The learned latent never encodes the danger of the step ahead precisely enough, because JEPA/reward and one-step observation prediction don't force it to. With 4× longer training the decoder latent nearly reaches a privileged supervised bound, but the planning model's death prediction stays poorly calibrated.
   3. That death prediction is partly limited by data coverage: dangerous forward steps are rare in the data.
-- **Open item:** a runtime speed-up (hoisting the filter's input network) was adopted. It made Tiger's slow value-head acceptance check fail, and the check turns out to fail for some seeds even without the speed-up. A seed comparison is half done (section 3).
+- **Open item:** a runtime speed-up (hoisting the filter's input network) was adopted. Tiger's slow value-head check fails at 3/9 seeds without it and 5/9 with it; the paired difference is not significant, so it stays. The gate is being re-specified (section 3).
+- **Running (2026-10-05):** the full Wumpus run combining both fixes (section 6, step 2a): `runs/wumpus/eps_decoder_k5_u256_seed0`, commit `5dbeca4`.
 
 ## 1. Goals
 
@@ -78,16 +79,14 @@ Stages:
   - At HEAD (with the hoist): 4/5. `test_value_head_approaches_optimal_value` fails with mean |V − V*| = 22.3 (gate 8).
   - **The value gate is seed-fragile.** Value error by network-init seed (`reports/2026-10-02_wumpus_diagnostics/tiger_acceptance_seed.py`; logs in `runs/tiger_acceptance_seeds/`):
 
-| Seed | 0 | 1 | 2 | 3 | 4 | 5 | Mean | Median | Fails |
-|---|---|---|---|---|---|---|---|---|---|
-| Before hoist (`62deb68`) | 4.9 | 1.87 | **13.02** | 2.19 | 1.45 | 1.69 | 4.19 | 2.03 | 1/6 |
-| With hoist (HEAD) | **22.34** | **15.09** | 6.61 | 1.54 | 0.68 | 3.83 | 8.35 | 5.22 | 2/6 |
+| Seed | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | Mean | Median | Fails |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Before hoist (`62deb68`) | 4.9 | 1.87 | **13.02** | 2.19 | 1.45 | 1.69 | 5.13 | **12.35** | **15.68** | 6.48 | 4.90 | 3/9 |
+| With hoist (HEAD) | **22.34** | **15.09** | 6.61 | 1.54 | 0.68 | 3.83 | **13.22** | **8.94** | **24.12** | 10.71 | 8.94 | 5/9 |
 
-  - Paired difference (with − before), seeds 0–5: **+4.2 ± 9.6** (95% t-interval), Wilcoxon p = 0.56. Not significant.
-  - Planning returns in all 12 runs: 20.9–22.1 (target 19.28). Linear-probe KL ≤ 0.0011.
-  - **Pending, per the user's decisions:** run seeds 6–8 for both versions, two or three at a time.
-    - (1) Keep the hoist unless the paired interval shows harm; otherwise revert `6af8f8f`.
-    - (2) Re-specify the value gate from the measured distribution over seeds (e.g. a median-based bound, or more updates so fitted value iteration converges), and document it in the test header.
+  - Paired difference (with − before), seeds 0–8: **+4.2 ± 6.2** (95% t-interval, −1.9 to +10.4), Wilcoxon p = 0.25. The interval includes 0, so **the hoist stays** (user rule of 2026-10-05). The point estimate leans worse; 9 seeds cannot exclude moderate harm.
+  - Planning returns in all 18 runs: 20.9–22.1 (target 19.28). Linear-probe KL ≤ 0.0011. The value error does not reach the policy.
+  - **Gate re-specification (user decision 2026-10-05: check more updates first).** HEAD seeds 0 and 8 (the worst) are being rerun at 6000 updates (`tiger_acceptance_seed.py <seed> 6000`; logs `accept_post_seed{0,8}_u6000.log`). If both fall below 8, the test moves to 6000 updates with the bound kept at 8; otherwise ask the user again.
   - How to run the pre-hoist arm: `git worktree add --detach <dir> 62deb68`, then run inside it with `PYTHONPATH=<dir>/src OMP_NUM_THREADS=2 <repo>/.venv/bin/python reports/2026-10-02_wumpus_diagnostics/tiger_acceptance_seed.py <seed>`. Remove the worktree afterwards.
 
 **Runs** (`runs/` is untracked)
@@ -235,17 +234,13 @@ These predate the diagnosis chain:
 
 ## 6. Next steps (in order; ask the user at each research decision)
 
-1. **Finish the Tiger value-gate study** (section 3).
-   - Run seeds 6–8 for both versions, at most 2–3 runs at a time; check `free -m` first.
-   - Then (1) keep or revert the hoist (`6af8f8f`) by the paired interval, and (2) re-specify `test_value_head_approaches_optimal_value` from the seed distribution, documenting it in the test header.
+1. **Finish the Tiger value-gate study** (section 3). Seeds 0–8 are done and the hoist stays.
+   - Read the 6000-update reruns of HEAD seeds 0 and 8. If both are below 8, set `UPDATES = 6000` in `tests/test_world_model_acceptance.py` and record the seed table in its header; otherwise ask the user.
    - Rerun the full slow suite at HEAD.
-2. **Report the Wumpus diagnosis to the user** (sections 5.4 and 5.5), then ask which fix to try. Candidates to offer, recommended first:
-   - **a. (Recommended) A full agent run that combines both fixes:** decoder + k = 5, 4× updates per collection, plus a non-privileged way to get dangerous FORWARD experience into the head's data. Expect about 8–12 h. Offer the user options for the experience (all generic, no domain knowledge):
-     - forced or extra exploration of FORWARD-like actions in collection;
-     - more root noise early in training;
-     - prioritising the rare GAME_OVER transitions in the observation head's loss.
-   - **b. An offline A/B of head-side fixes on frozen good latents:** a bigger head, a longer head fit, or rare-event reweighting, to see whether the death calibration can reach the coverage-augmented level without new data.
-   - **c. Tighten the Wumpus value support:** `value_bound` = 1001/(1 − γ) = 100,100, so only 153 of 255 bins lie in the reachable ±1001 and the bin spacing near 500 is 49. That would be a domain-level bound such as an episodic bound; a domain decision for the user.
+2. **Wumpus: the combined-fix run is in flight** (user decisions of 2026-10-05: option a, with ε-uniform exploration).
+   - `runs/wumpus/eps_decoder_k5_u256_seed0`, commit `5dbeca4`: `env=wumpus model.representation=decoder model.observation_horizon=5 training.updates_per_collection=256 training.total_episodes=6400 agent.epsilon=0.25 agent.epsilon_min=0.1`. ε decays with `temperature_decay` (0.97 per collection) to 0.1.
+   - When it finishes, run `analyze.py` on it, compare with `north50_seed0` and the reference agent (section 5.3), and rerun `death_calibration.py` and `danger_probe.py` on it.
+   - Options not chosen: (b) an offline A/B of head-side fixes on frozen latents; (c) tightening the Wumpus value support (`value_bound` = 100,100, so only 153 of 255 bins are reachable and the spacing near 500 is 49; a domain decision for the user). Exploration options not chosen: more root noise early; reweighting GAME_OVER in the loss.
 3. **Only once Wumpus plays near the reference:** build a Wumpus seed sweep and aggregation (`sweep.py` and `experiments/aggregate.py` are still Tiger-only), then a reviewer-page section with the latent figures.
 4. **Ask before pushing** `4d1ace5` onward.
 5. **Deferred:** the hybrid JEPA + observation condition; a model-free recurrent Q-learner baseline; multi-agent Tiger (verify its tables against Gmytrasiewicz & Doshi first); I-POMDP levels via the S × M_j reduction.
