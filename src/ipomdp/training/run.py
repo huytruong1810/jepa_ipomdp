@@ -65,6 +65,19 @@
 #      WumpusSimulator and win/death rates (ipomdp.experiments builds both). Nothing in the
 #      training loop reads exact model tensors, so domains without an exact model (and
 #      without a solver) train identically.
+#
+# 7. Epsilon-Uniform Exploration (user decision, 2026-10-05; agents/planning_agent.py, section 3):
+#    - After warm-up, each collected action is replaced with probability epsilon by a uniformly
+#      random one. epsilon starts at cfg.epsilon and decays with the temperature
+#      (temperature_decay per collection) to cfg.epsilon_min.
+#    - Motivation (Wumpus diagnosis, HANDOFF section 5.4, item 14): the observation head's
+#      death prediction is miscalibrated because dangerous FORWARD outcomes are rare in the
+#      agent's data; one extra forced FORWARD step from every live reference state halved the
+#      head's danger error. Uniform actions in the states the agent actually reaches are the
+#      domain-free version of that augmentation.
+#    - The value targets are Bellman optimality backups through the learned model (trainer.py),
+#      so off-policy actions do not bias them; greedy evaluation never uses epsilon.
+#    - cfg.epsilon = 0 (the default, canonical Tiger) draws no extra random numbers.
 # ==============================================================================
 
 from collections.abc import Callable
@@ -150,6 +163,8 @@ class RunConfig:
     temperature: float
     temperature_min: float
     temperature_decay: float
+    epsilon: float                    # epsilon-uniform exploration in collection (section 7); 0 = off
+    epsilon_min: float
 
 
 class TrainingRun:
@@ -188,7 +203,7 @@ class TrainingRun:
         self.train_agent = PlanningAgent(
             model, BeliefTreeSearch(model, cfg.num_simulations, cfg.c_puct, cfg.dirichlet_alpha, cfg.dirichlet_epsilon,
                                     seed=seed(RunStream.TRAIN_PLANNER), observation_prune=cfg.observation_prune),
-            cfg.env_batch_size, cfg.temperature, seed(RunStream.TRAIN_AGENT), device)
+            cfg.env_batch_size, cfg.temperature, seed(RunStream.TRAIN_AGENT), device, epsilon=cfg.epsilon)
         self.eval_agent = PlanningAgent(
             model, BeliefTreeSearch(model, cfg.num_simulations, cfg.c_puct, cfg.dirichlet_alpha, dirichlet_epsilon=0.0,
                                     seed=seed(RunStream.EVAL_PLANNER), observation_prune=cfg.observation_prune),
@@ -236,6 +251,7 @@ class TrainingRun:
         if not warmup:
             agent = self.train_agent
             agent.temperature = max(self.cfg.temperature_min, agent.temperature * self.cfg.temperature_decay)
+            agent.epsilon = max(self.cfg.epsilon_min, agent.epsilon * self.cfg.temperature_decay)
         returns = discounted_returns(episodes.rewards, self.domain.discount)
         metrics["collect_discounted_return"] = float(returns.mean())
         metrics |= {f"collect_{k}": v for k, v in self.setup.episode_metrics(episodes).items()}
@@ -243,6 +259,7 @@ class TrainingRun:
             metrics[f"collect_action_fraction/{name}"] = float((episodes.actions == a).double().mean())
         metrics["warmup"] = float(warmup)
         metrics["temperature"] = self.train_agent.temperature
+        metrics["epsilon"] = self.train_agent.epsilon
         self.collection += 1
         return metrics
 

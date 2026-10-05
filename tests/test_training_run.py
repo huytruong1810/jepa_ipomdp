@@ -23,7 +23,7 @@ def _config(**overrides) -> RunConfig:
         num_bins=255, trainer=TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0,
                                             value_target_momentum=0.99),
         num_simulations=4, observation_prune=0.0, c_puct=1.25, dirichlet_alpha=0.3, dirichlet_epsilon=0.25, temperature=1.0,
-        temperature_min=0.1, temperature_decay=0.5)
+        temperature_min=0.1, temperature_decay=0.5, epsilon=0.0, epsilon_min=0.0)
     values.update(overrides)
     return RunConfig(**values)
 
@@ -41,6 +41,13 @@ class TestTrainingRun:
         second = run.collect_and_train()
         assert second["warmup"] == 0.0 and run.train_agent.temperature == 0.5
         assert run.collection == 2 and run.buffer.size == 8
+
+    def test_epsilon_decays_with_the_temperature_to_its_floor(self):
+        run = TrainingRun(tiger_setup(CPU), _config(epsilon=0.4, epsilon_min=0.15), CPU)
+        assert run.collect_and_train()["epsilon"] == 0.4          # warm-up: no decay
+        assert run.collect_and_train()["epsilon"] == 0.2
+        assert run.collect_and_train()["epsilon"] == 0.15
+        assert run.eval_agent.epsilon == 0.0
 
     def test_evaluation_reports_discounted_return(self):
         run = TrainingRun(tiger_setup(CPU), _config(), CPU)

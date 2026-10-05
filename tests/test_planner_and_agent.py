@@ -206,6 +206,26 @@ class TestPlanningAgent:
         agent.reset(None)
         assert torch.equal(agent.state, model.initial_states(3, None))
 
+    def test_epsilon_uniform_exploration(self, tiger, value_functions):
+        """epsilon = 1 acts uniformly; epsilon = 0 draws no extra random numbers (bit-identical runs)."""
+        model = ExactSearchModel(tiger, value_functions[4], CPU)
+        batch = 6000
+        greedy = PlanningAgent(model, BeliefTreeSearch(model, 4, 1.25, 0.3, 0.0, seed=0), batch, 0.0, seed=0, device=CPU)
+        greedy.reset(None)
+        assert greedy.act().eq(TigerAction.LISTEN).all()
+        before = greedy._generator.get_state()
+        reference = torch.Generator().manual_seed(0)
+        torch.multinomial(torch.ones(batch, 3), 1, generator=reference)
+        assert torch.equal(before, reference.get_state())   # only the visit-count draw consumed the stream
+        explorer = PlanningAgent(model, BeliefTreeSearch(model, 4, 1.25, 0.3, 0.0, seed=0), batch, 0.0, seed=0,
+                                 device=CPU, epsilon=1.0)
+        explorer.reset(None)
+        counts = torch.bincount(explorer.act(), minlength=3).double() / batch
+        assert torch.allclose(counts, torch.full((3,), 1 / 3, dtype=torch.float64), atol=5 * math.sqrt(2 / 9 / batch))
+        with pytest.raises(ValueError):
+            PlanningAgent(model, BeliefTreeSearch(model, 4, 1.25, 0.3, 0.0, seed=0), 1, 0.0, seed=0, device=CPU,
+                          epsilon=1.5)
+
 
 def _discounted_returns(tiger, agent, steps, seed):
     env = BatchedPOMDPEnv(tiger, agent.batch_size, steps, seed, CPU)

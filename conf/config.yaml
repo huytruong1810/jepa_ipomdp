@@ -31,6 +31,8 @@
 #    - Every eval_every collections a separate greedy planner (no noise, argmax Q) plays
 #      eval_episodes episodes; their mean DISCOUNTED return is the number to compare with the
 #      exact optimum (19.37 for canonical Tiger). best.pt tracks the best such evaluation.
+#    - agent.epsilon > 0 additionally replaces collected actions by uniform ones with that
+#      probability, decaying like the temperature to agent.epsilon_min (training/run.py, 7).
 #
 # 3. No Domain Constants Here:
 #    - |A|, |O|, action names and the discount come from the domain (conf/env/*.yaml selects the
@@ -85,6 +87,8 @@ agent:
   temperature: 1.0            # Initial MCTS visit-count sampling temperature
   temperature_min: 0.1        # Floor of the annealed temperature
   temperature_decay: 0.97     # Multiplicative decay per collection (after warm-up)
+  epsilon: 0.0                # P(uniform random action) per collected step after warm-up (training/run.py, 7); 0 = off
+  epsilon_min: 0.0            # Floor of epsilon, which decays with temperature_decay
 
 model:
   latent_dim: 32              # Belief latent dimension D
