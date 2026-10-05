@@ -22,7 +22,8 @@
 #      b. the planning model's death prediction: P_hat(GAME_OVER | z, FORWARD) from the acting
 #         observation head against the exact danger ahead, overall and in the safe and
 #         certain-death bins. This is what the planner's step decisions depend on.
-#    - Output: "metric value" lines (parsed by ab_summary.py --generic).
+#    - Output: "RESULT name value" lines after training (parsed by ab_summary.py), plus
+#      "RESULT@<updates> name value" lines at the --score-at update counts (learning curves).
 #
 # 3. Usage:
 #    uv run python reports/2026-10-02_wumpus_diagnostics/objective_ab.py --representation jepa \
@@ -56,46 +57,8 @@ def latents_of(belief_filter, data, rows, num_a, num_o):
     return z[alive].float(), {k: data[k][rows][alive] for k in ("hazards", "cell", "heading", "danger")}
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="runs/wumpus/north50_seed0/.hydra/config.yaml")
-    parser.add_argument("--representation", choices=("jepa", "decoder"), required=True)
-    parser.add_argument("--horizon", type=int, default=0)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--updates", type=int, default=6400)
-    parser.add_argument("--pool-cache", type=Path, required=True)
-    args = parser.parse_args()
-
-    device = torch.device("cuda")
-    cfg = OmegaConf.load(args.config)
-    cfg.model.representation, cfg.model.observation_horizon, cfg.seed = args.representation, args.horizon, args.seed
-    setup, run = build_training_run(cfg, device)
-    world = setup.domain
-    num_a, num_o = world.num_actions, world.num_observations
-    length = cfg.env.max_steps
-    if args.pool_cache.exists():
-        cached = torch.load(args.pool_cache, map_location=device)
-        if cached["length"] != length or "rewards" not in cached["train"]:
-            raise ValueError(f"{args.pool_cache} does not match ({cached['length']} steps, keys {list(cached['train'])}).")
-        train, held = cached["train"], cached["held"]
-    else:
-        train, held = pool(world, 4096, length, 2026, device), pool(world, 512, length, 2027, device)
-        torch.save({"games": 4096, "length": length, "train": train, "held": held}, args.pool_cache)
-    print(f"arm representation={args.representation} horizon={args.horizon} seed={args.seed}; "
-          f"{train['actions'].shape[0]} training games", flush=True)
-
-    t0 = time.time()
-    generator = torch.Generator(device=device).manual_seed(args.seed)
-    for update in range(1, args.updates + 1):
-        rows = torch.randint(0, train["actions"].shape[0], (cfg.training.batch_size,), device=device, generator=generator)
-        metrics = run.trainer.train_step(EpisodeBatch(train["actions"][rows], train["observations"][rows],
-                                                      train["rewards"][rows], train["initial"][rows]))
-        run._update_acting()
-        if update % 1600 == 0:
-            print(f"update {update}: " + " ".join(f"{k} {v:.4f}" for k, v in metrics.items() if k.startswith("loss")),
-                  flush=True)
-    print(f"training took {time.time() - t0:.0f}s", flush=True)
-
+def score(run, train, held, num_a: int, num_o: int, device: torch.device) -> dict[str, float]:
+    """Section 2's scores of the run's acting filter and observation head on the held-out pool."""
     # (a) Probes on frozen acting latents.
     acting = run.acting_filter
     acting.eval()
@@ -138,9 +101,57 @@ def main() -> None:
         "head_safe": head[safe].mean(),
         "head_certain_death": head[certain].mean(),
     }
-    for name, value in results.items():
-        print(f"RESULT {name} {float(value):.4f}")
+    acting.train()
+    return {name: float(value) for name, value in results.items()}
 
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="runs/wumpus/north50_seed0/.hydra/config.yaml")
+    parser.add_argument("--representation", choices=("jepa", "decoder"), required=True)
+    parser.add_argument("--horizon", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--updates", type=int, default=6400)
+    parser.add_argument("--pool-cache", type=Path, required=True)
+    parser.add_argument("--score-at", type=int, nargs="*", default=[],
+                        help="Also score at these update counts (lines 'RESULT@<updates> name value').")
+    args = parser.parse_args()
+
+    device = torch.device("cuda")
+    cfg = OmegaConf.load(args.config)
+    cfg.model.representation, cfg.model.observation_horizon, cfg.seed = args.representation, args.horizon, args.seed
+    setup, run = build_training_run(cfg, device)
+    world = setup.domain
+    num_a, num_o = world.num_actions, world.num_observations
+    length = cfg.env.max_steps
+    if args.pool_cache.exists():
+        cached = torch.load(args.pool_cache, map_location=device)
+        if cached["length"] != length or "rewards" not in cached["train"]:
+            raise ValueError(f"{args.pool_cache} does not match ({cached['length']} steps, keys {list(cached['train'])}).")
+        train, held = cached["train"], cached["held"]
+    else:
+        train, held = pool(world, 4096, length, 2026, device), pool(world, 512, length, 2027, device)
+        torch.save({"games": 4096, "length": length, "train": train, "held": held}, args.pool_cache)
+    print(f"arm representation={args.representation} horizon={args.horizon} seed={args.seed}; "
+          f"{train['actions'].shape[0]} training games", flush=True)
+
+    t0 = time.time()
+    generator = torch.Generator(device=device).manual_seed(args.seed)
+    for update in range(1, args.updates + 1):
+        rows = torch.randint(0, train["actions"].shape[0], (cfg.training.batch_size,), device=device, generator=generator)
+        metrics = run.trainer.train_step(EpisodeBatch(train["actions"][rows], train["observations"][rows],
+                                                      train["rewards"][rows], train["initial"][rows]))
+        run._update_acting()
+        if update in args.score_at:
+            for name, value in score(run, train, held, num_a, num_o, device).items():
+                print(f"RESULT@{update} {name} {value:.4f}", flush=True)
+        if update % 1600 == 0:
+            print(f"update {update}: " + " ".join(f"{k} {v:.4f}" for k, v in metrics.items() if k.startswith("loss")),
+                  flush=True)
+    print(f"training took {time.time() - t0:.0f}s", flush=True)
+
+    for name, value in score(run, train, held, num_a, num_o, device).items():
+        print(f"RESULT {name} {value:.4f}")
 
 if __name__ == "__main__":
     main()
