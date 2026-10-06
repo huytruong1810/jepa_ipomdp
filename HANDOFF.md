@@ -248,7 +248,8 @@ These predate the diagnosis chain:
      - The acting copies are not the cause: the online pair is just as wrong.
      - The latent carries most of the danger: on held-out greedy dangerous FORWARDs (died 67%), a fresh head trained on buffer + greedy games reads 0.53, one trained on the buffer alone 0.17, and the agent's head 0.007.
      - **Cause: the exploring policy does not visit the states the greedy planner reaches**, and the greedy planner exploits the head's errors there.
-   - **Next: ask the user** how to get the greedy policy's own outcomes into the data (or make planning robust to the errors).
+   - **User decision (2026-10-05): store the greedy evaluation games in the replay buffer** (`training.store_eval_episodes`, commit `1d7801b`; default off and Tiger bit-identical). Options not chosen: a pessimistic ensemble of observation heads; both together; an offline head-retrain check first.
+   - **Running:** `runs/wumpus/store_eval_eps_decoder_k5_u256_seed0`: the failed run's config plus `training.store_eval_episodes=true` (the only change, so the effect is isolated). 20 evaluations × 128 greedy games make about 29% of the buffer. When it finishes: `analyze.py`, `greedy_deaths.py`, `head_shift.py` and `absorbing_value.py` on it, compared with `eps_decoder_k5_u256_seed0` (−283 ± 17) and `north50_seed0` (110 ± 20). The value overestimation (section 6, step 2) is not addressed by this run.
 3. **Only once Wumpus plays near the reference:** build a Wumpus seed sweep and aggregation (`sweep.py` and `experiments/aggregate.py` are still Tiger-only), then a reviewer-page section with the latent figures.
 4. **Ask before pushing** `4d1ace5` onward.
 5. **Deferred:** the hybrid JEPA + observation condition; a model-free recurrent Q-learner baseline; multi-agent Tiger (verify its tables against Gmytrasiewicz & Doshi first); I-POMDP levels via the S × M_j reduction.
