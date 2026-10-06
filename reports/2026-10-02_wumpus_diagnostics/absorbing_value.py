@@ -14,6 +14,11 @@
 #      fixed seed, latents from the acting filter; V_hat = codec mean of the acting value head.
 #      Reports V_hat by status (alive / after death / after a win) and the one-step learned
 #      Q(a) at alive states.
+#    - Result 2026-10-05: the absorbing state is NOT the problem (V_hat after death 114, after a
+#      win 114; exact 0). Live states are overestimated and the overestimate grows with updates:
+#      mean V_hat alive 1565 (eps_decoder_k5_u256_seed0, 256 updates/collection, ~collection 40)
+#      vs 868 (north50_decoder_seed0, 64/collection, collection 100) and 559 (north50_seed0
+#      best.pt); the largest achievable return is 999 and the reference agent earns 573.
 # ==============================================================================
 
 import sys
