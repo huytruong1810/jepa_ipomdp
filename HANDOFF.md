@@ -243,7 +243,12 @@ These predate the diagnosis chain:
      - **The head is confidently wrong on the greedy planner's own histories.** FORWARDs taken at exact danger 0.4–0.6 (n = 75) and ≥ 0.6 (n = 36) were predicted at P(death) 0.004 and 0.017; the agent died on 57% and 97% of them (the step alignment was checked). The same head reads 0.5–0.9 at such dangers on random and reference histories and 0.71–0.73 at z₀ with a percept. The planner steps where the head is wrong (optimizer's curse). Older runs show the same at a smaller scale (34 and 12 such steps).
      - **Value overestimation grows with updates:** V̂ at live states is 1262 at the end (1565 at about collection 40), against 868 (`north50_decoder_seed0`) and 559 (`north50_seed0`); the maximum achievable return is 999. The absorbing state is fine (V̂ ≈ 103).
    - Options not chosen earlier: (b) an offline A/B of head-side fixes on frozen latents; (c) tightening the Wumpus value support (`value_bound` = 100,100, so only 153 of 255 bins are reachable and the spacing near 500 is 49; a domain decision for the user). Exploration options not chosen: more root noise early; reweighting GAME_OVER in the loss.
-   - **Next: ask the user** (options in the session report of 2026-10-05).
+   - **Head-shift diagnostic** (`head_shift.py`, user decision 2026-10-05; the full result is in its header):
+     - The head is **calibrated on its training data** (buffer FORWARDs: predicted 0.071, died 0.071, every bin) but not on the greedy planner's histories (predicted 0.002, died 0.097).
+     - The acting copies are not the cause: the online pair is just as wrong.
+     - The latent carries most of the danger: on held-out greedy dangerous FORWARDs (died 67%), a fresh head trained on buffer + greedy games reads 0.53, one trained on the buffer alone 0.17, and the agent's head 0.007.
+     - **Cause: the exploring policy does not visit the states the greedy planner reaches**, and the greedy planner exploits the head's errors there.
+   - **Next: ask the user** how to get the greedy policy's own outcomes into the data (or make planning robust to the errors).
 3. **Only once Wumpus plays near the reference:** build a Wumpus seed sweep and aggregation (`sweep.py` and `experiments/aggregate.py` are still Tiger-only), then a reviewer-page section with the latent figures.
 4. **Ask before pushing** `4d1ace5` onward.
 5. **Deferred:** the hybrid JEPA + observation condition; a model-free recurrent Q-learner baseline; multi-agent Tiger (verify its tables against Gmytrasiewicz & Doshi first); I-POMDP levels via the S × M_j reduction.
