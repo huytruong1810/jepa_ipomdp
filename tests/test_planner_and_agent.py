@@ -253,7 +253,7 @@ def test_exact_model_planner_matches_optimal_policy_return(tiger):
     class OptimalAgent:
         batch_size = batch
 
-        def reset(self):
+        def reset(self, initial_observation):
             self.state = tiger.initial_belief.expand(batch, -1).clone()
 
         def act(self):

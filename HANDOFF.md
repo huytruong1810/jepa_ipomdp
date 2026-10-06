@@ -74,7 +74,7 @@ Stages:
 
 **Tests**
 - The fast suite passes: 151 tests, about 60–80 s under load.
-- **Slow suite (Tiger acceptance) as of 2026-10-05:**
+- **Slow suite at HEAD (2026-10-05): 7/7 pass** (acceptance at 6000 updates). History:
   - Before the hoist (`62deb68`) and before Wumpus (`61991c7`): 5/5 at seed 0.
   - At HEAD (with the hoist): 4/5. `test_value_head_approaches_optimal_value` fails with mean |V − V*| = 22.3 (gate 8).
   - **The value gate is seed-fragile.** Value error by network-init seed (`reports/2026-10-02_wumpus_diagnostics/tiger_acceptance_seed.py`; logs in `runs/tiger_acceptance_seeds/`):
@@ -86,7 +86,7 @@ Stages:
 
   - Paired difference (with − before), seeds 0–8: **+4.2 ± 6.2** (95% t-interval, −1.9 to +10.4), Wilcoxon p = 0.25. The interval includes 0, so **the hoist stays** (user rule of 2026-10-05). The point estimate leans worse; 9 seeds cannot exclude moderate harm.
   - Planning returns in all 18 runs: 20.9–22.1 (target 19.28). Linear-probe KL ≤ 0.0011. The value error does not reach the policy.
-  - **Gate re-specification (user decision 2026-10-05: check more updates first).** HEAD seeds 0 and 8 (the worst) are being rerun at 6000 updates (`tiger_acceptance_seed.py <seed> 6000`; logs `accept_post_seed{0,8}_u6000.log`). If both fall below 8, the test moves to 6000 updates with the bound kept at 8; otherwise ask the user again.
+  - **Gate re-specification (user decision 2026-10-05: check more updates first).** At 6000 updates HEAD seeds 0 and 8 (the worst) give 5.3 and 1.1 (`accept_post_seed{0,8}_u6000.log`), so the test now runs 6000 updates with the bound kept at 8 (`cd9d116`; about 40 min).
   - How to run the pre-hoist arm: `git worktree add --detach <dir> 62deb68`, then run inside it with `PYTHONPATH=<dir>/src OMP_NUM_THREADS=2 <repo>/.venv/bin/python reports/2026-10-02_wumpus_diagnostics/tiger_acceptance_seed.py <seed>`. Remove the worktree afterwards.
 
 **Runs** (`runs/` is untracked)
@@ -234,9 +234,7 @@ These predate the diagnosis chain:
 
 ## 6. Next steps (in order; ask the user at each research decision)
 
-1. **Finish the Tiger value-gate study** (section 3). Seeds 0–8 are done and the hoist stays.
-   - Read the 6000-update reruns of HEAD seeds 0 and 8. If both are below 8, set `UPDATES = 6000` in `tests/test_world_model_acceptance.py` and record the seed table in its header; otherwise ask the user.
-   - Rerun the full slow suite at HEAD.
+1. **Tiger value-gate study: done (2026-10-05).** The hoist stays; the acceptance test runs 6000 updates (HEAD seeds 0 and 8: 22.3/24.1 at 3000 -> 5.3/1.1 at 6000; seed table in the test header). Full slow suite at `cd9d116`: 6/7 passed; the failure was a stale `OptimalAgent.reset()` signature in `test_exact_model_planner_matches_optimal_policy_return` (broken since `90b489d`), fixed and passing. The 6000-update value gate has been checked at seeds 0 and 8 only.
 2. **Wumpus: the combined-fix run is in flight** (user decisions of 2026-10-05: option a, with ε-uniform exploration).
    - `runs/wumpus/eps_decoder_k5_u256_seed0`, commit `5dbeca4`: `env=wumpus model.representation=decoder model.observation_horizon=5 training.updates_per_collection=256 training.total_episodes=6400 agent.epsilon=0.25 agent.epsilon_min=0.1`. ε decays with `temperature_decay` (0.97 per collection) to 0.1.
    - **Interim diagnosis (2026-10-05, ~collection 40-45; scripts `absorbing_value.py`, `greedy_deaths.py`, `start_danger.py`):** greedy evaluations are −200 to −530 with 40–60% deaths, worse than the old runs.
