@@ -78,6 +78,19 @@
 #    - The value targets are Bellman optimality backups through the learned model (trainer.py),
 #      so off-policy actions do not bias them; greedy evaluation never uses epsilon.
 #    - cfg.epsilon = 0 (the default, canonical Tiger) draws no extra random numbers.
+#
+# 8. Greedy Evaluation Games as Training Data (user decision, 2026-10-05):
+#    - cfg.store_eval_episodes adds every greedy evaluation's episodes to the replay buffer.
+#    - Motivation (reports/2026-10-02_wumpus_diagnostics/head_shift.py): on Wumpus the observation
+#      head is calibrated on its training data (buffer FORWARD steps: predicted death 0.071,
+#      realised 0.071) but not on the greedy planner's own histories (0.002 vs 0.097). The
+#      exploring policy does not reach the states the greedy planner reaches, and the planner
+#      steps exactly where the head is wrong. A fresh head trained with greedy games added read
+#      0.53 at held-out dangerous steps (realised 0.67) against 0.17 from the buffer alone.
+#    - Value targets are Bellman optimality backups through the model, so mixing in greedy data
+#      biases nothing. Evaluation keeps its own simulator stream, and every evaluation plays fresh
+#      layouts, so storing the games does not leak evaluation layouts into later evaluations.
+#    - Off by default (canonical Tiger): the buffer and every random stream are then untouched.
 # ==============================================================================
 
 from collections.abc import Callable
@@ -165,6 +178,7 @@ class RunConfig:
     temperature_decay: float
     epsilon: float                    # epsilon-uniform exploration in collection (section 7); 0 = off
     epsilon_min: float
+    store_eval_episodes: bool         # add greedy evaluation games to the replay buffer (section 8)
 
 
 class TrainingRun:
@@ -266,6 +280,8 @@ class TrainingRun:
     def evaluate(self) -> dict[str, float]:
         """Greedy evaluation (section 2); updates best_eval_return."""
         episodes, _ = play_episodes(self.eval_env, self.eval_agent)
+        if self.cfg.store_eval_episodes:
+            self.buffer.add(episodes)
         returns = discounted_returns(episodes.rewards, self.domain.discount)
         mean, stderr = float(returns.mean()), float(returns.std()) / np.sqrt(len(returns))
         self.best_eval_return = max(self.best_eval_return, mean)
