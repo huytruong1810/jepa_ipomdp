@@ -10,7 +10,7 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
   2. The learned latent never encodes the danger of the step ahead precisely enough, because JEPA/reward and one-step observation prediction don't force it to. With 4× longer training the decoder latent nearly reaches a privileged supervised bound, but the planning model's death prediction stays poorly calibrated.
   3. That death prediction is partly limited by data coverage: dangerous forward steps are rare in the data.
 - **Open item:** a runtime speed-up (hoisting the filter's input network) was adopted. Tiger's slow value-head check fails at 3/9 seeds without it and 5/9 with it; the paired difference is not significant, so it stays. The gate is being re-specified (section 3).
-- **The combined-fix Wumpus run failed (2026-10-05):** −283 ± 17 per game. The greedy planner steps where its death prediction is confidently wrong, and value overestimation grows with updates (section 6, step 2).
+- **Wumpus (2026-10-06):** the combined-fix run failed (−283 ± 17); storing greedy games in the buffer gave −84 ± 27. **The cause is overfitting of the jointly trained filter and observation head to the buffer's games:** calibrated in-sample, overconfident on fresh games. The greedy planner exploits the confident "safe" errors (section 6, step 2).
 
 ## 1. Goals
 
@@ -249,7 +249,15 @@ These predate the diagnosis chain:
      - The latent carries most of the danger: on held-out greedy dangerous FORWARDs (died 67%), a fresh head trained on buffer + greedy games reads 0.53, one trained on the buffer alone 0.17, and the agent's head 0.007.
      - **Cause: the exploring policy does not visit the states the greedy planner reaches**, and the greedy planner exploits the head's errors there.
    - **User decision (2026-10-05): store the greedy evaluation games in the replay buffer** (`training.store_eval_episodes`, commit `1d7801b`; default off and Tiger bit-identical). Options not chosen: a pessimistic ensemble of observation heads; both together; an offline head-retrain check first.
-   - **Running:** `runs/wumpus/store_eval_eps_decoder_k5_u256_seed0`: the failed run's config plus `training.store_eval_episodes=true` (the only change, so the effect is isolated). 20 evaluations × 128 greedy games make about 29% of the buffer. When it finishes: `analyze.py`, `greedy_deaths.py`, `head_shift.py` and `absorbing_value.py` on it, compared with `eps_decoder_k5_u256_seed0` (−283 ± 17) and `north50_seed0` (110 ± 20). The value overestimation (section 6, step 2) is not addressed by this run.
+   - **Result (2026-10-06):** `runs/wumpus/store_eval_eps_decoder_k5_u256_seed0` (the failed run's config plus `training.store_eval_episodes=true`): `analyze.py` on best.pt (collection 85) gives **−84 ± 27**, win 23%, death 30% (failed run −283 ± 17; `north50_seed0` 110 ± 20). Evaluations rose over the last 20 collections. V̂ at live states is 905 (1262 in the failed run); probes are unchanged.
+   - **The real cause is overfitting** (`head_shift.py`, header section 3, including the correction). The head is calibrated in-sample (buffer) but overconfident in both directions on **fresh games of the exploring policy itself**:
+     - predicted < 0.02: died 0.2% in the buffer, 2.7% on fresh exploring games, 5.5% on fresh greedy games;
+     - predicted 0.5–1: died 89% in the buffer, 43% on fresh exploring games.
+     - The failed run shows the same. The greedy planner is just the worst case: it selects the confident "safe" errors.
+     - With greedy games in the buffer, the agent's head still reads 0.006 at dangerous greedy steps (died 62%), while a fresh head on frozen latents trained on the same buffer reads 0.28.
+   - **This fits earlier evidence.** The 4×-update runs (−283 and −84) were worse than the 64-update run (110). In the longer offline A/B (section 5.4, item 13) the head's death error got *worse* with more updates while the probes improved. The decoder filter and head train jointly at replay ratio 64 (256 updates × 16 episodes per 64 new episodes), so they can memorize the training layouts.
+   - The earlier reading, "policy shift, not overfitting", from the first `head_shift.py` run was wrong: buffer calibration is in-sample.
+   - **Next: ask the user** how to address the overfitting (options in the session report of 2026-10-06).
 3. **Only once Wumpus plays near the reference:** build a Wumpus seed sweep and aggregation (`sweep.py` and `experiments/aggregate.py` are still Tiger-only), then a reviewer-page section with the latent figures.
 4. **Ask before pushing** `4d1ace5` onward.
 5. **Deferred:** the hybrid JEPA + observation condition; a model-free recurrent Q-learner baseline; multi-agent Tiger (verify its tables against Gmytrasiewicz & Doshi first); I-POMDP levels via the S × M_j reduction.

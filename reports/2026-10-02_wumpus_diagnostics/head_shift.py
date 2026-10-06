@@ -46,6 +46,13 @@
 #    - So: the exploring policy (temperature >= 0.1, root Dirichlet noise 0.25, epsilon >= 0.1)
 #      does not visit the states the greedy planner reaches, and the greedy planner steps exactly
 #      where the head is wrong there.
+#    - CORRECTED the same day by the fresh-exploring-games check (added afterwards): the head is
+#      also miscalibrated on FRESH games of the exploring policy itself, so the cause is
+#      OVERFITTING to the buffer's games, not a policy shift. Predicted < 0.02: died 0.1% in the
+#      buffer, 4.3% on fresh exploring games, 9.2% on fresh greedy games; predicted 0.5-1 (mean
+#      0.89): died 96% in the buffer, 40% on fresh exploring games. store_eval_eps_decoder_k5_u256
+#      _seed0 (greedy games stored): 0.2% / 2.7% / 5.5% and 89% / 43%. The greedy planner is the
+#      worst case because it selects the confident "safe" errors.
 # ==============================================================================
 
 import sys
@@ -132,6 +139,16 @@ recent_eps = EpisodeBatch(*(t[recent:] for t in (buffer_eps.actions, buffer_eps.
                                                   buffer_eps.initial_observations)))
 z, died, _ = forward_transitions(unroll(run.acting_filter, recent_eps), recent_eps)
 calibration("acting pair, last 10 collections", p_death(run.acting_observation_head, z), died)
+# Fresh games of the EXPLORING policy (new layouts): separates overfitting to the buffer's games
+# (wrong here too) from a shift between the exploring and the greedy policy (right here).
+train_agent = run.train_agent
+explore_parts = [play_episodes(WumpusSimulator(world, train_agent.batch_size, cfg.env.max_steps,
+                                               stream_seed(8765 + k, 1), dev), train_agent)[0]
+                 for k in range(games // train_agent.batch_size)]
+explore_eps = EpisodeBatch(*(torch.cat([getattr(p, f) for p in explore_parts]) for f in
+                             ("actions", "observations", "rewards", "initial_observations")))
+z, died, _ = forward_transitions(unroll(run.acting_filter, explore_eps), explore_eps)
+calibration("acting pair, fresh exploring games", p_death(run.acting_observation_head, z), died)
 
 # --- Exact danger on greedy histories (for the held-out score) ------------------------------------
 acting_filter, acting_head = pairs["acting"]
