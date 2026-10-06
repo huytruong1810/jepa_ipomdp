@@ -80,7 +80,7 @@ The three scripts are thin shells over `ipomdp.experiments`; no script imports a
   It also reports geometry: the PCA spectrum, per-component rank correlation with log-odds (side) and |log-odds| (confidence), and a minimality ratio.
 - `experiments/runs.py` (`analyze_run`) reloads a run directory (`.hydra/config.yaml` + `checkpoints/best.pt`), re-estimates every return on fresh simulator seeds (the training `best.pt` score is a biased max) and writes `<run>/analysis/report.json` and `geometry.png`; `uv run analyze.py runs/tiger/<run>` calls it.
 - `experiments/aggregate.py` aggregates one report per seed: Student-t 95% intervals, with paired within-seed gaps (planner − optimal, etc.) as the quantities to cite, since all seeds share one analysis seed.
-- `tests/test_world_model_acceptance.py` (slow, GPU) is the acceptance gate. It trains off-policy on random-policy data (3000 updates, about 24 min) and checks:
+- `tests/test_world_model_acceptance.py` (slow, GPU) is the acceptance gate. It trains off-policy on random-policy data (6000 updates, about 40–50 min; the value gate is seed-fragile at 3000, see the test header) and checks:
   - the belief probes;
   - the reward head against b·R[a];
   - the observation head against the exact P(o′|b,a);

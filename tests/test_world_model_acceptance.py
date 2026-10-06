@@ -4,21 +4,33 @@ Phase-2/3/5 acceptance tests: the world model trained by the real WorldModelTrai
 Tiger, from uniformly-random-policy data only (off-policy), must reproduce exact quantities
 computed from the FinitePOMDP and must plan optimally.
 
-Protocol (fixed seeds, GPU, ~20 min):
-    - 3000 updates, each on 64 fresh random-policy episodes of 100 steps (no MCTS in training).
-      100-step episodes: conf/env/tiger.yaml, section 3. 3000 updates: the fitted value
-      iteration of the value head needs them (|V - V*| 26 after 1000 updates, 4.9 after 3000).
+Protocol (fixed seeds, GPU, ~40 min):
+    - 6000 updates, each on 64 fresh random-policy episodes of 100 steps (no MCTS in training).
+      100-step episodes: conf/env/tiger.yaml, section 3. 6000 updates: the fitted value
+      iteration of the value head is still converging at 3000 (user decision, 2026-10-05).
+      Mean |V - V*| by network-init seed (reports/2026-10-02_wumpus_diagnostics/
+      tiger_acceptance_seed.py; logs in runs/tiger_acceptance_seeds/):
+          seed                     0     1     2     3     4     5     6     7     8
+          3000, before the hoist   4.9   1.9  13.0   2.2   1.5   1.7   5.1  12.4  15.7
+          3000, with the hoist    22.3  15.1   6.6   1.5   0.7   3.8  13.2   8.9  24.1
+          6000, with the hoist     5.3                                            1.1
+      At 3000 updates the gate of 8 failed at 3/9 (before) and 5/9 (with) seeds although the
+      greedy planner earned 20.9-22.1 in all 18 runs; 6000 updates brought the two worst seeds
+      well under it. (|V - V*| was 26 after 1000 updates.) The hoist is BeliefFilter's hoisted
+      input_net (models/world_model.py, section 7); its paired effect at 3000 updates, +4.2 +- 6.2
+      over seeds 0-8, is not significant.
     - Probe data: two disjoint sets of 1024 random-policy episodes of 100 steps (fit / held-out);
       latents from the online filter run from its learned z_0; exact posteriors b* from the
       batched Bayes filter.
 
-Checked against exact references (measured at 3000 updates in brackets):
-    Belief       probes of z_t vs b*(h_t), KL(b* || probe)            [linear 0.0007, MLP 0.00004]
+Checked against exact references (measured at seed 0; value, linear probe and planning at 6000
+updates, the rest at 3000 updates before the hoist, in brackets):
+    Belief       probes of z_t vs b*(h_t), KL(b* || probe)            [linear 0.0003, MLP 0.00004]
     Reward       decoded R(z_t, a) vs b* . R[a]                        [doors 1.7-2.2, listen < 0.05]
     Observation  P(o' | z_t, a) vs exact P(o' | b*, a), KL             [0.0005-0.01]
-    Value        decoded V(z_t) vs the exact optimum V*(b*)            [mean |V - V*| 4.9]
+    Value        decoded V(z_t) vs the exact optimum V*(b*)            [mean |V - V*| 5.3]
                  (Bellman optimality targets aim at V*, not at the random behaviour policy.)
-    Planning     greedy agent over the LEARNED model (50 simulations), [21.19 +- 1.69 vs 19.28]
+    Planning     greedy agent over the LEARNED model (50 simulations), [21.40 +- 1.70 vs 19.28]
                  256 episodes, discounted return vs V*(b0)
 """
 
@@ -33,7 +45,7 @@ from ipomdp.interpretability import build_probe_dataset, evaluate_probe, fit_lin
 from ipomdp.models import BeliefFilter, LatentPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueHead
 from ipomdp.training import Representation, TrainerConfig, WorldModelTrainer, discounted_returns, play_episodes
 
-UPDATES, BATCH, LENGTH, DIM, HIDDEN = 3000, 64, 100, 32, 64
+UPDATES, BATCH, LENGTH, DIM, HIDDEN = 6000, 64, 100, 32, 64
 
 
 def train_and_measure(representation: Representation = Representation.JEPA) -> dict:
@@ -133,7 +145,7 @@ def test_observation_head_matches_exact_predictive(measured):
 
 
 def test_value_head_approaches_optimal_value(measured):
-    """Fitted value iteration through the learned model; measured mean |V - V*| = 4.9."""
+    """Fitted value iteration through the learned model; measured mean |V - V*| = 5.3 (seed 0, 6000 updates)."""
     error = (measured["value"] - measured["optimal_value"]).abs()
     assert float(error.mean()) < 8.0, float(error.mean())
 
