@@ -10,7 +10,7 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
   2. The learned latent never encodes the danger of the step ahead precisely enough, because JEPA/reward and one-step observation prediction don't force it to. With 4× longer training the decoder latent nearly reaches a privileged supervised bound, but the planning model's death prediction stays poorly calibrated.
   3. That death prediction is partly limited by data coverage: dangerous forward steps are rare in the data.
 - **Open item:** a runtime speed-up (hoisting the filter's input network) was adopted. Tiger's slow value-head check fails at 3/9 seeds without it and 5/9 with it; the paired difference is not significant, so it stays. The gate is being re-specified (section 3).
-- **Running (2026-10-05):** the full Wumpus run combining both fixes (section 6, step 2a): `runs/wumpus/eps_decoder_k5_u256_seed0`, commit `5dbeca4`.
+- **The combined-fix Wumpus run failed (2026-10-05):** −283 ± 17 per game. The greedy planner steps where its death prediction is confidently wrong, and value overestimation grows with updates (section 6, step 2).
 
 ## 1. Goals
 
@@ -235,13 +235,15 @@ These predate the diagnosis chain:
 ## 6. Next steps (in order; ask the user at each research decision)
 
 1. **Tiger value-gate study: done (2026-10-05).** The hoist stays; the acceptance test runs 6000 updates (HEAD seeds 0 and 8: 22.3/24.1 at 3000 -> 5.3/1.1 at 6000; seed table in the test header). Full slow suite at `cd9d116`: 6/7 passed; the failure was a stale `OptimalAgent.reset()` signature in `test_exact_model_planner_matches_optimal_policy_return` (broken since `90b489d`), fixed and passing. The 6000-update value gate has been checked at seeds 0 and 8 only.
-2. **Wumpus: the combined-fix run is in flight** (user decisions of 2026-10-05: option a, with ε-uniform exploration).
-   - `runs/wumpus/eps_decoder_k5_u256_seed0`, commit `5dbeca4`: `env=wumpus model.representation=decoder model.observation_horizon=5 training.updates_per_collection=256 training.total_episodes=6400 agent.epsilon=0.25 agent.epsilon_min=0.1`. ε decays with `temperature_decay` (0.97 per collection) to 0.1.
-   - **Interim diagnosis (2026-10-05, ~collection 40-45; scripts `absorbing_value.py`, `greedy_deaths.py`, `start_danger.py`):** greedy evaluations are −200 to −530 with 40–60% deaths, worse than the old runs.
-     - The planner steps forward exactly where its head wrongly says "safe": on its own histories, 83 FORWARDs at exact danger ≥ 0.4 were all predicted at P(death) ≤ 0.01. The head is right at z₀ (it uses o₀) and over-cautious on reference histories (0.43 on safe steps), so the miscalibration depends on the history distribution. Older runs show the same at a smaller scale.
-     - Value overestimation grows with updates: V̂ at live states is 1565 here, 868 in `north50_decoder_seed0` and 559 in `north50_seed0`, against a maximum achievable return of 999. The absorbing state is fine (V̂ ≈ 114, exact 0).
-   - When it finishes, run `analyze.py` on it, compare with `north50_seed0` and the reference agent (section 5.3), and rerun `death_calibration.py` and `danger_probe.py` on it.
-   - Options not chosen: (b) an offline A/B of head-side fixes on frozen latents; (c) tightening the Wumpus value support (`value_bound` = 100,100, so only 153 of 255 bins are reachable and the spacing near 500 is 49; a domain decision for the user). Exploration options not chosen: more root noise early; reweighting GAME_OVER in the loss.
+2. **Wumpus: the combined-fix run failed (2026-10-05).** User decisions: option a with ε-uniform exploration.
+   - `runs/wumpus/eps_decoder_k5_u256_seed0`, commit `5dbeca4`, 3 h 18 min: `env=wumpus model.representation=decoder model.observation_horizon=5 training.updates_per_collection=256 training.total_episodes=6400 agent.epsilon=0.25 agent.epsilon_min=0.1` (ε decays with `temperature_decay` to 0.1).
+   - In-training greedy evaluations: −199 to −531 at every evaluation, with no trend; 59% deaths at collection 100.
+   - `analyze.py` (best.pt = collection 25, 512 fresh games): **−283 ± 17**, win 0.4%, death 29%, against the random hunter at −388 and `north50_seed0` at 110. Linear probes are no better than the old runs (cell 48%, heading 41%).
+   - **Diagnosis** (`absorbing_value.py`, `greedy_deaths.py`, `start_danger.py`; final checkpoint):
+     - **The head is confidently wrong on the greedy planner's own histories.** FORWARDs taken at exact danger 0.4–0.6 (n = 75) and ≥ 0.6 (n = 36) were predicted at P(death) 0.004 and 0.017; the agent died on 57% and 97% of them (the step alignment was checked). The same head reads 0.5–0.9 at such dangers on random and reference histories and 0.71–0.73 at z₀ with a percept. The planner steps where the head is wrong (optimizer's curse). Older runs show the same at a smaller scale (34 and 12 such steps).
+     - **Value overestimation grows with updates:** V̂ at live states is 1262 at the end (1565 at about collection 40), against 868 (`north50_decoder_seed0`) and 559 (`north50_seed0`); the maximum achievable return is 999. The absorbing state is fine (V̂ ≈ 103).
+   - Options not chosen earlier: (b) an offline A/B of head-side fixes on frozen latents; (c) tightening the Wumpus value support (`value_bound` = 100,100, so only 153 of 255 bins are reachable and the spacing near 500 is 49; a domain decision for the user). Exploration options not chosen: more root noise early; reweighting GAME_OVER in the loss.
+   - **Next: ask the user** (options in the session report of 2026-10-05).
 3. **Only once Wumpus plays near the reference:** build a Wumpus seed sweep and aggregation (`sweep.py` and `experiments/aggregate.py` are still Tiger-only), then a reviewer-page section with the latent figures.
 4. **Ask before pushing** `4d1ace5` onward.
 5. **Deferred:** the hybrid JEPA + observation condition; a model-free recurrent Q-learner baseline; multi-agent Tiger (verify its tables against Gmytrasiewicz & Doshi first); I-POMDP levels via the S × M_j reduction.
@@ -258,6 +260,7 @@ These predate the diagnosis chain:
 - **Wumpus, JEPA as is:** the latent does not encode the danger ahead (section 5.4, item 7).
 - **Wumpus, decoder at 6,400 updates:** better than JEPA but not enough to play well.
 - **Wumpus, multi-step k = 5 on JEPA:** no effect.
+- **Wumpus, decoder + k = 5 + 4× updates + ε-uniform exploration (full run, 2026-10-05):** −283 ± 17, worse than every earlier run (section 6, step 2).
 - **Wumpus, a causal Transformer filter (untuned):** no better than the GRU, and worse on cell.
 
 **Planning**
