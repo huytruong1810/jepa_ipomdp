@@ -25,6 +25,16 @@
 #    - Output: "RESULT name value" lines after training (parsed by ab_summary.py), plus
 #      "RESULT@<updates> name value" lines at the --score-at update counts (learning curves).
 #
+# 2b. Overfitting A/B (user decision, 2026-10-06; head_shift.py found the jointly trained filter and
+#    observation head calibrated in-sample but overconfident on fresh games):
+#    - Arms: --weight-decay (AdamW, every trained network) and --train-games (the first n games of
+#      each half of the training pool, so 2n games), plus the --score-at learning curve as the
+#      early-stopping lever.
+#    - Extra scores: the observation head's next-observation NLL on 1024 training games vs the
+#      held-out pool (alive steps, every action; the generalisation gap), and head_safe_miss: the
+#      mean exact danger at held-out states where the head predicts P(death | FORWARD) < 0.02 (the
+#      confident "safe" errors the greedy planner exploits; 0 for a perfect head).
+#
 # 3. Usage:
 #    uv run python reports/2026-10-02_wumpus_diagnostics/objective_ab.py --representation jepa \
 #        --horizon 5 --seed 1 --pool-cache runs/wumpus/supervised_filter/pools.pt
@@ -55,6 +65,17 @@ def latents_of(belief_filter, data, rows, num_a, num_o):
                                  F.one_hot(data["initial"][rows], num_o).float())
     alive = data["alive"][rows]
     return z[alive].float(), {k: data[k][rows][alive] for k in ("hazards", "cell", "heading", "danger")}
+
+
+def observation_nll(run, data, rows, num_a: int, num_o: int) -> torch.Tensor:
+    """Acting head's next-observation NLL at alive steps of data[rows] (every action taken)."""
+    with torch.no_grad():
+        actions = F.one_hot(data["actions"][rows], num_a).float()
+        z = run.acting_filter.unroll(actions, F.one_hot(data["observations"][rows], num_o).float(),
+                                     F.one_hot(data["initial"][rows], num_o).float())[:, :-1]
+        logits = run.acting_observation_head(z, actions).float()
+        nll = F.cross_entropy(logits.flatten(0, 1), data["observations"][rows].flatten(), reduction="none")
+    return nll[data["alive"][rows][:, :-1].flatten()].mean()
 
 
 def score(run, train, held, num_a: int, num_o: int, device: torch.device) -> dict[str, float]:
@@ -100,6 +121,9 @@ def score(run, train, held, num_a: int, num_o: int, device: torch.device) -> dic
         "head_danger_error": (head - exact).abs().mean(),
         "head_safe": head[safe].mean(),
         "head_certain_death": head[certain].mean(),
+        "head_safe_miss": exact[head < 0.02].mean(),
+        "head_nll_train": observation_nll(run, train, slice(0, 1024), num_a, num_o),
+        "head_nll_held": observation_nll(run, held, slice(None), num_a, num_o),
     }
     acting.train()
     return {name: float(value) for name, value in results.items()}
@@ -113,6 +137,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--updates", type=int, default=6400)
     parser.add_argument("--pool-cache", type=Path, required=True)
+    parser.add_argument("--weight-decay", type=float, default=None, help="AdamW weight decay (default: the config's).")
+    parser.add_argument("--train-games", type=int, default=None,
+                        help="Train on the first n games of each half of the pool (2n games; default: all).")
     parser.add_argument("--score-at", type=int, nargs="*", default=[],
                         help="Also score at these update counts (lines 'RESULT@<updates> name value').")
     args = parser.parse_args()
@@ -120,6 +147,8 @@ def main() -> None:
     device = torch.device("cuda")
     cfg = OmegaConf.load(args.config)
     cfg.model.representation, cfg.model.observation_horizon, cfg.seed = args.representation, args.horizon, args.seed
+    if args.weight_decay is not None:
+        cfg.trainer.weight_decay = args.weight_decay
     setup, run = build_training_run(cfg, device)
     world = setup.domain
     num_a, num_o = world.num_actions, world.num_observations
@@ -132,13 +161,16 @@ def main() -> None:
     else:
         train, held = pool(world, 4096, length, 2026, device), pool(world, 512, length, 2027, device)
         torch.save({"games": 4096, "length": length, "train": train, "held": held}, args.pool_cache)
-    print(f"arm representation={args.representation} horizon={args.horizon} seed={args.seed}; "
-          f"{train['actions'].shape[0]} training games", flush=True)
+    half = train["actions"].shape[0] // 2
+    fit_rows = (torch.arange(train["actions"].shape[0], device=device) if args.train_games is None else
+                torch.cat([torch.arange(args.train_games, device=device), half + torch.arange(args.train_games, device=device)]))
+    print(f"arm representation={args.representation} horizon={args.horizon} seed={args.seed} "
+          f"weight_decay={cfg.trainer.weight_decay}; {len(fit_rows)} training games", flush=True)
 
     t0 = time.time()
     generator = torch.Generator(device=device).manual_seed(args.seed)
     for update in range(1, args.updates + 1):
-        rows = torch.randint(0, train["actions"].shape[0], (cfg.training.batch_size,), device=device, generator=generator)
+        rows = fit_rows[torch.randint(0, len(fit_rows), (cfg.training.batch_size,), device=device, generator=generator)]
         metrics = run.trainer.train_step(EpisodeBatch(train["actions"][rows], train["observations"][rows],
                                                       train["rewards"][rows], train["initial"][rows]))
         run._update_acting()
