@@ -257,7 +257,15 @@ These predate the diagnosis chain:
      - With greedy games in the buffer, the agent's head still reads 0.006 at dangerous greedy steps (died 62%), while a fresh head on frozen latents trained on the same buffer reads 0.28.
    - **This fits earlier evidence.** The 4×-update runs (−283 and −84) were worse than the 64-update run (110). In the longer offline A/B (section 5.4, item 13) the head's death error got *worse* with more updates while the probes improved. The decoder filter and head train jointly at replay ratio 64 (256 updates × 16 episodes per 64 new episodes), so they can memorize the training layouts.
    - The earlier reading, "policy shift, not overfitting", from the first `head_shift.py` run was wrong: buffer calibration is in-sample.
-   - **Next: ask the user** how to address the overfitting (options in the session report of 2026-10-06).
+   - **User decision (2026-10-06): an offline regularisation A/B** (`objective_ab.py` at `68d66b4`, the agent's decoder + k = 5 config, the cached pool, 25,600 updates, scored at 3,200 / 6,400 / 12,800 / 25,600; logs in `runs/wumpus/overfit_ab/`, summary with `overfit_summary.py 25600 runs/wumpus/overfit_ab/obj_*.log`).
+     - Arms: `a_base` (weight decay 1e-4); `b_wd1e-2`; `c_wd1e-1`; `d_data2048` (a quarter of the training games).
+     - Six in parallel saturate the GPU (about 0.8 s per update each, against 0.1 s alone), so parallelism gains nothing; run 2–3 at a time.
+     - **Interim result at 3,200–6,400 updates (1–2 seeds):**
+       - With the full 8,192 games there is little overfitting: held-out NLL 0.24 vs training 0.22, and `head_safe_miss` falls from 0.025 to 0.019.
+       - With 2,048 games it overfits strongly: held-out NLL 0.30 → 0.50 while training NLL falls 0.21 → 0.17; `head_safe_miss` 0.031 → 0.047.
+       - Weight decay up to 0.1 shows no effect.
+       - The amount of data, i.e. the replay ratio, is the lever. The 256-updates-per-collection agent trains hard on very few games early in the run.
+     - **2026-10-06 21:50: memory ran critically low** after ipomcp started 5 workers. The queue and the three weight-decay runs were stopped at about 11,200 updates. Still running: `a_base` seeds 1–2 and `d_data2048` seed 1. Not run: seed 3 of every arm, and seed 2 of c and d. Rerun the missing ones 2–3 at a time when RAM allows, then summarise and ask the user which fix to take into a full agent run (likely candidates: a lower replay ratio, i.e. fewer updates per collection or more games per collection, possibly with early stopping on held-out NLL).
 3. **Only once Wumpus plays near the reference:** build a Wumpus seed sweep and aggregation (`sweep.py` and `experiments/aggregate.py` are still Tiger-only), then a reviewer-page section with the latent figures.
 4. **Ask before pushing** `4d1ace5` onward.
 5. **Deferred:** the hybrid JEPA + observation condition; a model-free recurrent Q-learner baseline; multi-agent Tiger (verify its tables against Gmytrasiewicz & Doshi first); I-POMDP levels via the S × M_j reduction.
