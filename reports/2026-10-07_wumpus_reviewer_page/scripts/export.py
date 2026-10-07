@@ -26,6 +26,8 @@
 #      project into the same UMAP map.
 #    - Usage: uv run python <this> <main run dir> <before run dir> <out json> [other run dirs...]
 #             uv run python <this> games <main run dir> <existing out json>   (refresh games only)
+#             uv run python <this> add <existing out json> <run dirs...>   (merge curves, and reports
+#             where <run>/analysis/report.json exists, without recomputing anything else)
 #      The main run dir supplies the games and the "after" calibration; every run dir whose name
 #      starts with page_meta's main_prefix is pooled as the current agent's seeds.
 # ==============================================================================
@@ -209,6 +211,19 @@ def overfit_ab(log_dir: Path) -> dict:
 
 
 def main() -> None:
+    if sys.argv[1] == "add":
+        out_path, dirs = Path(sys.argv[2]), [Path(p) for p in sys.argv[3:]]
+        data = json.loads(out_path.read_text())
+        data["curves"].update(curves(dirs))
+        for d in dirs:
+            report = d / "analysis" / "report.json"
+            if report.exists():
+                r = json.loads(report.read_text())
+                data["reports"][d.name] = {"returns": r["returns"], "probes": r["probes"],
+                                           "checkpoint_collection": r["checkpoint_collection"]}
+        out_path.write_text(json.dumps(data, separators=(",", ":")))
+        print(f"merged {[d.name for d in dirs]} into {out_path}")
+        return
     if sys.argv[1] == "games":
         main_run, out_path = Path(sys.argv[2]), Path(sys.argv[3])
         data = json.loads(out_path.read_text())

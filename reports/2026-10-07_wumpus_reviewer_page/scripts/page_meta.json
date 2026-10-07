@@ -35,5 +35,6 @@
     "<b>Interpretability.</b> A probe on the latent recovers the hunter's cell and heading 55\u201358% and 55\u201360% of the time on random-action histories, and 83\u201388% and 87\u201390% on the agent's own games. The same network trained on exact targets reaches 99.9% and 100%. The hazard beliefs beat a constant guess, but they stay coarse. The latent carries part of the exact belief, not all of it.",
     "<b>What was fixed.</b> The jointly trained filter and observation model overfitted the games they had seen when they trained 4\u00d7 harder per game. They were calibrated in-sample, overconfident on fresh games, and the planner exploited exactly those errors. Going back to 64 updates per collection, together with uniform exploration and storing the greedy evaluation games, removed most deaths. Weight decay did not help, and the network architecture was never the limit.",
     "<b>Next.</b> Close the unfinished-game gap: a value scale fitted to the game's \u00b11000 rewards, longer training at the same update rate, and measuring how much of the remaining gap the latent's coarse belief explains. The Tiger results are unchanged."
-  ]
+  ],
+  "jepa_prefix": "u64_store_eval_eps_jepa_k5_seed"
 }

@@ -117,6 +117,7 @@ input[type=range] { accent-color: var(--accent); }
   <p class="eyebrow">Research progress · 7 October 2026</p>
   <h1 style="margin-top:12px" id="headline">Wumpus World: the learned belief agent now rarely dies, but earns a third of what exact beliefs allow</h1>
   <p class="lede" id="lede"></p>
+  <p class="note" style="margin-top:12px">Same agent, planner and training loop as on canonical Tiger, where the learned planner matches the exact optimum. The method diagrams are on the <a href="https://claude.ai/artifact/Rboz6xV7xA7Ejrjomy4As5" style="color:var(--accent)">Tiger results page</a>.</p>
 </header>
 
 <section aria-labelledby="h-domain">
@@ -322,6 +323,14 @@ input[type=range] { accent-color: var(--accent); }
       rows.push({ label: `Current agent (${mainNames.length} seed${mainNames.length > 1 ? "s" : ""})`, m, h: h ?? 1.96 * per[0].discounted_return_stderr, col: "var(--s1)", strong: true,
                   r: { win_rate: avg("win_rate"), death_rate: avg("death_rate"), unfinished_rate: avg("unfinished_rate") }, seeds: per.map((r) => r.discounted_return) });
     }
+    const jepaNames = D.jepa_prefix ? names.filter((n) => n.startsWith(D.jepa_prefix)) : [];
+    if (jepaNames.length) {
+      const per = jepaNames.map((n) => pick(n, "learned_planner"));
+      const [m, h] = meanCI(per.map((r) => r.discounted_return));
+      const avg = (k) => per.reduce((a, r) => a + r[k], 0) / per.length;
+      rows.push({ label: `JEPA, same recipe (${jepaNames.length} seed${jepaNames.length > 1 ? "s" : ""})`, m, h: h ?? 1.96 * per[0].discounted_return_stderr, col: "var(--s4)",
+                  r: { win_rate: avg("win_rate"), death_rate: avg("death_rate"), unfinished_rate: avg("unfinished_rate") }, seeds: per.map((r) => r.discounted_return) });
+    }
     const ref = pick(anyRun, "reference_risk0.4");
     rows.push({ label: "Exact-belief reference", m: ref.discounted_return, h: 1.96 * ref.discounted_return_stderr, col: "var(--s3)", r: ref });
     rows.push({ label: "Layout known (upper bound)", m: D.upper_bound, h: null, col: "var(--ink-2)", r: null });
@@ -361,6 +370,8 @@ input[type=range] { accent-color: var(--accent); }
     D.earlier_curves.forEach(([run, label, col]) => { if (D.curves[run]) series.push({ label, col, pts: D.curves[run], dash: "5 4" }); });
     Object.keys(D.curves).filter((n) => n.startsWith(D.main_prefix)).sort().forEach((n, i) =>
       series.push({ label: `Current agent, seed ${n.slice(-1)}`, col: "var(--s1)", pts: D.curves[n], dash: null, op: 1 - 0.25 * i }));
+    if (D.jepa_prefix) Object.keys(D.curves).filter((n) => n.startsWith(D.jepa_prefix)).sort().forEach((n, i) =>
+      series.push({ label: `JEPA, same recipe, seed ${n.slice(-1)}`, col: "var(--s4)", pts: D.curves[n], dash: null, op: 1 - 0.3 * i }));
     const W = 900, H = 300, L = 56, R = 16, T = 10, B = 40;
     const s = svg(host, W, H, "Greedy evaluation return over training");
     const x = lin(0, 100, L, W - R), y = lin(-600, 400, H - B, T);
