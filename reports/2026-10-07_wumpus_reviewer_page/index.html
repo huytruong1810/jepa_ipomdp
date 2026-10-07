@@ -103,6 +103,8 @@ input[type=range] { accent-color: var(--accent); }
 @media (max-width: 640px) { .maps { grid-template-columns: 1fr 1fr; } }
 .mapcol { display: grid; gap: 4px; justify-items: center; min-width: 0; }
 .mapcol .t { font: 500 0.75rem/1.2 var(--f-data); color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.player-top { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 16px; align-items: start; }
+@media (max-width: 640px) { .player-top { grid-template-columns: 1fr; } }
 .readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px 18px; font: 0.82rem/1.4 var(--f-data); color: var(--ink-2); }
 .readout b { color: var(--ink); font-weight: 500; }
 .verdict { display: inline-block; font: 500 0.72rem/1 var(--f-data); padding: 4px 7px; border-radius: 999px; border: 1px solid currentColor; }
@@ -156,16 +158,30 @@ input[type=range] { accent-color: var(--accent); }
 </section>
 
 <section aria-labelledby="h-belief">
-  <div class="prose"><p class="eyebrow">Result 2 · Interpretability</p><h2 id="h-belief">Reading the exact belief out of the latent, one game step by step</h2></div>
+  <div class="prose"><p class="eyebrow">Result 2 · Interpretability</p><h2 id="h-belief">What the latent encodes, and how one game moves through it</h2></div>
   <figure class="figure">
-    <div class="cap"><h3>Exact belief against the belief decoded from the agent's latent</h3>
-      <p>A held-out game played by the learned agent. Top row: the exact marginals from the enumeration filter. Bottom row: an MLP probe's reading of the agent's 128-dimensional latent, fitted on other games. Cell shading is the probability, from 0 (clear) to 1 (solid); hover a cell for its values. The arrow is the hunter, which the agent itself never observes.</p></div>
+    <div class="cap"><h3>UMAP of the agent's latent, coloured by the exact belief</h3>
+      <p id="umap-cap">Latents from 256 of the agent's own games and 256 random-action games, embedded together in 2D with UMAP. UMAP keeps neighbourhoods, not distances, so read clusters and colours, not the gaps between clusters. Colours come from the exact enumeration filter on the same histories. The map is organised first by the percept just received, and only weakly by position and heading: on random-action histories a point's 10 nearest neighbours share its percept 93% of the time (36% by chance), its heading 44% (25%) and its cell 43% (24%). On the agent's own games position and heading are more organised (74% and 71%). The danger ahead and the belief uncertainty vary within the percept clusters.</p></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap" id="umap-btns" role="group" aria-label="Colour by"></div>
+    <div class="legend" id="umap-legend"></div>
+    <div id="fig-umap"></div>
+    <details><summary>Neighbourhood agreement (table view)</summary><div class="tscroll" id="tab-umap"></div></details>
+  </figure>
+  <figure class="figure">
+    <div class="cap"><h3>One game, step by step: the real map, the path through the latent map, and the decoded belief</h3>
+      <p>A held-out game played by the current agent (seed 0). Left: the true layout, which the agent never sees, with the hunter's trail so far. Right: the agent's latent at each step, placed on the UMAP above; the background uses the colouring selected there. Below: the exact belief from the enumeration filter (top row) and an MLP probe's reading of the latent, fitted on other games (bottom row). Cell shading is the probability, from 0 (clear) to 1 (solid); hover a cell for its values.</p></div>
     <div style="display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center">
       <div style="display:flex;gap:6px;flex-wrap:wrap" id="game-btns" role="group" aria-label="Game"></div>
       <button id="play" type="button" class="btn">Play</button>
       <label for="step" class="mono" style="display:flex;gap:10px;align-items:center;flex:1 1 220px;min-width:0">step <input id="step" type="range" min="0" max="50" value="0" style="flex:1;min-width:0"></label>
     </div>
     <div class="readout" id="readout"></div>
+    <div class="player-top">
+      <div class="mapcol"><span class="t">ground truth</span><div id="truth" style="width:100%;max-width:300px"></div>
+        <div class="legend" style="justify-content:center"><span><i class="sw" style="background:var(--pit)"></i>pit</span><span><i class="sw" style="background:var(--wumpus)"></i>wumpus</span><span><i class="sw" style="background:var(--gold)"></i>gold</span><span><i class="sw line" style="background:var(--ink-2)"></i>trail</span></div></div>
+      <div class="mapcol"><span class="t">path through the latent map (UMAP)</span><div id="umap-path" style="width:100%"></div>
+        <div class="legend" style="justify-content:center"><span><i class="sw line" style="background:var(--ink)"></i>path so far</span><span><i class="sw" style="background:var(--ink);border-radius:50%"></i>current latent</span><span><i class="sw" style="border:2px solid var(--ink);border-radius:50%;background:transparent"></i>start</span></div></div>
+    </div>
     <div class="maps" id="maps"></div>
     <div class="legend"><span><i class="sw" style="background:var(--pit)"></i>P(pit)</span><span><i class="sw" style="background:var(--wumpus)"></i>P(wumpus)</span><span><i class="sw" style="background:var(--gold)"></i>P(gold)</span><span class="mono">▲ hunter and heading</span></div>
   </figure>
@@ -174,18 +190,6 @@ input[type=range] { accent-color: var(--accent); }
       <p>The same filter network trained on privileged exact targets reaches the supervised bound, so capacity and architecture are not the limit. The gap is what the agent's own training signal fails to teach. Probes score higher on the agent's own games than on random-action histories.</p></div>
     <div id="fig-probes"></div>
     <details><summary>Table view</summary><div class="tscroll" id="tab-probes"></div></details>
-  </figure>
-</section>
-
-<section aria-labelledby="h-umap">
-  <div class="prose"><p class="eyebrow">Result 2b · Latent map</p><h2 id="h-umap">UMAP of the agent's latent, coloured by the exact belief</h2></div>
-  <figure class="figure">
-    <div class="cap"><h3>Each point is one latent z_t of the current agent (seed 0)</h3>
-      <p id="umap-cap">Latents from 256 of the agent's own games and 256 random-action games, embedded together in 2D with UMAP. UMAP keeps neighbourhoods, not distances, so read clusters and colours, not the gaps between clusters. Colours come from the exact enumeration filter on the same histories. The map is organised first by the percept just received, and only weakly by position and heading: on random-action histories a point's 10 nearest neighbours share its percept 93% of the time (36% by chance), its heading 44% (25%) and its cell 43% (24%). On the agent's own games position and heading are more organised (74% and 71%). The danger ahead and the belief uncertainty vary within the percept clusters.</p></div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap" id="umap-btns" role="group" aria-label="Colour by"></div>
-    <div class="legend" id="umap-legend"></div>
-    <div id="fig-umap"></div>
-    <details><summary>Neighbourhood agreement (table view)</summary><div class="tscroll" id="tab-umap"></div></details>
   </figure>
 </section>
 
@@ -376,8 +380,57 @@ input[type=range] { accent-color: var(--accent); }
   }
 
   // ---- Result 2: game viewer
-  function gameViewer(D) {
+  function gameViewer(D, UM, U) {
     const games = D.games, mapsHost = document.getElementById("maps");
+    // Ground truth: the real layout, the hunter, its trail so far.
+    const TS = 60, TP = 6, TW = 4 * TS + 2 * TP;
+    const ts = svg(document.getElementById("truth"), TW, TW, "True layout with the hunter and its trail");
+    const tcx = (c) => TP + (c % 4) * TS + TS / 2, tcy = (c) => TP + (3 - Math.floor(c / 4)) * TS + TS / 2;
+    for (let c = 0; c < 16; c++) el("rect", { x: tcx(c) - TS / 2, y: tcy(c) - TS / 2, width: TS, height: TS, fill: "var(--surface)", stroke: "var(--axis)" }, ts);
+    const truthLayer = el("g", {}, ts);
+    const trail = el("path", { fill: "none", stroke: "var(--ink-2)", "stroke-width": 3, "stroke-linecap": "round", "stroke-linejoin": "round", "stroke-opacity": 0.55 }, ts);
+    const hunter = el("path", { d: "M0 -16 L11 11 L0 5 L-11 11 Z", fill: "var(--ink)" }, ts);
+    function drawTruth(game, t) {
+      truthLayer.innerHTML = "";
+      const tr = game.truth, st = game.steps[t];
+      const box = (c, col, label, hollow) => {
+        el("rect", { x: tcx(c) - TS / 2 + 5, y: tcy(c) - TS / 2 + 5, width: TS - 10, height: TS - 10, rx: 4,
+                     fill: hollow ? "none" : `var(--${col})`, "fill-opacity": hollow ? 0 : 0.85, stroke: `var(--${col})`, "stroke-width": 2, "stroke-dasharray": hollow ? "4 3" : "none" }, truthLayer);
+        el("text", { x: tcx(c), y: tcy(c) + TS / 2 - 10, "text-anchor": "middle", class: "strong", style: `font-size:10px;fill:${hollow ? "var(--ink-2)" : "var(--surface)"}` }, truthLayer).textContent = label;
+      };
+      tr.pits.forEach((c) => box(c, "pit", "pit", false));
+      box(tr.wumpus, "wumpus", st.wumpus_alive ? "wumpus" : "dead", !st.wumpus_alive);
+      box(tr.gold, "gold", "gold", false);
+      const cells = game.steps.slice(0, t + 1).map((q) => q.cell);
+      trail.setAttribute("d", cells.map((c, i) => (i ? "L" : "M") + tcx(c) + " " + tcy(c)).join(" "));
+      hunter.setAttribute("transform", `translate(${tcx(st.cell)} ${tcy(st.cell)}) rotate(${HEAD_DEG[st.heading]})`);
+    }
+    // Path through the latent map (same UMAP as the figure above).
+    let drawPath = () => {};
+    if (UM && U && U.games && U.games.length === games.length) {
+      const MW = 560, MH = 380, MP = 10;
+      const ms = svg(document.getElementById("umap-path"), MW, MH, "The game's latent path on the UMAP");
+      el("rect", { x: 0, y: 0, width: MW, height: MH, fill: "none", stroke: "var(--grid)" }, ms);
+      const [x0, x1, y0, y1] = UM.domain;
+      const mx = lin(x0, x1, MP, MW - MP), my = lin(y0, y1, MH - MP, MP);
+      const bg = UM.pts.map((p) => el("circle", { cx: mx(p[UM.F.x]).toFixed(1), cy: my(p[UM.F.y]).toFixed(1), r: 1.6, "fill-opacity": 0.35 }, ms));
+      const repaint = () => bg.forEach((d, i) => d.setAttribute("fill", UM.colourOf(i)));
+      UM.onRepaint(repaint); repaint();
+      const path = el("path", { fill: "none", stroke: "var(--ink)", "stroke-width": 1.6, "stroke-linejoin": "round", "stroke-opacity": 0.8 }, ms);
+      const steps = el("g", {}, ms);
+      const start = el("circle", { r: 6, fill: "none", stroke: "var(--ink)", "stroke-width": 2 }, ms);
+      const now = el("circle", { r: 6, fill: "var(--ink)", stroke: "var(--surface)", "stroke-width": 2 }, ms);
+      drawPath = (gi, t) => {
+        const P = U.games[gi].slice(0, t + 1);
+        path.setAttribute("d", P.map((q, i) => (i ? "L" : "M") + mx(q[0]).toFixed(1) + " " + my(q[1]).toFixed(1)).join(" "));
+        steps.innerHTML = "";
+        P.slice(0, -1).forEach((q) => el("circle", { cx: mx(q[0]), cy: my(q[1]), r: 2.4, fill: "var(--ink)", "fill-opacity": 0.6 }, steps));
+        start.setAttribute("cx", mx(P[0][0])); start.setAttribute("cy", my(P[0][1]));
+        now.setAttribute("cx", mx(P[P.length - 1][0])); now.setAttribute("cy", my(P[P.length - 1][1]));
+      };
+    } else {
+      document.getElementById("umap-path").innerHTML = '<p class="note">The latent map did not load, so the path is not shown.</p>';
+    }
     const btnHost = document.getElementById("game-btns"), slider = document.getElementById("step"), playBtn = document.getElementById("play");
     let g = 0, timer = null;
     const S = 34, P = 4, W = 4 * S + 2 * P;
@@ -431,8 +484,18 @@ input[type=range] { accent-color: var(--accent); }
       else { ["stench", "breeze", "glitter", "bump", "scream"].forEach((b, i) => { if (st.percept & (1 << i)) bits.push(b); }); }
       const l1 = (a, b) => a.reduce((acc, v, i) => acc + Math.abs(v - b[i]), 0) / a.length;
       const fwdOk = st.danger > 0.4 ? (st.p_death > 0.25 ? "ok" : "no") : null;
+      drawTruth(games[g], t);
+      drawPath(g, t);
+      let ending = "";
+      if (t === steps.length - 1 && games[g].outcome !== "unfinished") {
+        const D4 = [[1, 0], [0, 1], [-1, 0], [0, -1]], tr = games[g].truth;
+        const ax = st.cell % 4 + D4[st.heading][0], ay = Math.floor(st.cell / 4) + D4[st.heading][1], ahead = ax + 4 * ay;
+        ending = games[g].outcome === "win" ? "grabs the gold: win"
+          : tr.pits.includes(ahead) ? "walks into the pit ahead: death"
+          : ahead === tr.wumpus ? "walks into the wumpus: death" : "dies";
+      }
       document.getElementById("readout").innerHTML =
-        `<span>step <b>${st.t}</b> of ${steps[steps.length - 1].t} · ${games[g].outcome}</span>` +
+        `<span>step <b>${st.t}</b> of ${steps[steps.length - 1].t} · ${games[g].outcome}${ending ? ` · <b>${ending}</b>` : ""}</span>` +
         `<span>percept <b>${bits.length ? bits.join(", ") : "none"}</b></span>` +
         `<span>next action <b>${st.action == null ? "–" : ACTIONS[st.action]}</b></span>` +
         `<span>death risk ahead: exact <b>${st.danger.toFixed(2)}</b> · model <b>${st.p_death.toFixed(2)}</b> ${fwdOk ? `<span class="verdict ${fwdOk}">${fwdOk === "ok" ? "model sees it" : "model misses it"}</span>` : ""}</span>` +
@@ -598,13 +661,15 @@ input[type=range] { accent-color: var(--accent); }
     const dots = pts.map((p) => el("circle", { cx: x(p[F.x]).toFixed(1), cy: y(p[F.y]).toFixed(1), r: 2.2, "fill-opacity": 0.8 }, s));
     const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
     const mix = (a, b, t) => "rgb(" + hex(a).map((v, i) => Math.round(v + (hex(b)[i] - v) * t)).join(",") + ")";
-    function paint() {
+    const listeners = [];
+    function colourOf(i) {
       const catCols = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6"].map(css);
-      const lo = css("--seq0"), hi = css("--seq1");
-      dots.forEach((d, i) => {
-        const v = mode.of(pts[i]);
-        d.setAttribute("fill", mode.cat ? catCols[v % 6] : mix(lo, hi, Math.max(0, Math.min(1, (v - mode.seq[0]) / (mode.seq[1] - mode.seq[0])))));
-      });
+      const v = mode.of(pts[i]);
+      return mode.cat ? catCols[v % 6] : mix(css("--seq0"), css("--seq1"), Math.max(0, Math.min(1, (v - mode.seq[0]) / (mode.seq[1] - mode.seq[0]))));
+    }
+    function paint() {
+      dots.forEach((d, i) => d.setAttribute("fill", colourOf(i)));
+      listeners.forEach((f) => f());
       document.getElementById("umap-legend").innerHTML = mode.cat
         ? mode.cat.map((n, i) => `<span><i class="sw" style="background:var(${["--c1", "--c2", "--c3", "--c4", "--c5", "--c6"][i]})"></i>${n}</span>`).join("")
         : `<span>${mode.fmt(mode.seq[0])}</span><span><i class="sw" style="width:120px;background:linear-gradient(90deg,var(--seq0),var(--seq1))"></i></span><span>${mode.fmt(mode.seq[1])}</span>`;
@@ -630,10 +695,13 @@ input[type=range] { accent-color: var(--accent); }
     });
     hit.addEventListener("mouseleave", () => { ring.setAttribute("opacity", 0); tip.classList.remove("on"); });
     paint();
+    const api = { pts, F, domain: [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)], colourOf,
+                  onRepaint: (f) => listeners.push(f) };
+    document.getElementById("umap-cap").textContent += ` Trustworthiness of the 2D neighbourhoods: ${U.trustworthiness.toFixed(3)} (1 = perfect).`;
     const A = U.agreement;
     if (A) table(document.getElementById("tab-umap"), ["histories", "label", "10 nearest neighbours share it", "by chance"],
       A.map((r) => [r.source, r.label, (100 * r.agree).toFixed(0) + "%", (100 * r.chance).toFixed(0) + "%"]));
-    document.getElementById("umap-cap").textContent += ` Trustworthiness of the 2D neighbourhoods: ${U.trustworthiness.toFixed(3)} (1 = perfect).`;
+    return api;
   }
 
   function texts(D, rows) {
@@ -647,24 +715,25 @@ input[type=range] { accent-color: var(--accent); }
     document.getElementById("status").innerHTML = D.status.map((p) => `<p>${p}</p>`).join("");
   }
 
-  function render(D) {
+  function render(D, U) {
     layoutFigure();
     const rows = returnsFigure(D);
     curvesFigure(D);
-    gameViewer(D);
+    let UM = null;
+    if (U) {
+      try { UM = umapFigure(U); } catch (e) { document.getElementById("fig-umap").textContent = "The latent map failed to draw: " + e.message; }
+    } else {
+      document.getElementById("fig-umap").textContent = "The latent map data failed to load. Reload the page to try again.";
+    }
+    gameViewer(D, UM, U);
     probesFigure(D);
     calibrationFigure(D);
     abFigure(D);
     texts(D, rows);
   }
-  function renderUmap(U) {
-    try { umapFigure(U); } catch (e) { document.getElementById("fig-umap").textContent = "The latent map failed to draw: " + e.message; }
-  }
 
-  fetch("umap.json").then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }).then(renderUmap).catch((e) => {
-    document.getElementById("fig-umap").textContent = "The latent map data failed to load (" + e.message + "). Reload the page to try again.";
-  });
-  fetch("data.json").then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }).then(render).catch((e) => {
+  const getJSON = (f) => fetch(f).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); });
+  Promise.all([getJSON("data.json"), getJSON("umap.json").catch(() => null)]).then(([D, U]) => render(D, U)).catch((e) => {
     document.getElementById("lede").textContent = "The figure data failed to load (" + e.message + "). Reload the page to try again.";
   });
 })();

@@ -18,6 +18,9 @@
 #      the chance rate sum_k p_k^2. Result 2026-10-07 (seed 0): on random histories the map is
 #      organised first by the percept (93% vs 36%), weakly by heading (44% vs 25%) and cell
 #      (43% vs 24%); on the agent's own histories heading and cell agree more (74%, 71%).
+#    - Optional third argument: export.py's games_latents.npz. Those latents are standardised with the
+#      same statistics and placed by the fitted map's transform() (not refitted), so the example
+#      games' paths sit on the same map as the cloud.
 #    - A trustworthiness score (sklearn, 15 neighbours, on a 4,000-point subsample) says how far
 #      the 2D neighbourhoods reflect the 128-D ones (1 = perfectly).
 # ==============================================================================
@@ -33,7 +36,14 @@ data = np.load(sys.argv[1])
 sources = ("agent", "random")
 latents = np.concatenate([data[f"latents_{s}"] for s in sources])
 standard = (latents - latents.mean(0)) / (latents.std(0) + 1e-6)
-embedding = umap.UMAP(n_neighbors=30, min_dist=0.1, metric="euclidean", random_state=0).fit_transform(standard)
+reducer = umap.UMAP(n_neighbors=30, min_dist=0.1, metric="euclidean", random_state=0)
+embedding = reducer.fit_transform(standard)
+games = []
+if len(sys.argv) > 3:
+    game_data = np.load(sys.argv[3])
+    for key in sorted(game_data.files, key=lambda k: int(k[4:])):
+        placed = reducer.transform((game_data[key] - latents.mean(0)) / (latents.std(0) + 1e-6))
+        games.append([[round(float(a), 3), round(float(b), 3)] for a, b in placed])
 rng = np.random.default_rng(0)
 check = rng.choice(len(standard), 4000, replace=False)
 trust = float(trustworthiness(standard[check], embedding[check], n_neighbors=15))
@@ -60,7 +70,7 @@ for si, s in enumerate(sources):
         chance = float(sum((c / len(rows)) ** 2 for c in Counter(rows[:, col]).values()))
         agreement.append({"source": "agent's own games" if s == "agent" else "random actions", "label": label,
                           "agree": agree, "chance": chance})
-out = {"agreement": agreement, "fields": ["x", "y", "source", "cell", "heading", "danger", "log_layouts", "step", "last_action", "percept"], "sources": list(sources),
+out = {"games": games, "agreement": agreement, "fields": ["x", "y", "source", "cell", "heading", "danger", "log_layouts", "step", "last_action", "percept"], "sources": list(sources),
        "points": points, "trustworthiness": trust, "total": {s: int(len(data[f"latents_{s}"])) for s in sources}}
 with open(sys.argv[2], "w") as f:
     json.dump(out, f, separators=(",", ":"))

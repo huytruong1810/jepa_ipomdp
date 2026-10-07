@@ -20,7 +20,12 @@
 #    - probes:       probe scores from each report.json, plus the privileged supervised bound.
 #    - page_meta.json (next to this script, hand-written): run labels, the main runs' name prefix and
 #      the status paragraphs; merged into data.json unchanged.
+#    - games also carry the TRUE layout (pits, wumpus, gold, from the simulator's hidden state) and
+#      the true arrow / wumpus-alive flags per step, so a reviewer can follow the real map; each
+#      game's per-step latents go to games_latents.npz next to the JSON, for umap_latents.py to
+#      project into the same UMAP map.
 #    - Usage: uv run python <this> <main run dir> <before run dir> <out json> [other run dirs...]
+#             uv run python <this> games <main run dir> <existing out json>   (refresh games only)
 #      The main run dir supplies the games and the "after" calibration; every run dir whose name
 #      starts with page_meta's main_prefix is pooled as the current agent's seeds.
 # ==============================================================================
@@ -30,6 +35,7 @@ import re
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -118,7 +124,7 @@ def danger_ahead(d) -> torch.Tensor:
                        + d.wumpus_alive.double() * d.hazards[:, 16:32].gather(1, ahead[:, None]).squeeze(1), 0.0)
 
 
-def export_games(run_dir: Path, count: int = 3) -> list[dict]:
+def export_games(run_dir: Path, latents_out: Path, count: int = 3) -> list[dict]:
     """Held-out greedy games of best.pt (the analysed checkpoint), with exact vs decoded beliefs."""
     print(f"games of {run_dir.name}", flush=True)
     cfg = OmegaConf.load(run_dir / ".hydra" / "config.yaml")
@@ -134,7 +140,7 @@ def export_games(run_dir: Path, count: int = 3) -> list[dict]:
                                                   dirichlet_epsilon=0.0, seed=stream_seed(2027, 2),
                                                   observation_prune=cfg.mcts.observation_prune),
                           n, temperature=0.0, seed=stream_seed(2027, 3), device=DEV)
-    eps, _ = play_episodes(WumpusSimulator(world, n, cfg.env.max_steps, stream_seed(2027, 1), DEV), agent)
+    eps, states = play_episodes(WumpusSimulator(world, n, cfg.env.max_steps, stream_seed(2027, 1), DEV), agent)
     half = n // 2
     pick = lambda rows: EpisodeBatch(eps.actions[rows], eps.observations[rows], eps.rewards[rows],  # noqa: E731
                                      eps.initial_observations[rows])
@@ -158,8 +164,14 @@ def export_games(run_dir: Path, count: int = 3) -> list[dict]:
             seen.add(outcome(e))
         if len(chosen) == count:
             break
-    for e in chosen:
+    game_latents = {}
+    for gi, e in enumerate(chosen):
         rows = (held.episode == e).nonzero().flatten()
+        hidden = states[half + e]                                      # (T + 1, 6): layout, cell, heading, arrow, wumpus alive, done
+        layout = int(hidden[0, 0])
+        truth = {"pits": world.pit[layout].nonzero().flatten().tolist(), "wumpus": int(world.wumpus[layout]),
+                 "gold": int(world.gold[layout])}
+        game_latents[f"game{gi}"] = held.latents[rows].cpu().numpy()
         steps = []
         for r in rows.tolist():
             t = int(held.step[r])
@@ -170,8 +182,10 @@ def export_games(run_dir: Path, count: int = 3) -> list[dict]:
                 "reward": float(held_eps.rewards[e, t]) if t < held_eps.rewards.shape[1] else None,
                 "exact": [round(float(v), 4) for v in held.hazards[r]],
                 "decoded": [round(float(v), 4) for v in decoded[r]],
-                "danger": round(float(danger[r]), 4), "p_death": round(float(predicted[r]), 4)})
-        games.append({"outcome": outcome(e), "steps": steps})
+                "danger": round(float(danger[r]), 4), "p_death": round(float(predicted[r]), 4),
+                "arrow": int(hidden[t, 3]), "wumpus_alive": int(hidden[t, 4])})
+        games.append({"outcome": outcome(e), "truth": truth, "steps": steps})
+    np.savez_compressed(latents_out, **game_latents)
     return games
 
 
@@ -195,6 +209,13 @@ def overfit_ab(log_dir: Path) -> dict:
 
 
 def main() -> None:
+    if sys.argv[1] == "games":
+        main_run, out_path = Path(sys.argv[2]), Path(sys.argv[3])
+        data = json.loads(out_path.read_text())
+        data["games"] = export_games(main_run, out_path.parent / "games_latents.npz")
+        out_path.write_text(json.dumps(data, separators=(",", ":")))
+        print(f"refreshed games in {out_path}")
+        return
     main_run, before_run, out_path = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
     return_runs = [Path(p) for p in sys.argv[4:]]
     reports = {d.name: json.loads((d / "analysis" / "report.json").read_text()) for d in return_runs + [main_run]}
@@ -206,7 +227,7 @@ def main() -> None:
         "supervised_bound": {"cell_acc": 0.999, "heading_acc": 1.0, "danger_error_3000": 0.032, "danger_error_12000": 0.016},
         "overfit_ab": overfit_ab(Path("runs/wumpus/overfit_ab")),
         "calibration": {"after": run_calibration(main_run, 256), "before": run_calibration(before_run, 256)},
-        "games": export_games(main_run),
+        "games": export_games(main_run, out_path.parent / "games_latents.npz"),
         **json.loads((Path(__file__).parent / "page_meta.json").read_text()),
     }
     out_path.write_text(json.dumps(data, separators=(",", ":")))
