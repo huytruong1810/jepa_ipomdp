@@ -116,8 +116,7 @@ input[type=range] { accent-color: var(--accent); }
 <header class="prose">
   <p class="eyebrow">Research progress · 7 October 2026</p>
   <h1 style="margin-top:12px" id="headline">Wumpus World: the learned belief agent rarely dies, and earns a third of what an exact-belief heuristic earns</h1>
-  <p class="lede" id="lede"></p>
-  <p class="note" style="margin-top:12px">Same agent, planner and training loop as on canonical Tiger, where the learned planner matches the exact optimum. The method diagrams are on the <a href="https://claude.ai/artifact/Rboz6xV7xA7Ejrjomy4As5" style="color:var(--accent)">Tiger results page</a>.</p>
+  <p class="note" id="lede" hidden style="margin-top:12px"></p>
 </header>
 
 <section aria-labelledby="h-domain">
@@ -619,9 +618,6 @@ input[type=range] { accent-color: var(--accent); }
   function texts(D, rows) {
     const cur = rows.find((r) => r.strong), ref = rows.find((r) => r.label.startsWith("Exact")), rnd = rows[0];
     if (!cur) return;
-    const frac = (cur.m - rnd.m) / (ref.m - rnd.m);
-    document.getElementById("lede").textContent =
-      `The agent earns ${num(cur.m)} ± ${cur.h.toFixed(0)} per game over ${cur.seeds.length} seeds, with ${(100 * cur.r.death_rate).toFixed(1)}% deaths. A random hunter earns ${num(rnd.m)} and a hand-written heuristic acting on the exact belief earns ${num(ref.m)}, so the learned agent closes ${(100 * frac).toFixed(0)}% of that gap. Most of the remaining gap comes from games the agent leaves unfinished.`;
     document.getElementById("perf-cap").textContent +=
       ` Open circles on the current agent's bar are its individual seeds.`;
   }
@@ -643,7 +639,9 @@ input[type=range] { accent-color: var(--accent); }
 
   const getJSON = (f) => fetch(f).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); });
   Promise.all([getJSON("data.json"), getJSON("umap.json").catch(() => null)]).then(([D, U]) => render(D, U)).catch((e) => {
-    document.getElementById("lede").textContent = "The figure data failed to load (" + e.message + "). Reload the page to try again.";
+    const msg = document.getElementById("lede");
+    msg.textContent = "The figure data failed to load (" + e.message + "). Reload the page to try again.";
+    msg.hidden = false;
   });
 })();
 </script>
