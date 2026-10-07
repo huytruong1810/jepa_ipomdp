@@ -1,16 +1,18 @@
-# HANDOFF: JEPA I-POMDP (as of 2026-10-05)
+# HANDOFF: JEPA I-POMDP (as of 2026-10-07, after the Wumpus reviewer meeting)
 
-Read `CLAUDE.md` first: it covers the architecture, commands and conventions. This file covers goals, rules, current state, every result, the dead ends and the next steps. Each module starts with a `DESIGN DECISIONS & THEORETICAL FOUNDATIONS` header that holds the evidence behind its design; read it before changing that module. The user's auto-memory (`~/.claude/projects/-home-andyj1810-projects-jepa-ipomdp/memory/`) repeats the standing rules in section 2.
+Read `CLAUDE.md` first: it covers the architecture, commands and conventions. This file covers goals, the user's rules, the current state, every result that matters, the next steps, the dead ends and the files touched. Each module starts with a `DESIGN DECISIONS & THEORETICAL FOUNDATIONS` header with the evidence behind its design; read it before changing that module. Every diagnostic script in `reports/` explains its question, usage and result in its header. The user's auto-memory (`~/.claude/projects/-home-andyj1810-projects-jepa-ipomdp/memory/`) repeats the standing rules of section 2.
 
-**Where we are in one paragraph.**
-- **Tiger:** the learned agent matches the exact optimum across 5 seeds. A decoder baseline matches it too.
-- **Wumpus World (current work):** the single-hunter 4x4 game, which has no exact solver. The learned planner earns 110 ± 20 per game, far below an exact-belief reference agent's 573 ± 20; the full-information upper bound is 936.
-- **Diagnosis:** a long chain of diagnostics (section 5) narrows the cause.
-  1. Search depth, rewards, data coverage for the representation, and network architecture are **not** the bottleneck.
-  2. The learned latent never encodes the danger of the step ahead precisely enough, because JEPA/reward and one-step observation prediction don't force it to. With 4× longer training the decoder latent nearly reaches a privileged supervised bound, but the planning model's death prediction stays poorly calibrated.
-  3. That death prediction is partly limited by data coverage: dangerous forward steps are rare in the data.
-- **Open item:** a runtime speed-up (hoisting the filter's input network) was adopted. Tiger's slow value-head check fails at 3/9 seeds without it and 5/9 with it; the paired difference is not significant, so it stays. The gate is being re-specified (section 3).
-- **Wumpus (2026-10-06):** the combined-fix run failed (−283 ± 17); storing greedy games in the buffer gave −84 ± 27. **The cause is overfitting of the jointly trained filter and observation head to the buffer's games:** calibrated in-sample, overconfident on fresh games. The greedy planner exploits the confident "safe" errors (section 6, step 2).
+## 0. Where we are
+
+- **Canonical Tiger: done.** The learned planner matches the exact optimum over 5 seeds (gap −0.03 ± 0.06). A decoder baseline is indistinguishable from JEPA there.
+- **Single-hunter 4x4 Wumpus World: the current agent works but is far from the reference.**
+  - The agent: decoder representation, 64 updates per collection, ε-uniform exploration, greedy evaluation games stored in the buffer.
+  - It earns **189 ± 62** per game over 3 seeds (185, 166 and 215) with 0.2–3.9% deaths.
+  - A hand-written agent on the exact belief earns 573. About 70% of the learned agent's games end unfinished after 50 steps, against 29% for the heuristic.
+- **What the latent encodes.** Its UMAP is organised first by the percept just received, and only weakly by position and heading. Probes recover cell and heading 55–60% of the time on random histories, against 99.9–100% for the same network trained on exact targets.
+- **The main diagnosis of the last week.** The jointly trained filter and observation head **overfit** when they train too many times per game. They were calibrated in-sample and overconfident on fresh games, and the greedy planner exploited exactly those confident "safe" errors. Going back to 64 updates per collection fixed most deaths.
+- **The reviewer meeting (2026-10-07, 3pm) is over.** The page is https://claude.ai/artifact/1m1jkSud5xbFCidGMkc6VN (section 3).
+- **Open:** the JEPA arm with the same recipe was started and stopped at about collection 15; it is resumable (section 6, step 1).
 
 ## 1. Goals
 
@@ -22,89 +24,97 @@ Three research contributions:
 Stages:
 1. Canonical Tiger matches the exact solver: **done** (section 4).
 2. Baseline comparison: **done** (decoder world model, section 4b).
-3. **Single-hunter Wumpus World, now.** The agent should learn to play well, and the learned latent space should be shown against the exact belief. Multi-agent behaviour is explicitly **not** wanted yet.
+3. **Single-hunter Wumpus World, now.** The agent should learn to play well, and the latent should be shown against the exact belief. Multi-agent behaviour is explicitly **not** wanted yet.
 4. Later: multi-agent domains and I-POMDP levels.
 
-**Honest status of "optimality"** (the user asked): the evidence is empirical and Tiger-only. There is no proof or convergence guarantee, and Wumpus has no optimum to compare against, only bounds (section 5.2).
+**Honest status of "optimality"** (the user asked): the evidence is empirical and Tiger-only. There is no proof or convergence guarantee. Wumpus has no optimum to compare against.
+
+**Tension to keep in mind:** contribution (1) is the JEPA filter, but the working Wumpus agent uses the decoder representation, because JEPA learned the danger ahead worse in the offline A/B (section 5.5). Whether JEPA works with the fixed recipe is the first open question (section 6).
 
 ## 2. Rules the user set (follow them)
 
 **Scope**
-- Never add non-canonical elements to canonical Tiger (`tiger.95.POMDP`, γ = 0.95).
+- Never add non-canonical elements to canonical Tiger (`tiger.95.POMDP`, γ = 0.95). Tiger must stay bit-reproducible.
 - Every change needs a small-scale check before a larger run.
 - Wumpus has no exact solver (user decision). Do not test multi-agent behaviour yet.
+- **The known-layout value (936) is not a meaningful comparison** (user, 2026-10-07: "we do not do MDP here"). Compare against random play and the exact-belief heuristic only.
 
 **Code**
 - No fallback paths, no deprecated code, no backward compatibility, no schema versions. Fail loudly.
 - Code should read as if written from scratch, with verbose design-decision comments; DDD/DRY/KISS/SOLID.
 - Every source file starts with `# ABSOLUTE PATH:` and a design-decisions header. Exception: Hydra files must have `# @package _global_` on the very first line, above the header.
-- When a config key is added, add it with its old value to the saved `.hydra/config.yaml` of every existing run so they still reload. This was done for `representation`, `observation_prune` and `observation_horizon`.
+- When a config key is added, add it with its old value to the saved `.hydra/config.yaml` of every existing run so they still reload. Done for `representation`, `observation_prune`, `observation_horizon`, `agent.epsilon`/`epsilon_min` and `training.store_eval_episodes`.
+- A new option must default to off and leave Tiger bit-identical. Prove it with a fingerprint: a small CPU `TrainingRun` (the test `_config`), 4 collections with evaluations, then compare metrics and every parameter sum against the previous commit in a `git worktree`. This was done for ε and `store_eval_episodes`.
 
 **Architecture and efficiency** (user guidance of 2026-10-03 and 2026-10-04, also in memory)
-- **The network architecture must never be the bottleneck.** When results look wrong, A/B-test state-of-the-art upgrades: a Transformer over history tokens with a KV-cache, residuals, (flash) attention, MoE, GQA, MLA. Use good statistics (several seeds, paired comparisons, 95% intervals); intuition only chooses what to test first.
-- **Always use the most memory- and runtime-efficient practice that leaves results unchanged.**
-  - A bit-identical speed-up can go in once a fingerprint confirms it.
-  - A speed-up that only changes floating-point summation order needs the user's approval, because Tiger must stay bit-reproducible.
-  - Never change code under runs in flight; record which commit a run used.
+- **The network architecture must never be the bottleneck.** When results look wrong, A/B-test state-of-the-art upgrades: a Transformer over history tokens with a KV-cache, residuals, (flash) attention, MoE, GQA, MLA. Use good statistics (several seeds, paired comparisons, 95% intervals).
+- **Always use the most memory- and runtime-efficient practice that leaves results unchanged.** A bit-identical speed-up can go in once a fingerprint confirms it. A summation-order change needs the user's approval. Never change code under runs in flight; record which commit a run used.
 
 **Workflow**
 - Commit on `main` (remote `github.com/huytruong1810/jepa_ipomdp`). **Ask before every push.**
-- **Ask the user about every research or design decision that is theirs**, with a recommended option. They usually pick the recommendation, but not always: they chose "no Climb" and the North start themselves.
+- **Ask the user about every research or design decision that is theirs**, with a recommended option first. They usually pick it, but not always. On 2026-10-06/07 they pre-authorised the recommended options while away for the reviewer deadline. **That authorisation has expired: ask again.**
 - State results plainly, including unfavourable ones and your own mistakes.
-- Reviewer pages: minimal, figures over prose. The 2026-09-30 page was loved.
+- **Reviewer pages:** minimal, figure-first, honest.
+  - The user cut the 2026-10-07 page to: domain, returns, curves, latent UMAP, a synced game player and probes.
+  - No previous agents, no diagnosis or status sections, no known-layout bound and no subtext under the title.
+  - The owner may edit pages live: read them with the Artifact tool before republishing.
 
 **Machine** (WSL2 Ubuntu; RTX 5080 Laptop with 16 GB; 24 GB RAM; `uv`, Python 3.12, cu128)
-- `~/projects/ipomcp` often runs heavy jobs here: load average 10–24 on 24 cores, and ≥ 5 workers at about 1.45 GB RAM each. Check `uptime`, `free -m` and `ps -eo pid,rss,args --sort=-rss | head` before launching anything.
-- **RAM is the binding limit for parallel runs.** One Tiger acceptance run takes about 1.8 GB RAM; one objective_ab run holds the pool on the GPU (six in parallel used 12.8 GB of VRAM).
-  - On 2026-10-05, six acceptance runs plus ipomcp pushed the system to critically low memory. Claude Code then reaped an idle background watcher.
-  - Run at most 2–3 heavy jobs at a time while ipomcp is busy.
-- Detach long runs with `setsid nohup ... > log 2>&1 < /dev/null & disown`, then confirm the python process is alive. The "Done" line printed by `setsid` refers to the launcher, not the run.
+- `~/projects/ipomcp` often runs heavy CPU jobs here (load 10–24 on 24 cores, ≥ 5 workers at about 1.45–1.75 GB RAM each). Check `uptime`, `free -m` and `ps -eo pid,rss,args --sort=-rss | head` before launching anything.
+- **The tree search is CPU-bound.** Under ipomcp load a Wumpus run slowed from about 1.5–2 min to about 9 min per collection, which killed the JEPA runs on 2026-10-07. A full 100-collection Wumpus run takes about 2.5–3.2 h alone, and about 4 h with two in parallel.
+- **RAM is the binding limit for parallel runs.** A Wumpus `main.py` holds about 2.6 GB, a Tiger acceptance run about 1.8 GB, and an `objective_ab.py` run about 2.1 GB plus the pool on the GPU. Six A/B runs plus ipomcp exhausted RAM on 2026-10-06, and Claude Code reaped a background watcher. Run at most 2–3 heavy jobs while ipomcp is busy.
+- **Six parallel `objective_ab.py` runs saturate the GPU** (0.8 s per update each against 0.1 s alone), so running them in parallel gains nothing. Run 2–3 at a time.
+- Detach long runs with `setsid nohup ... > log 2>&1 < /dev/null & disown`, then confirm the python process is alive. For multi-step overnight work, put the whole pipeline in one detached shell script (as `runs/wumpus/reviewer_chain.sh`); it survives reaped watchers.
 - **Waiting on runs:**
-  - Never use `pgrep -f "<pattern>"` inside a shell loop: the loop's own command line matches the pattern, so it never exits. The same self-match once returned the wrong PID.
-  - Wait on the PID instead (`while kill -0 <pid>; do sleep 60; done`) or match the python process exactly, e.g. `ps -eo args | grep "^[^ ]*python[^ ]* main.py"`.
-  - Background watchers in Claude Code stop after at most 2 h, so re-arm them for longer runs.
-- Cap CPU threads in parallel runs (`OMP_NUM_THREADS=2`). Tests pin torch to one thread (`tests/conftest.py`).
-- **Intel iGPU:** Windows also shows an integrated "Intel(R) Graphics" chip with shared memory. Using it would need a separate XPU PyTorch environment and Intel's WSL compute runtime (there is no `/dev/dri`). It was not set up: it adds little next to the 5080 and the bottleneck has been CPU and RAM. Revisit only if GPU throughput becomes the limit.
+  - Never use `pgrep -f`/`pkill -f "<pattern>"` with a pattern that appears in your own command line: it matches the shell itself. On 2026-10-06 `pkill -f run.sh` killed the calling shell.
+  - Wait on PIDs (`while kill -0 <pid>; do sleep 60; done`) or match the python process exactly (`ps -eo pid,args | grep "^ *[0-9]* [^ ]*python[^ ]* main.py"`).
+  - Background watchers stop after at most 2 h, and the memory reaper may kill them earlier: re-arm them.
+- Cap CPU threads in parallel runs (`OMP_NUM_THREADS=2–4`). Tests pin torch to one thread (`tests/conftest.py`).
+- **Tools outside the project** (deliberately not dependencies; they live in the session scratchpad and disappear with it):
+  - UMAP: `uv venv <env>; VIRTUAL_ENV=<env> uv pip install umap-learn`.
+  - Page screenshots: Playwright Chromium in a scratch venv. The browser binary is cached in `~/.cache/ms-playwright`. It needs `libnspr4`, `libnss3` and `libasound2`, which are not installed: `apt-get download` them (no sudo), unpack with `dpkg-deb -x` and set `LD_LIBRARY_PATH`.
 
 ## 3. Current state
 
 **Git**
-- `main` is pushed through `61991c7`. Everything after it (`4d1ace5` … latest) is local and unpushed: **ask before pushing.**
+- **`origin/main` is at `9a9b726`.** Everything after it (`61991c7` … HEAD) is local and unpushed: **ask before pushing.** The previous HANDOFF wrongly said `61991c7` was pushed.
 - The working tree is clean after the HANDOFF commit.
 
 **Tests**
-- The fast suite passes: 151 tests, about 60–80 s under load.
-- **Slow suite at HEAD (2026-10-05): 7/7 pass** (acceptance at 6000 updates). History:
-  - Before the hoist (`62deb68`) and before Wumpus (`61991c7`): 5/5 at seed 0.
-  - At HEAD (with the hoist): 4/5. `test_value_head_approaches_optimal_value` fails with mean |V − V*| = 22.3 (gate 8).
-  - **The value gate is seed-fragile.** Value error by network-init seed (`reports/2026-10-02_wumpus_diagnostics/tiger_acceptance_seed.py`; logs in `runs/tiger_acceptance_seeds/`):
-
-| Seed | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | Mean | Median | Fails |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Before hoist (`62deb68`) | 4.9 | 1.87 | **13.02** | 2.19 | 1.45 | 1.69 | 5.13 | **12.35** | **15.68** | 6.48 | 4.90 | 3/9 |
-| With hoist (HEAD) | **22.34** | **15.09** | 6.61 | 1.54 | 0.68 | 3.83 | **13.22** | **8.94** | **24.12** | 10.71 | 8.94 | 5/9 |
-
-  - Paired difference (with − before), seeds 0–8: **+4.2 ± 6.2** (95% t-interval, −1.9 to +10.4), Wilcoxon p = 0.25. The interval includes 0, so **the hoist stays** (user rule of 2026-10-05). The point estimate leans worse; 9 seeds cannot exclude moderate harm.
-  - Planning returns in all 18 runs: 20.9–22.1 (target 19.28). Linear-probe KL ≤ 0.0011. The value error does not reach the policy.
-  - **Gate re-specification (user decision 2026-10-05: check more updates first).** At 6000 updates HEAD seeds 0 and 8 (the worst) give 5.3 and 1.1 (`accept_post_seed{0,8}_u6000.log`), so the test now runs 6000 updates with the bound kept at 8 (`cd9d116`; about 40 min).
-  - How to run the pre-hoist arm: `git worktree add --detach <dir> 62deb68`, then run inside it with `PYTHONPATH=<dir>/src OMP_NUM_THREADS=2 <repo>/.venv/bin/python reports/2026-10-02_wumpus_diagnostics/tiger_acceptance_seed.py <seed>`. Remove the worktree afterwards.
+- The fast suite passes: 154 tests, about 50–100 s.
+- **The slow suite passed 7/7 on 2026-10-05**, at `cd9d116` plus the stale-test fix `d4911a8`. Later source changes (ε, `store_eval_episodes`) are default-off, fingerprinted and covered by fast tests. Rerunning the slow suite once at HEAD is still advisable (about 50 min).
+- **The Tiger acceptance test now trains 6000 updates.** At 3000 the value gate (mean |V − V*| < 8) failed at 3–5 of 9 seeds. The two worst seeds drop to 5.3 and 1.1 at 6000. The seed table is in the test header; the logs are in `runs/tiger_acceptance_seeds/`.
+- The input-network hoist (`6af8f8f`) stays: its paired effect on the value error is +4.2 ± 6.2, not significant.
 
 **Runs** (`runs/` is untracked)
 
 | Path | What |
 |---|---|
-| `runs/sweeps/polyak` | Tiger JEPA, 5 seeds: **the numbers to cite** |
-| `runs/sweeps/default`, `runs/sweeps/decoder` | Tiger before Polyak averaging; Tiger decoder baseline |
-| `runs/wumpus/smoke_seed0`, `full_seed0`, `full_seed0_c100` | Wumpus, **old setup** (East start, 100 steps). `_c100` holds collection 100's networks as `best.pt` |
-| `runs/wumpus/north50_seed0` | **Wumpus baseline, current setup** (JEPA, 100 collections; `main_part1.log` and `.hydra_part1/` hold the first 40-collection launch) |
-| `runs/wumpus/north50_decoder_seed0` | Decoder agent, current setup (plus logs of the diagnostics) |
-| `runs/wumpus/offpolicy_reference_seed0` | Off-policy diagnostic (reference + random data) |
-| `runs/wumpus/supervised_filter/` | Supervised upper bound and GRU/Transformer A/B logs; **`pools.pt`** = the cached game pool (4096 reference + 4096 random training games, 1024 held-out, 50 steps, with rewards and exact targets); `pools_no_rewards.pt` is the older pool |
-| `runs/wumpus/objective_ab/`, `objective_ab_long/` | Offline objective A/Bs (logs only; **networks were not saved**) |
-| `runs/wumpus/head_coverage.log` | Coverage diagnostic |
+| `runs/sweeps/polyak` | Tiger JEPA, 5 seeds: **the Tiger numbers to cite** |
+| `runs/sweeps/decoder` | Tiger decoder baseline, 5 seeds |
+| `runs/wumpus/u64_store_eval_eps_decoder_k5_seed{0,1,2}` | **The current Wumpus agent**, analysed (`analysis/report.json`); seed 0 also has `analysis/latents_umap_input.npz` |
+| `runs/wumpus/u64_store_eval_eps_jepa_k5_seed{0,1}` | JEPA with the same recipe, **stopped at about collection 15–17**; `latest.pt` from collection 10 resumes them |
+| `runs/wumpus/store_eval_eps_decoder_k5_u256_seed0`, `eps_decoder_k5_u256_seed0` | The two failed 256-update runs (−84 and −283) |
+| `runs/wumpus/north50_seed0`, `north50_decoder_seed0` | The first JEPA and decoder agents (110 and 85) |
+| `runs/wumpus/overfit_ab/` | Offline overfitting A/B logs (stopped at about 12,800 updates) |
+| `runs/wumpus/supervised_filter/pools.pt` | Cached game pool: 4096 reference + 4096 random training games and 1024 held-out games, with exact targets |
+| `runs/wumpus/objective_ab*/`, `offpolicy_reference_seed0`, `head_coverage.log`, `full_seed0*`, `smoke_seed0` | Older diagnostics (section 5.5) |
+| `runs/wumpus/reviewer_chain.sh`, `jepa_chain.sh` | The overnight pipeline and the JEPA launch-plus-analysis script |
 | `runs/tiger_acceptance_seeds/` | Value-gate seed study logs |
 
-**Reviewer page:** https://claude.ai/artifact/Rboz6xV7xA7Ejrjomy4As5 (Tiger only; sources in `reports/2026-09-30_reviewer_page/`). The owner edits it live, so read it with the Artifact tool before republishing and merge onto the live version. It does not yet include the decoder baseline or Wumpus.
+**Reviewer pages**
+
+| Page | Content | Sources |
+|---|---|---|
+| Tiger (2026-09-30): https://claude.ai/artifact/Rboz6xV7xA7Ejrjomy4As5 | Tiger only; the method diagrams | `reports/2026-09-30_reviewer_page/` |
+| Wumpus (2026-10-07, version 6): https://claude.ai/artifact/1m1jkSud5xbFCidGMkc6VN | Domain and rules (the heuristic explained); returns (random, current agent over 3 seeds, heuristic); training curves; latent UMAP with selectable colourings; a synced game player (true map with trail, UMAP path and exact vs decoded belief, for a win, an unfinished game and a death); probes vs the supervised bound | `reports/2026-10-07_wumpus_reviewer_page/` |
+
+- Rebuilding the Wumpus page data:
+  - `scripts/export.py` writes `data.json`. The full export takes about 15–25 min because of the calibration step. `export.py games …` refreshes the example games only; `export.py add <data.json> <runs…>` merges new runs' curves and reports.
+  - `scripts/dump_latents.py` then `scripts/umap_latents.py` (in the UMAP environment) write `umap.json`. The example games' latents are placed with the fitted map's `transform()`.
+  - `scripts/page_meta.json` holds labels, the main-run prefix and `jepa_prefix`.
+- The page already shows a "JEPA, same recipe" row and curves once the JEPA runs exist in `data.json` (merge with `export.py add`). The data still contains a now-unused `calibration` key and old runs' reports and curves, which the page ignores.
+- Publish with the Artifact tool, `files` = `data.json` and `umap.json`, to the same URL.
 
 ## 4. Results: canonical Tiger (`runs/sweeps/polyak`, 5 seeds)
 
@@ -116,16 +126,13 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 | Decoded belief, MLP probe → exact Q* | −0.23 ± 0.53 |
 | Decoded belief, linear probe → exact Q* | −5.38 ± 3.68 (1.3% suboptimal decisions) |
 
-- **Policy:** 99.94% of 128,000 greedy decisions are optimal. The only deviation is one extra listen at the tightest margin (0.70).
-- **Latent:** the MLP probe's KL is below 1e-4 nats; minimality ratio 0.27 ± 0.03. The latent is sufficient but neither minimal nor linearly sufficient.
-- **Observation prediction:** KL of 1–6e-4 nats; accuracy 58.3%, against a Bayes ceiling of 57.8%.
-- **Runtime:** solving exactly is far cheaper on Tiger: a 72 s solve and 0.096 ms per decision, against 52–59 min of training and 4.6 ms per decision. The case for the learned agent is that it needs no model and should scale.
-- **Search** looks about 3.6 actions ahead on average (at most 6) with 50 simulations.
-- **Exact references:** V_h(b₀) = −1, −1.95, 2.3098, 1.7955, 2.7631 for h = 1..5, and V*(b₀) = 19.3713.
+- **Policy:** 99.94% of 128,000 greedy decisions are optimal; the only deviation is one extra listen at the tightest margin (0.70).
+- **Latent:** the MLP probe's KL is below 1e-4 nats; minimality ratio 0.27 ± 0.03. Sufficient, but neither minimal nor linearly sufficient.
+- **Observation prediction:** KL 1–6e-4 nats; accuracy 58.3% against a Bayes ceiling of 57.8%.
+- **Runtime:** exact solving is far cheaper on Tiger (a 72 s solve and 0.096 ms per decision, against 52–59 min of training and 4.6 ms per decision).
+- **Exact references:** V_h(b₀) = −1, −1.95, 2.3098, 1.7955, 2.7631 for h = 1..5; V*(b₀) = 19.3713.
 
 ### 4b. Decoder baseline on Tiger (indistinguishable from JEPA)
-
-`model.representation=decoder` (`training/trainer.py`, section 2b): no JEPA predictor or EMA target, and the observation head's cross-entropy flows into the filter.
 
 | | JEPA | Decoder |
 |---|---|---|
@@ -134,149 +141,99 @@ All agents play the same 512 held-out episodes. Gaps are paired with the optimal
 | Linear probe KL (random / agent histories) | 0.0011 / 0.0005 | 0.0007 / 0.0005 |
 | Minimality ratio | 0.27 ± 0.03 | 0.31 ± 0.04 |
 
-- All intervals overlap. The decoder escapes always-listen slightly earlier.
-- Likely a ceiling effect of Tiger's one-bit observation. On Wumpus the decoder *is* better on the latent (section 5.4).
+Likely a ceiling effect of Tiger's one-bit observation. On Wumpus the decoder learns the better latent (section 5.5).
 
-## 5. Wumpus World (current work)
+## 5. Wumpus World
 
-### 5.1 Domain (`src/ipomdp/domain/wumpus.py`, `conf/env/wumpus.yaml`)
+### 5.1 Domain (`src/ipomdp/domain/wumpus.py`, `conf/env/wumpus.yaml`; user decisions of 2026-10-01/02)
 
-User decisions of 2026-10-01 and 2026-10-02:
-- **Grid:** 4x4, start at cell 0 = R&N's [1,1], **facing North**. R&N faces East, as did every run before 2026-10-02; the user calls North "more canonical". Cell index c = x + 4y.
-- **Placement:** 2 pits, 1 wumpus and 1 gold on pairwise distinct non-start cells, giving 16,380 equally likely layouts. Unwinnable layouts are kept.
+- **Grid:** 4x4; start at cell 0 (bottom left) **facing North**; cell index c = x + 4y; headings 0 E, 1 N, 2 W, 3 S.
+- **Placement:** 2 pits, 1 wumpus and 1 gold on pairwise distinct non-start cells: 16,380 equally likely layouts. Unwinnable layouts are kept.
 - **Actions:** FORWARD, TURN_LEFT, TURN_RIGHT, GRAB, SHOOT. **No Climb**; grabbing the gold wins.
-- **Rewards:** −1 per action (−10 for a shot that uses the arrow), +1000 for the gold, −1000 for death. The ending step also pays its cost: a win pays 999 and a death −1001. γ = 0.99.
+- **Rewards:** −1 per action (−10 for a shot that uses the arrow), +1000 for the gold, −1000 for death; γ = 0.99.
 - **Arrow:** flies to the wall. A dead wumpus still smells, and its cell is safe.
-- **Observations:** 5 percept bits (STENCH, BREEZE, GLITTER, BUMP, SCREAM), giving indices 0..31, plus GAME_OVER = 32. Position and heading are **not** observed. `reset()` emits **o₀**, the start-cell percept.
-- **End of game:** an absorbing GAME_OVER state with reward 0 fills the rest of the **50-step window** (was 100), which holds one game.
-- **Ground truth:** `WumpusBeliefTracker` is an exact enumeration filter giving marginals and the hunter's own state. One `step_rules()` serves both simulator and filter.
-- **Model and search:** latent 128, hidden 256, observation branches pruned below 1e-3. Everything else follows the Tiger defaults (64 games and 64 updates per collection, 50 simulations, 256 warm-up games, JEPA). A full run uses `training.total_episodes=6400` (100 collections). **The default of 2560 gives only 40 collections, and that mistake was made once.**
+- **Observations:** 5 percept bits (STENCH 1, BREEZE 2, GLITTER 4, BUMP 8, SCREAM 16), plus GAME_OVER = 32. Position and heading are not observed. `reset()` emits o₀, the start-cell percept.
+- **End of game:** an absorbing GAME_OVER state with reward 0 fills the rest of the 50-step window.
+- **Ground truth:** `WumpusBeliefTracker`, an exact enumeration filter: marginals plus the hunter's own state.
+- **Model and search:** latent 128, hidden 256, observation branches pruned below 1e-3, 50 simulations. A full run is `training.total_episodes=6400` (100 collections; the default 2560 gives only 40).
 
-### 5.2 Bounds and reference agent
+### 5.2 The exact-belief heuristic (`src/ipomdp/agents/wumpus_reference.py`)
 
-- **Upper bound:** with the layout known, the mean of each layout's optimal value is V(b₀) = 936.3. 98.83% of layouts are winnable, all within 50 steps (`reports/.../full_info_vi.py`).
-- **Lower bound:** `src/ipomdp/agents/wumpus_reference.py` acts on the exact belief.
-  1. Grab on glitter.
-  2. Otherwise walk the shortest path to the nearest provably safe unvisited cell.
-  3. Otherwise shoot at a possible wumpus to clear a cell.
-  4. Otherwise gamble below a risk threshold, or idle.
+A hand-written, deterministic policy on the exact belief. It is **not optimal** and must not be called "optimal" or "V*". Each step it applies the first rule that fits:
+1. P(gold here) = 1 → GRAB.
+2. Walk the shortest path (BFS over (cell, heading) through provably safe cells) to the nearest provably safe unvisited cell, i.e. P(pit) = 0 and P(live wumpus) = 0. A cell with known gold comes first.
+3. With the arrow and a live wumpus: from a safe spot, shoot at an unvisited, pit-free cell that may hold the wumpus. Either outcome makes that cell safe.
+4. Step into the lowest-risk frontier cell if its risk (P(pit) + P(live wumpus)) is at most the threshold.
+5. Otherwise TURN_LEFT (wait).
 
-  `analyze_wumpus_run` reports it on the same layouts as the planner. 512 games:
-
-| Risk threshold | Return | Win | Death |
-|---|---|---|---|
-| 0 (never gambles) | 526 ± 20 | 62.3% | 0% |
-| **0.4 (best of the grid)** | **573 ± 20** | 69.7% | 1.8% |
-| 1 (always gambles) | 517 ± 32 | 81.2% | 18.8% |
-
-### 5.3 Agent results (512 fresh games each, via `analyze.py`)
-
-| Run | Return | Win | Death | Unfinished |
+| Risk threshold (512 games) | Return | Win | Death | Unfinished |
 |---|---|---|---|---|
-| `north50_seed0` (JEPA, `best.pt` from collection 85) | **110 ± 20** | 19.3% | 3.7% | 77.0% |
-| `north50_decoder_seed0` (decoder, `best.pt` from collection 25) | 85 ± 21 | 21.7% | 9.0% | 69% |
-| `offpolicy_reference_seed0` (trained on reference + random data) | −75 ± 32 | 29.1% | 35.4% | 35.5% |
-| Random hunter | −388 ± 26 | 12.9% | 55.5% | 31.6% |
-| Old setup: `full_seed0` collection 20 / collection 100 | 83 / −241 | 18.4 / 0.4% | 2.1 / 25.6% | |
+| 0 (never gambles) | 526 ± 20 | 62.3% | 0% | 37.7% |
+| **0.4 (used as "the reference")** | **573 ± 20** | 69.7% | 1.8% | 28.5% |
+| 1 | 517 ± 32 | 81.2% | 18.8% | 0% |
 
-- In-training evaluations wander (−83 to +134) with no trend after about 50 collections. `best.pt` scores are a winner's curse.
-- **Split by start percept** (`split_diag.py`, 256 games). With a quiet start the first step is provably safe; that is 66% of games.
+0.4 was the best of three thresholds tried on the same 512 analysis games, so 573 is slightly optimistic. The random hunter earns −388 ± 26.
 
-| | Quiet start: win | Percept at start: win |
-|---|---|---|
-| JEPA planner | 26% (death 1%) | 3% |
-| Decoder planner | 35% (death 11%) | 0% |
-| Reference (risk 0.4) | **98%** | 19% |
+### 5.3 The current agent and its results
 
-### 5.4 The diagnosis chain (what was tested, in order, and what it showed)
+**Recipe.** `env=wumpus model.representation=decoder model.observation_horizon=5 training.updates_per_collection=64 training.total_episodes=6400 training.store_eval_episodes=true agent.epsilon=0.25 agent.epsilon_min=0.1`, at commit `f5740e4`. ε decays with `temperature_decay` (0.97 per collection) to 0.1.
 
-1. **Value head** (`value_diag.py`, old setup): V̂ is high and flat (V̂(z₀) = 251 at collection 20 and 529 at collection 100), correlates only 0.32 with realised return, and scores idling at about 250 where idling is worth −63. It is self-consistent with its own one-step backup.
-2. **Reward head is accurate** (`reward_diag.py`): GRAB predicts 25.4 against an exact 25.4, −1.00 where the gold is impossible, and 998 where it is likely. Rewards are not the problem.
-3. **Search depth is not the bottleneck** (`sims_diag.py`): 200 simulations gave 77 ± 24, the same as 50.
-4. **The JEPA latent is good on the agent's own short histories** (heading 85%, cell 95%), but the planner wanders: FORWARD is 49% of its actions, yet it rarely reaches new cells.
-5. **Off-policy diagnostic** (`offpolicy_reference.py`): training on reference-agent data made play *worse* (−75). Exploration data is not the bottleneck.
-6. **Death prediction is badly calibrated** (`death_calibration.py`, JEPA): exact P(death | FORWARD) of 0 / 0.5 / 0.99 is predicted as P(GAME_OVER) 0.19 / 0.37 / 0.39. Q(FORWARD) − Q(TURN_LEFT) is −199 even on provably safe steps; with ±1000 rewards a small error costs a lot. **This explains the wandering.**
-7. **The latent is the bottleneck** (`danger_probe.py`): even a fresh probe trained on the exact danger reads certain death as only 0.47. Localisation on travelling (reference) histories is partial: cell 87% (majority 57%), heading 62–66% (majority 31%) (`reference_probe.py`).
-8. **The decoder agent does not fix it** (full run): its death prediction reads 0.15 / 0.46 at exact 0 / 0.99, and its danger probe reads 0.54.
-9. **Supervised upper bound** (`supervised_filter.py`): the same GRU filter (128/256/1) trained on privileged exact targets reaches cell 99.9%, heading 100%, and a danger error of 0.032 at 3,000 steps and **0.016 at 12,000 steps** (certain death read 0.90). **The architecture and capacity suffice; the training objective is the bottleneck.**
-10. **GRU vs causal Transformer** (supervised; 3 seeds each; identical pools; `ab_summary.py`). The Transformer had 4 pre-norm blocks, RMSNorm, SwiGLU and flash SDPA, 1.06M parameters, untuned; the GRU had 618k.
-    - **GRU equal or better:** cell 99.9% vs 92.0% (paired −7.8 ± 3.3 points); gold error significantly better; danger error 0.033 vs 0.044 (not significant).
-    - The architecture is not the bottleneck at this scale.
-11. **New option: multi-step observation term** (`model.observation_horizon = k`, commit `2bbebac`). From z_t, an action-conditioned GRU rolls open-loop through the actual next k actions and predicts o_{t+1..t+k}; its cross-entropy goes into the filter. The default k = 0 builds nothing, so Tiger is unchanged.
-12. **Offline objective A/B** (`objective_ab.py`): the real `TrainingRun`/trainer trained offline on `pools.pt` for 6,400 updates, 3 seeds per arm, scoring the acting latent by probes and the acting observation head by death calibration.
+| Seed (512 fresh games, best.pt) | Return | Win | Death | Unfinished |
+|---|---|---|---|---|
+| 0 | 185.5 ± 20.0 | 29.5% | 3.9% | 66.6% |
+| 1 | 166.0 ± 19.6 | 26.4% | 3.3% | 70.3% |
+| 2 | 215.2 ± 18.6 | 29.1% | 0.2% | 70.7% |
+| **Mean, 3 seeds** | **189 ± 62** (t-interval) | | | |
 
-| Held-out | JEPA | Decoder | JEPA, k = 5 | Decoder, k = 5 | Supervised |
-|---|---|---|---|---|---|
-| Heading | 54% ± 5 | 74% ± 6 | 56% ± 3 | 75% ± 22 | 100% |
-| Cell | 75% ± 1 | 81% ± 4 | 75% ± 1 | 80% ± 4 | 99.9% |
-| Danger-probe error | 0.110 | 0.094 | 0.109 | 0.076 ± 0.081 | 0.033 |
-| Head danger error | 0.124 | 0.108 | 0.119 | 0.102 | |
+- **The death model generalises** (seed 0, `latest.pt`, 256 fresh games per policy). Steps predicted below 0.02 killed 0.2% of the time under the exploring policy and 0.1% under the greedy planner. Before the fix this was 4.1% and 9.6%.
+- **The remaining gap is unfinished games, not deaths.** The cause has not been diagnosed (section 6, step 2).
+- **Value overestimation persists.** V̂ at live states is about 905 in the store-eval run and higher in the 256-update runs, against a reference return of 573. Re-measure it on the current agent with `absorbing_value.py`. It is a candidate cause of the unfinished games.
+- **Not ablated:** at 64 updates per collection, the separate effects of ε and of `store_eval_episodes` are unknown. The recipe changed only the update rate relative to the −84 run.
 
-    - Decoder − JEPA is significant: heading +20 ± 7 points, cell +6.6 ± 5.0, danger-probe −0.016 ± 0.012, head −0.016 ± 0.005.
-    - k = 5 does nothing for JEPA. For the decoder it is seed-dependent: seed 3 reached a danger-probe error of 0.039.
-13. **Longer offline A/B** (decoder vs decoder + k = 5, 25,600 updates, 3 seeds, scored at 6,400 / 12,800 / 25,600; old unroll code). The 6,400-update scores reproduced item 12 exactly, so the harness is deterministic.
-    - **The latent keeps improving:** danger-probe error falls from 0.094 to 0.064 (decoder) and from 0.076 to 0.051 (k = 5). Three of six runs end at 0.030–0.038, near the supervised bound. Heading reaches 83% and 87%. k = 5 vs k = 0 is not significant.
-    - **The observation head's death prediction does not improve:** head danger error 0.108 → 0.136 (decoder) and 0.102 → 0.120 (k = 5). It stays bad even where the probe reads the danger well (k = 5 seed 1: probe 0.037, head 0.158). P(death) on provably safe steps stays about 0.05, which costs about 50 per step.
-14. **Coverage diagnostic** (`head_coverage.py`; frozen supervised latent; fresh heads of the agent's architecture; 1 seed):
-    - Normal data: head danger error 0.063, safe 0.007, certain death 0.65.
-    - **Adding one forced FORWARD step from every live reference state** (outcome from the true rules, no privileged label): **0.031**, safe 0.007, certain death **0.83**.
-    - Coverage of dangerous FORWARD outcomes matters: they make up 4.7% of FORWARD transitions in the pool, 14.9% after augmentation. Even without it, a head on a near-exact latent beats the agents' heads.
+### 5.4 Interpretability findings (current agent, seed 0)
 
-**Current understanding:** the agent needs (a) a latent that tracks position, heading and the danger ahead, which longer training of the decoder (± k = 5) nearly provides, and (b) a death prediction that is calibrated in exactly those states, which needs more dangerous FORWARD experience in the data, and possibly more head training or capacity. Neither has been tested in a full agent run yet.
+- **Probes (MLP; held-out games):** cell 55–58% and heading 55–60% on random-action histories; 83–88% and 87–90% on the agent's own games. The same GRU trained on exact targets (`supervised_filter.py`) reaches 99.9% and 100%. Hazard marginals beat the constant baseline only modestly (pit error 0.070 vs 0.085).
+- **UMAP** (`reports/2026-10-07_wumpus_reviewer_page/scripts/umap_latents.py`; trustworthiness 0.983):
+  - The map is organised first by the percept just received.
+  - A point's 10 nearest neighbours share its percept 93% of the time on random histories (36% by chance), its heading 44% (25%) and its cell 43% (24%). On the agent's own games: 96%, 74% and 71%.
+  - The danger ahead varies only inside the stench/breeze clusters.
+- **Example death game in the player:** on its final step the exact danger is 1.00 and the model says 0.00, and the decoded pit map puts the pit in the wrong cell. Rare deaths still come from latent errors.
 
-### 5.5 Superseded early hypotheses
+### 5.5 How we got here (condensed diagnosis chain; details in the script headers under `reports/2026-10-02_wumpus_diagnostics/`)
 
-These predate the diagnosis chain:
-1. The latent doesn't track heading: confirmed as part of item 7.
-2. The search is too shallow: refuted (item 3).
-3. Exploration fails to reach the gold: refuted for the representation (item 5); partly true for the head's death prediction (item 14).
-4. The final collapse at collection 100 comes from value instability: untested. The longer agent runs show no such collapse.
+1. **The first agents (JEPA 110 ± 20, decoder 85 ± 21) wandered and died.** Their death prediction was badly miscalibrated (`death_calibration.py`).
+2. **Ruled out:**
+   - search depth: 200 simulations gave no gain (`sims_diag.py`);
+   - the reward head, which is accurate (`reward_diag.py`);
+   - exploration data for the representation: training on reference data made play worse (`offpolicy_reference.py`);
+   - the architecture: a supervised GRU reaches about 100%, and a causal Transformer was no better (`supervised_filter.py`, `ab_summary.py`).
+3. **The objective is the limit for the latent.** In the offline objective A/B (`objective_ab.py`) the decoder beat JEPA significantly: heading +20 points, cell +7, danger error −0.016. The multi-step term (k = 5) did not help JEPA and was seed-dependent for the decoder. Longer offline training improved the decoder latent but made the head's death error worse. That was the first sign of overfitting.
+4. **Coverage** (`head_coverage.py`): forcing dangerous FORWARD outcomes into the data halved a fresh head's danger error.
+5. **The combined-fix run** (decoder, k = 5, ε, **256** updates per collection) failed at **−283 ± 17**. `greedy_deaths.py`: the planner stepped forward where its head confidently said "safe".
+6. **Storing the greedy games** (still at 256 updates) gave **−84 ± 27**.
+7. **`head_shift.py` (with a correction):** the head is calibrated **in-sample** but overconfident on **fresh games of the exploring policy too**, so the problem is overfitting, not only a policy shift. A fresh head on frozen latents generalised better than the jointly trained one.
+8. **The offline overfitting A/B** (`objective_ab.py` arms plus `overfit_summary.py`, 2 seeds per arm):
+   - with 2,048 games, held-out NLL rose from 0.30 to 0.61 while training NLL fell;
+   - even with 8,192 games it overfits past about 6,400 updates;
+   - weight decay up to 0.1 had no effect.
+9. **Back to 64 updates per collection, keeping the other changes:** 189 ± 62 (section 5.3).
 
-## 6. Next steps (in order; ask the user at each research decision)
+## 6. Next steps (in order; ask the user at each research decision, recommendation first)
 
-1. **Tiger value-gate study: done (2026-10-05).** The hoist stays; the acceptance test runs 6000 updates (HEAD seeds 0 and 8: 22.3/24.1 at 3000 -> 5.3/1.1 at 6000; seed table in the test header). Full slow suite at `cd9d116`: 6/7 passed; the failure was a stale `OptimalAgent.reset()` signature in `test_exact_model_planner_matches_optimal_policy_return` (broken since `90b489d`), fixed and passing. The 6000-update value gate has been checked at seeds 0 and 8 only.
-2. **Wumpus: the combined-fix run failed (2026-10-05).** User decisions: option a with ε-uniform exploration.
-   - `runs/wumpus/eps_decoder_k5_u256_seed0`, commit `5dbeca4`, 3 h 18 min: `env=wumpus model.representation=decoder model.observation_horizon=5 training.updates_per_collection=256 training.total_episodes=6400 agent.epsilon=0.25 agent.epsilon_min=0.1` (ε decays with `temperature_decay` to 0.1).
-   - In-training greedy evaluations: −199 to −531 at every evaluation, with no trend; 59% deaths at collection 100.
-   - `analyze.py` (best.pt = collection 25, 512 fresh games): **−283 ± 17**, win 0.4%, death 29%, against the random hunter at −388 and `north50_seed0` at 110. Linear probes are no better than the old runs (cell 48%, heading 41%).
-   - **Diagnosis** (`absorbing_value.py`, `greedy_deaths.py`, `start_danger.py`; final checkpoint):
-     - **The head is confidently wrong on the greedy planner's own histories.** FORWARDs taken at exact danger 0.4–0.6 (n = 75) and ≥ 0.6 (n = 36) were predicted at P(death) 0.004 and 0.017; the agent died on 57% and 97% of them (the step alignment was checked). The same head reads 0.5–0.9 at such dangers on random and reference histories and 0.71–0.73 at z₀ with a percept. The planner steps where the head is wrong (optimizer's curse). Older runs show the same at a smaller scale (34 and 12 such steps).
-     - **Value overestimation grows with updates:** V̂ at live states is 1262 at the end (1565 at about collection 40), against 868 (`north50_decoder_seed0`) and 559 (`north50_seed0`); the maximum achievable return is 999. The absorbing state is fine (V̂ ≈ 103).
-   - Options not chosen earlier: (b) an offline A/B of head-side fixes on frozen latents; (c) tightening the Wumpus value support (`value_bound` = 100,100, so only 153 of 255 bins are reachable and the spacing near 500 is 49; a domain decision for the user). Exploration options not chosen: more root noise early; reweighting GAME_OVER in the loss.
-   - **Head-shift diagnostic** (`head_shift.py`, user decision 2026-10-05; the full result is in its header):
-     - The head is **calibrated on its training data** (buffer FORWARDs: predicted 0.071, died 0.071, every bin) but not on the greedy planner's histories (predicted 0.002, died 0.097).
-     - The acting copies are not the cause: the online pair is just as wrong.
-     - The latent carries most of the danger: on held-out greedy dangerous FORWARDs (died 67%), a fresh head trained on buffer + greedy games reads 0.53, one trained on the buffer alone 0.17, and the agent's head 0.007.
-     - **Cause: the exploring policy does not visit the states the greedy planner reaches**, and the greedy planner exploits the head's errors there.
-   - **User decision (2026-10-05): store the greedy evaluation games in the replay buffer** (`training.store_eval_episodes`, commit `1d7801b`; default off and Tiger bit-identical). Options not chosen: a pessimistic ensemble of observation heads; both together; an offline head-retrain check first.
-   - **Result (2026-10-06):** `runs/wumpus/store_eval_eps_decoder_k5_u256_seed0` (the failed run's config plus `training.store_eval_episodes=true`): `analyze.py` on best.pt (collection 85) gives **−84 ± 27**, win 23%, death 30% (failed run −283 ± 17; `north50_seed0` 110 ± 20). Evaluations rose over the last 20 collections. V̂ at live states is 905 (1262 in the failed run); probes are unchanged.
-   - **The real cause is overfitting** (`head_shift.py`, header section 3, including the correction). The head is calibrated in-sample (buffer) but overconfident in both directions on **fresh games of the exploring policy itself**:
-     - predicted < 0.02: died 0.2% in the buffer, 2.7% on fresh exploring games, 5.5% on fresh greedy games;
-     - predicted 0.5–1: died 89% in the buffer, 43% on fresh exploring games.
-     - The failed run shows the same. The greedy planner is just the worst case: it selects the confident "safe" errors.
-     - With greedy games in the buffer, the agent's head still reads 0.006 at dangerous greedy steps (died 62%), while a fresh head on frozen latents trained on the same buffer reads 0.28.
-   - **This fits earlier evidence.** The 4×-update runs (−283 and −84) were worse than the 64-update run (110). In the longer offline A/B (section 5.4, item 13) the head's death error got *worse* with more updates while the probes improved. The decoder filter and head train jointly at replay ratio 64 (256 updates × 16 episodes per 64 new episodes), so they can memorize the training layouts.
-   - The earlier reading, "policy shift, not overfitting", from the first `head_shift.py` run was wrong: buffer calibration is in-sample.
-   - **User decision (2026-10-06): an offline regularisation A/B** (`objective_ab.py` at `68d66b4`, the agent's decoder + k = 5 config, the cached pool, 25,600 updates, scored at 3,200 / 6,400 / 12,800 / 25,600; logs in `runs/wumpus/overfit_ab/`, summary with `overfit_summary.py 25600 runs/wumpus/overfit_ab/obj_*.log`).
-     - Arms: `a_base` (weight decay 1e-4); `b_wd1e-2`; `c_wd1e-1`; `d_data2048` (a quarter of the training games).
-     - Six in parallel saturate the GPU (about 0.8 s per update each, against 0.1 s alone), so parallelism gains nothing; run 2–3 at a time.
-     - **Interim result at 3,200–6,400 updates (1–2 seeds):**
-       - With the full 8,192 games there is little overfitting: held-out NLL 0.24 vs training 0.22, and `head_safe_miss` falls from 0.025 to 0.019.
-       - With 2,048 games it overfits strongly: held-out NLL 0.30 → 0.50 while training NLL falls 0.21 → 0.17; `head_safe_miss` 0.031 → 0.047.
-       - Weight decay up to 0.1 shows no effect.
-       - The amount of data, i.e. the replay ratio, is the lever. The 256-updates-per-collection agent trains hard on very few games early in the run.
-     - **2026-10-06 21:50: memory ran critically low** after ipomcp started 5 workers. The queue and the three weight-decay runs were stopped at about 11,200 updates. Still running: `a_base` seeds 1–2 and `d_data2048` seed 1. Not run: seed 3 of every arm, and seed 2 of c and d. At 12,800 updates (2 seeds), even the full-data baseline overfits: held-out NLL 0.238 → 0.255 while training NLL falls 0.221 → 0.202, and `head_safe_miss` goes 0.019 → 0.026. The quarter-data arm's held-out NLL reaches 0.61. The head is best at about 6,400 updates over 8,192 games. All remaining A/B runs were stopped at about 12,800 updates (user decision, 2026-10-06); the 25,600-update points and the seed-3 runs were not collected.
-     - **User decision (2026-10-06): full run at 64 updates per collection, keeping the other fixes.** `runs/wumpus/u64_store_eval_eps_decoder_k5_seed0` (commit `f5740e4`): `env=wumpus model.representation=decoder model.observation_horizon=5 training.updates_per_collection=64 training.total_episodes=6400 training.store_eval_episodes=true agent.epsilon=0.25 agent.epsilon_min=0.1`. Only the replay ratio differs from the −84 ± 27 run.
-     - **Result (2026-10-07; seeds 0–2, `runs/wumpus/u64_store_eval_eps_decoder_k5_seed{0,1,2}`; the user was away and pre-authorised the recommended options):** seed 0 **185.5 ± 20.0** (win 29.5%, death 3.9%, unfinished 66.6%); seed 1 **166.0 ± 19.6** (26.4%, 3.3%, 70.3%); seed 2 **215.2 ± 18.6** (29.1%, 0.2%, 70.7%). Over the 3 seeds: **189 ± 62** (t-interval). These are the best Wumpus results so far (`north50_seed0` 110 ± 20; reference agent 573 ± 20). MLP probes on random histories: cell 56–58%, heading 59–60% (`north50_seed0`: 50% and 42%).
-     - **Overfitting was the main cause of the deaths.** Deaths fell from 30% (store-eval run) to about 3.5%. The remaining gap to the reference is mostly unfinished games (about 2/3).
-     - The death model is now calibrated on fresh games: steps predicted < 0.02 killed 0.2% (exploring) and 0.1% (greedy) of the time, against 4.1% and 9.6% before (seed 0, latest.pt).
-     - **Reviewer page (published 2026-10-07): https://claude.ai/artifact/1m1jkSud5xbFCidGMkc6VN** (private until the owner shares it). Version 2 adds a UMAP of seed 0's latents (`scripts/dump_latents.py`, then `scripts/umap_latents.py`, run in a separate environment with umap-learn so the project does not depend on it). **Finding:** the latent is organised first by the percept just received. A point's 10 nearest neighbours in the map share it 93% of the time on random histories (36% by chance), its heading 44% (25%) and its cell 43% (24%); on the agent's own games 96%, 74% and 71%. Trustworthiness 0.983. The danger ahead varies only inside the stench/breeze clusters. Versions 2–5 (2026-10-07, user requests): UMAP of the latent; a synced game player (ground-truth map, UMAP path, exact vs decoded belief); earlier agents removed; the reference explained as a hand-written exact-belief heuristic (not optimal; threshold picked on the analysis games); diagnosis and status sections, the known-layout bound and the history-source colouring removed.
-     - **JEPA with the same recipe (user decision 2026-10-07) was started and stopped:** `runs/wumpus/u64_store_eval_eps_jepa_k5_seed{0,1}` (commit `da25f3e`, `model.representation=jepa`, otherwise the current recipe), stopped at about collection 15–17 because ipomcp load made them far too slow for the meeting. `latest.pt` from collection 10 resumes them bit-exactly: `main.py resume=<run>/checkpoints/latest.pt` with the same overrides. In-training evaluations so far: 14 and −13 at collection 15. `jepa_chain.sh` has the full command and the analysis step; `export.py add` merges the results into the page, which already shows a "JEPA, same recipe" row and curves when they exist.
-     - It is built from these runs (`reports/2026-10-07_wumpus_reviewer_page/`; pipeline `runs/wumpus/reviewer_chain.sh`, log `reviewer_chain.log`).
-3. **Only once Wumpus plays near the reference:** build a Wumpus seed sweep and aggregation (`sweep.py` and `experiments/aggregate.py` are still Tiger-only), then a reviewer-page section with the latent figures.
-4. **Ask before pushing** `4d1ace5` onward.
-5. **Deferred:** the hybrid JEPA + observation condition; a model-free recurrent Q-learner baseline; multi-agent Tiger (verify its tables against Gmytrasiewicz & Doshi first); I-POMDP levels via the S × M_j reduction.
-6. **Cheap open Tiger questions:** an observation-head detach ablation in JEPA mode; Polyak momentum 0.98; common-random-number training curves.
+1. **Finish the JEPA arm with the same recipe** (contribution 1 depends on it).
+   - Resume both runs: `main.py resume=runs/wumpus/u64_store_eval_eps_jepa_k5_seed<s>/checkpoints/latest.pt` with the overrides in `runs/wumpus/jepa_chain.sh` (`model.representation=jepa`, otherwise the current recipe). Resume is bit-exact from collection 10.
+   - Then run `analyze.py` and compare paired with decoder seeds 0–1.
+   - Only when the machine is quiet: about 3 h for two in parallel without ipomcp load.
+2. **Diagnose the unfinished games** (the remaining gap to the heuristic).
+   - Look at the action mix and cell coverage in unfinished games.
+   - Check whether V̂ overestimation or a flat Q makes the agent idle (`absorbing_value.py`, `value_diag.py`).
+   - Candidates to offer the user: a value support fitted to the episodic return range (`value_bound` is 100,100, so only 153 of 255 bins are reachable and the spacing near 500 is 49; a domain decision); longer training at the same update rate (`training.total_episodes=12800`); more simulations only if Q is close.
+3. **Ablate the recipe at 64 updates per collection:** ε off and `store_eval_episodes` off, one at a time, 2–3 seeds each. It is cheap evidence of which parts matter.
+4. **Push the latent towards position and heading.** It is organised by percept; probes are 55–60% against 100% supervised. Candidates: longer horizons for the multi-step term at the fixed update rate; an auxiliary objective that does not use privileged state. Use offline A/Bs on `pools.pt` first, and save the networks this time.
+5. **Seeds and tooling:** 5 seeds for the current agent; make `sweep.py` and `experiments/aggregate.py` work for Wumpus (they are Tiger-only).
+6. **Rerun the slow suite at HEAD once** (section 3, Tests).
+7. **Ask before pushing** `61991c7` onward.
+8. **Deferred:** the hybrid JEPA + observation condition; a model-free recurrent Q-learner baseline; multi-agent Tiger (verify its tables against Gmytrasiewicz & Doshi first); I-POMDP levels via the S × M_j reduction. Cheap Tiger questions: an observation-head detach ablation in JEPA mode; Polyak momentum 0.98.
 
 ## 7. Failed paths and pitfalls: do not repeat
 
@@ -286,110 +243,101 @@ These predate the diagnosis chain:
 - **Free bits** on the balanced KL: the prior never trained.
 - **Symlog-space two-hot decoding** is Jensen-biased; **unbounded bins** wreck the real-space means.
 - **A decoder of the *current* o_t:** the GRU can copy its last input. Use next-observation prediction.
-- **Wumpus, JEPA as is:** the latent does not encode the danger ahead (section 5.4, item 7).
-- **Wumpus, decoder at 6,400 updates:** better than JEPA but not enough to play well.
+- **Wumpus, JEPA as is (64 updates, no ε):** the latent does not encode the danger ahead.
 - **Wumpus, multi-step k = 5 on JEPA:** no effect.
-- **Wumpus, decoder + k = 5 + 4× updates + ε-uniform exploration (full run, 2026-10-05):** −283 ± 17, worse than every earlier run (section 6, step 2).
 - **Wumpus, a causal Transformer filter (untuned):** no better than the GRU, and worse on cell.
+
+**Training and data**
+- **256 updates per collection on Wumpus** (replay ratio 64): the filter and head overfit; −283 ± 17, and −84 ± 27 even with greedy games stored. Keep 64 per collection, or justify more updates with held-out NLL.
+- **Weight decay** (1e-2, 1e-1) against that overfitting: no effect.
+- **Training the Wumpus agent on reference-agent data** (off-policy): made play worse.
+- **TD(λ) value targets** learn the exploring policy's value, so the agent listens forever (Tiger).
+- **Bellman value targets with gradients into the filter** collapse the latent.
+- **20-step episodes:** the bootstrap is unanchored. **Chunked prioritised replay** from a zero belief: replaced by whole-episode uniform replay.
+- **Acting with online (non-averaged) weights:** head jitter flips close decisions. Keep the Polyak copies.
 
 **Planning**
 - **Mean (MuZero-style) backups with a uniform prior** degrade as search grows. Use expectimax.
 - **More simulations on Wumpus** (200 vs 50): no gain.
 
-**Training and data**
-- **TD(λ) value targets** learn the exploring policy's value, so the agent listens forever.
-- **Bellman value targets with gradients into the filter** collapse the latent.
-- **20-step episodes:** the bootstrap is unanchored.
-- **Chunked prioritised replay** from a zero belief: replaced by whole-episode uniform replay.
-- **Acting with online (non-averaged) weights:** head jitter flips close decisions. Keep the Polyak copies.
-- **Training the Wumpus agent on reference-agent data** (off-policy): made play worse.
-
-**Methodology and tooling**
+**Analysis and methodology**
+- **Judging calibration on the replay buffer:** it is in-sample. Always check fresh games (`head_shift.py` does both). This mistake was made once (the first `head_shift.py` reading).
 - **`cfg.seed + offset` seeds** couple runs. Use `stream_seed`.
 - **R² as a probe metric:** an untrained GRU already reaches 0.93. Use KL/L1 on Tiger, and the error against the constant (and majority) baseline on Wumpus.
-- **Reading in-training evaluation dips, or citing the `best.pt` score:** noise and a winner's curse. Re-estimate on fresh seeds.
-- **Judging a gate or an A/B from one seed:** the Tiger value gate ranges from 0.7 to 22 across seeds. Use several seeds and paired intervals.
-- **Running heavy jobs under `ipomcp` load:** slow, and parallel runs can exhaust RAM (section 2, Machine).
-- **Six parallel builds of the supervised-filter pools** filled the 16 GB GPU and stalled for 2 h. Build once with `--pool-cache` (`runs/wumpus/supervised_filter/pools.pt`).
-- **Forgetting `training.total_episodes=6400`** on a Wumpus run gives only 40 collections. Resume with the larger total; this is bit-exact, because temperature decays per collection.
-- **Changing initialisation order in `TrainingRun`** breaks bit-exact reproduction. Build new modules after the existing ones and only when enabled (as for `multistep_predictor`).
+- **Reading in-training evaluation dips, or citing the `best.pt` score:** noise and a winner's curse. Re-estimate on fresh seeds with `analyze.py`.
+- **Judging a gate or an A/B from one seed:** the Tiger value gate ranged from 0.7 to 24 across seeds.
+- **Choosing the reference threshold and reporting it on the same games** inflates it a little. Say so when citing 573.
+- **Forgetting `training.total_episodes=6400`** on a Wumpus run gives only 40 collections.
+- **Changing initialisation order in `TrainingRun`** breaks bit-exact reproduction. Build new modules after the existing ones and only when enabled.
 - **Hydra `@package` below a header comment** is silently ignored. It must be line 1.
 - **Comparing metric dicts with `==`:** `mean_win_step` is NaN when no game is won. Compare `repr()`.
-- **`pgrep -f` in a watcher loop** matches itself.
-- **Harness runs that do not save networks** (`objective_ab.py`): later diagnostics then need retraining. Save the final networks next time.
+- **Harness runs that do not save networks** (`objective_ab.py`): later diagnostics need retraining. Save the final networks next time.
+
+**Machine and tooling**
+- **Running heavy jobs under ipomcp load:** CPU-bound search slows about 4×, and parallel runs can exhaust RAM (section 2, Machine).
+- **Six parallel GPU jobs** (pool builds or A/Bs) gain nothing. **`pkill -f`/`pgrep -f` self-matches** killed a shell once.
+- **The page-data export plays 2 × 512 greedy games per run** for calibration; it took over 50 min under load. It now uses 256.
 - **Scratchpad files vanish with the session.** Keep anything reproducible in `reports/` or `runs/`.
 
 ## 8. History (commit, then the gist)
 
-**Tiger phases (pushed)**
-- `ba1d3fc` **Phase 1**: canonical Tiger as the single source of truth; exact Bayes filter, certified alpha-vector solver, seeded batched env.
-- `c267482`: non-blocking device-to-host copies had corrupted every earlier replay buffer.
-- `ccc985b` **Phase 2**: `BeliefFilter`; reward grounding plus JEPA.
-- `94c4b1e`, `2191999` **Phase 3**: unbiased real-space two-hot codec; observation-branching imagination; 100-step episodes.
-- `d110ad9` **Phase 4**: `SearchModel` protocol and `BeliefTreeSearch` (exact observation branching, expectimax, argmax Q).
-- `682060a`, `db625d9`, `80ee623` **Phase 5**: `TrainingRun` with bit-exact resume; Bellman-optimality value targets through the learned model, read from detached latents.
-- `7a16fea` **Phase 6**: probes, error bounds, decoded-belief agent, geometry, `analyze.py`.
-- `01bbe62` **Phase 7**: `ipomdp.experiments`; thin scripts.
-- `fd4d628` **Phase 8**: hashed seed streams. `e2620c4`: consistency pass.
-- `5c79deb` … `065b1c1`: Polyak-averaged acting weights; the `polyak` sweep (Tiger gate met).
-- `18f7454`: reviewer-page sources. `d8871f1`: decoder baseline switch. `9a9b726`, `61991c7`: decoder sweep and its result.
+**Pushed (through `9a9b726`)**
+- `ba1d3fc` Phase 1: canonical Tiger, exact Bayes filter, certified solver, seeded env. `c267482`: non-blocking copy corruption fixed.
+- `ccc985b` Phase 2 (`BeliefFilter`, reward grounding plus JEPA); `94c4b1e`, `2191999` Phase 3 (unbiased two-hot, observation-branching imagination); `d110ad9` Phase 4 (search model, expectimax tree search); `682060a`, `db625d9`, `80ee623` Phase 5 (`TrainingRun`, Bellman targets); `7a16fea` Phase 6 (probes, error bounds); `01bbe62` Phase 7 (experiments package); `fd4d628`, `e2620c4` Phase 8.
+- `5c79deb` … `065b1c1`: Polyak acting weights; `polyak` sweep (Tiger gate met). `18f7454`: Tiger reviewer-page sources. `d8871f1`: decoder baseline switch. `9a9b726`: decoder sweep launched.
 
-**Wumpus (local, unpushed)**
-- `4d1ace5`: Wumpus domain, simulator and exact enumeration filter.
-- `90b489d`: domain-generic stack (o₀ through filter, buffer, rollout, agents, trainer and search models; `DomainSetup`; observation pruning; `_global_` env configs; Wumpus analysis; tests pinned to one thread). Tiger was verified bit-identical by a GPU fingerprint.
-- `a1506f0`, `17f3b9b`, `43e748e`: figure fix; HANDOFF; the `pgrep` watcher pitfall.
-- `ae2d108`: North start and 50-step window (user decision).
-- `123fa81`: exact-belief reference agent (+3 tests) in the Wumpus analysis.
-- `feb65bd` … `e67e2e1`: 200-simulation check; `north50_seed0` extended to 100 collections and analysed.
-- `ce1c18e`, `b6fcb07`, `027850b`, `ac536ed`: diagnostics scripts; off-policy diagnostic; decoder run and its analysis.
-- `e2d72ea`, `31aebd6`, `aa976b0`, `8ef8d90`, `6373c9a`, `cc0e937`: supervised upper bound; Transformer arm; A/B summary; pool caching; GRU-vs-Transformer result.
-- `2bbebac`: **`model.observation_horizon`** (multi-step observation term) + 2 tests.
-- `740b24c`, `5e8e761`, `c610603`, `b64c6e1`, `674a865`: offline objective A/B harness, results, `--score-at`, longer A/B.
-- `62deb68`, `6af8f8f`: runtime profile; **hoisted `input_net` in `BeliefFilter.unroll`** (user-approved; not bit-identical in training).
-- `a2aa606` … `ea66ecb`: coverage diagnostic; acceptance bisection and seed study; memory-pressure note.
-- The HANDOFF rewrite commit (this file).
+**Local, unpushed (`61991c7` onward)**
+- `61991c7`: Tiger decoder result.
+- `4d1ace5`, `90b489d`, `ae2d108`, `123fa81`: Wumpus domain, the domain-generic stack (Tiger bit-identical), the North start and 50-step window, the reference heuristic.
+- `feb65bd` … `674a865`: Wumpus diagnostics, supervised bound, Transformer A/B, multi-step term (`2bbebac`), objective A/Bs.
+- `62deb68`, `6af8f8f`: runtime profile; the hoisted `input_net` (user-approved).
+- `a2aa606` … `07d3e08`: coverage diagnostic, acceptance seed study, previous HANDOFF rewrite.
+- `5dbeca4`: **ε-uniform exploration** (`agent.epsilon`, default off; fingerprinted).
+- `cab3894`, `cd9d116`, `d4911a8`: value-gate study; acceptance at 6000 updates; stale slow-test fix.
+- `48a442d`, `07fdcba`, `cd076b3`, `27f28e9`: failed combined-fix run and its diagnostics (`absorbing_value.py`, `greedy_deaths.py`, `start_danger.py`, `head_shift.py`).
+- `1d7801b`: **`training.store_eval_episodes`** (default off; fingerprinted).
+- `87cfa37`, `aa46d46`, `68d66b4`, `f5740e4`, `d4b476e`: store-eval run, overfitting finding, overfitting A/B, 64-update runs launched.
+- `03caa22` … `d8325b7`: Wumpus reviewer page (versions 1–6), UMAP, synced player, export tooling, results in HANDOFF.
 
-## 9. Files touched since `61991c7` (the last push)
+## 9. Files touched since the last push (`9a9b726`)
 
 **New source**
 - `src/ipomdp/domain/wumpus.py`: rules, `WumpusSimulator`, `WumpusBeliefTracker`, `game_outcomes`, `START_HEADING`.
-- `src/ipomdp/agents/wumpus_reference.py`: `WumpusReferenceAgent`.
+- `src/ipomdp/agents/wumpus_reference.py`: `WumpusReferenceAgent` (section 5.2).
 - `src/ipomdp/interpretability/wumpus_latents.py`: probe dataset, probes, `plot_belief_maps`, `plot_latent_pca`.
 - `src/ipomdp/experiments/wumpus.py`: `analyze_wumpus_run`, which also reports the reference agents.
-- `conf/env/wumpus.yaml`; `tests/test_wumpus.py` (22 tests); `tests/conftest.py`.
+- `conf/env/wumpus.yaml`; `tests/test_wumpus.py`; `tests/conftest.py`.
 
 **Changed source**
-- `models/world_model.py`: `start`; `unroll(..., initial_observation)`; **section 7, the hoisted `input_net`**.
-- `models/heads.py`: **`MultiStepObservationPredictor`** (section 4).
-- `models/__init__.py`.
-- `training/trainer.py`: section 2c, the multi-step term, and the `multistep_predictor` argument.
-- `training/run.py`: `Domain`, `DomainSetup`, `domain_metric_names`, `observation_horizon`, `multistep_predictor`.
-- `training/episode_buffer.py`: `initial_observations`.
-- `training/rollout.py`: `Simulator` protocol, `agent.reset(o0)`.
-- `planning/search_model.py`: `initial_states(B, o0)`.
-- `planning/mcts.py`: section 6 pruning.
-- `agents/*`.
-- `domain/pomdp.py`, `domain/__init__.py`.
-- `experiments/runs.py`: domain builders, `observation_horizon`.
-- `interpretability/*`; `telemetry/visualizers.py`.
-- `main.py`, `analyze.py`.
-- `conf/config.yaml`: `model.observation_horizon: 0`. `conf/env/tiger.yaml`.
-- Tests: `test_training_run.py`, `test_training.py`, `test_models.py`, `test_planner_and_agent.py`, `test_integration_e2e.py`.
+- `agents/planning_agent.py`: **ε-uniform exploration** (section 3 of its header).
+- `training/run.py`:
+  - section 7: ε, decayed with the temperature;
+  - section 8: `store_eval_episodes`;
+  - also `Domain`, `DomainSetup`, `observation_horizon`, `multistep_predictor`.
+- `training/trainer.py`: section 2c, the multi-step term.
+- `models/world_model.py` (`start`, `unroll(..., initial_observation)`, section 7, the hoisted `input_net`); `models/heads.py` (`MultiStepObservationPredictor`).
+- `training/episode_buffer.py`, `training/rollout.py`, `planning/search_model.py`, `planning/mcts.py` (section 6, pruning), `domain/pomdp.py`, `domain/__init__.py`, `experiments/runs.py`, `interpretability/*`, `telemetry/visualizers.py`, `main.py`, `analyze.py`.
+- `conf/config.yaml`: `model.observation_horizon`, `agent.epsilon`, `agent.epsilon_min`, `training.store_eval_episodes`.
+- Tests:
+  - `test_world_model_acceptance.py`: 6000 updates and the seed table;
+  - `test_planner_and_agent.py`: ε test and the stale-signature fix;
+  - `test_training_run.py`: ε decay and stored-evaluation tests;
+  - also `test_wumpus.py`, `test_training.py`, `test_models.py`, `test_integration_e2e.py`.
 
 **Reports**
-- `reports/2026-09-30_reviewer_page/scripts/`: ported to the new API.
-- **`reports/2026-10-02_wumpus_diagnostics/`** (each script's header explains its use and result):
+- `reports/2026-10-02_wumpus_diagnostics/` (every header has usage and result):
 
 | Script | What it does |
 |---|---|
 | `value_diag.py`, `reward_diag.py`, `sims_diag.py`, `split_diag.py` | Value and reward heads, simulation count, start-percept split |
-| `full_info_vi.py` | Full-information upper bound |
+| `full_info_vi.py` | Known-layout value (no longer cited) |
 | `offpolicy_reference.py` | Off-policy training diagnostic |
 | `death_calibration.py`, `danger_probe.py`, `reference_probe.py` | Death calibration and latent probes |
-| `supervised_filter.py` | Supervised bound; GRU/Transformer arms; pool cache |
-| `objective_ab.py`, `ab_summary.py` | Objective A/B harness; Student-t and paired summaries |
+| `supervised_filter.py`, `ab_summary.py` | Supervised bound; GRU/Transformer arms; pool cache; A/B summaries |
+| `objective_ab.py`, `overfit_summary.py` | Offline objective and overfitting A/Bs (weight-decay and data-size arms, held-out NLL, `head_safe_miss`); learning-curve summary |
 | `head_coverage.py` | Coverage diagnostic |
-| `tiger_acceptance_seed.py` | Tiger acceptance at other seeds |
+| `absorbing_value.py`, `greedy_deaths.py`, `start_danger.py`, `head_shift.py` | V̂ by game status; danger at the greedy planner's FORWARDs; first-step danger; **calibration in-sample vs fresh exploring vs fresh greedy** |
+| `tiger_acceptance_seed.py` | Tiger acceptance at another seed and update count |
 | `hoist_forward_check.py`, `hoist_training_check.py`, `profile_train_step.py` | Hoist equivalence and runtime profile |
 
-**Not yet generic:** `sweep.py` and `experiments/aggregate.py` (Tiger only).
+- `reports/2026-10-07_wumpus_reviewer_page/`: `index.html`, `data.json`, `umap.json`, `games_latents.npz`; `scripts/export.py`, `dump_latents.py`, `umap_latents.py`, `page_meta.json`.
