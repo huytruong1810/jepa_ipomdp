@@ -115,7 +115,7 @@ input[type=range] { accent-color: var(--accent); }
 <div class="wrap">
 <header class="prose">
   <p class="eyebrow">Research progress · 7 October 2026</p>
-  <h1 style="margin-top:12px" id="headline">Wumpus World: the learned belief agent now rarely dies, but earns a third of what exact beliefs allow</h1>
+  <h1 style="margin-top:12px" id="headline">Wumpus World: the learned belief agent rarely dies, and earns a third of what an exact-belief heuristic earns</h1>
   <p class="lede" id="lede"></p>
   <p class="note" style="margin-top:12px">Same agent, planner and training loop as on canonical Tiger, where the learned planner matches the exact optimum. The method diagrams are on the <a href="https://claude.ai/artifact/Rboz6xV7xA7Ejrjomy4As5" style="color:var(--accent)">Tiger results page</a>.</p>
 </header>
@@ -134,9 +134,8 @@ input[type=range] { accent-color: var(--accent); }
         <div><b>Actions</b><span>Forward, turn left, turn right, grab, shoot. Grabbing the gold wins. There is no climb action.</span></div>
         <div><b>Percepts</b><span>Stench, breeze, glitter, bump and scream bits: 32 observations, plus one for game over. The start cell's percepts arrive before the first action.</span></div>
         <div><b>Rewards</b><span>−1 per action, −10 for a shot, +1000 for the gold, −1000 for death. γ = 0.99. A game ends at the first win or death, or after 50 steps.</span></div>
-        <div><b>Ground truth</b><span>An exact filter enumerates all 16,380 layouts per game. It gives the true belief to score the latent against, but no optimal policy.</span></div>
+        <div><b>Ground truth</b><span>An exact filter enumerates all 16,380 layouts per game. It gives the true belief to score the latent against, but no optimal policy, so the comparison point is a hand-written agent acting on that exact belief.</span></div>
         <div><b>Agent</b><span>The same belief-tree planner and training loop as on Tiger. Here the belief filter learns by predicting the next observation (the decoder variant). JEPA learned the danger ahead less well in offline tests.</span></div>
-        <div><b>Bounds</b><span>Knowing the layout is worth 936 per game on average: an upper bound. The exact-belief heuristic earns 573: what simple rules achieve on the exact belief, so a lower bound on what exact beliefs allow.</span></div>
         <div><b>Exact-belief heuristic</b><span>A hand-written agent, not an optimal one. It tracks the exact belief and, in order: grabs on glitter; walks the shortest path to the nearest unvisited cell that is provably safe; shoots at a cell that may hold the wumpus; steps into an unknown cell if its death risk is below 0.4; otherwise waits. The 0.4 threshold was the best of 0, 0.4 and 1 on the same 512 games, so 573 is slightly optimistic.</span></div>
       </div>
     </div>
@@ -144,7 +143,7 @@ input[type=range] { accent-color: var(--accent); }
 </section>
 
 <section aria-labelledby="h-perf">
-  <div class="prose"><p class="eyebrow">Result 1 · Performance</p><h2 id="h-perf">Return per game against the bounds</h2></div>
+  <div class="prose"><p class="eyebrow">Result 1 · Performance</p><h2 id="h-perf">Return per game against random play and the exact-belief heuristic</h2></div>
   <figure class="figure">
     <div class="cap"><h3>Mean discounted return on 512 fresh games (95% interval)</h3>
       <p id="perf-cap">Every agent plays the same 512 layouts. The learned agents are scored from their best in-training checkpoint, re-estimated on these fresh games.</p></div>
@@ -193,29 +192,6 @@ input[type=range] { accent-color: var(--accent); }
     <div id="fig-probes"></div>
     <details><summary>Table view</summary><div class="tscroll" id="tab-probes"></div></details>
   </figure>
-</section>
-
-<section aria-labelledby="h-diag">
-  <div class="prose"><p class="eyebrow">Result 3 · Diagnosis</p><h2 id="h-diag">The death model holds up on fresh games, because training avoids overfitting</h2></div>
-  <figure class="figure">
-    <div class="cap"><h3>Predicted against realised death after a forward step</h3>
-      <p>Each point is a bin of forward steps grouped by the current agent's predicted P(death), at the end of training (seed 0). A model that is right lies on the dashed diagonal. It is checked on its own training games and on 256 fresh games each from the exploring and the greedy policy. The greedy planner steps exactly where the model says "safe", so errors there turn straight into deaths. Steps the model calls safe (predicted below 0.02) killed 0.2% of the time under the exploring policy and 0.1% under the greedy planner.</p></div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap" id="cal-btns" role="group" aria-label="Run"></div>
-    <div class="legend"><span><i class="sw" style="background:var(--s3)"></i>training games (in-sample)</span><span><i class="sw" style="background:var(--s4)"></i>fresh games, exploring policy</span><span><i class="sw" style="background:var(--s2)"></i>fresh games, greedy planner</span></div>
-    <div id="fig-cal"></div>
-    <details><summary>Table view</summary><div class="tscroll" id="tab-cal"></div></details>
-  </figure>
-  <figure class="figure">
-    <div class="cap"><h3>Why the update rate matters: the observation model overfits when it trains too long on too few games</h3>
-      <p>The real trainer on a fixed pool of games, 2 seeds per arm. Its next-observation loss keeps falling on the training games but rises on held-out games. With a quarter of the data the rise is steep. Weight decay up to 0.1 made no difference. The agent therefore trains with 64 updates per 64 new games.</p></div>
-    <div class="legend"><span><i class="sw line" style="background:var(--s1)"></i>8,192 games</span><span><i class="sw line" style="background:var(--s2)"></i>2,048 games</span><span class="mono">solid: held-out · dashed: training</span></div>
-    <div id="fig-ab"></div>
-  </figure>
-</section>
-
-<section aria-labelledby="h-next">
-  <div class="prose"><p class="eyebrow">Status</p><h2 id="h-next">Where this leaves the Wumpus agent</h2></div>
-  <div class="prose" id="status" style="display:grid;gap:10px;color:var(--ink-2)"></div>
 </section>
 </div>
 <div id="tip" role="tooltip"></div>
@@ -334,13 +310,12 @@ input[type=range] { accent-color: var(--accent); }
     }
     const ref = pick(anyRun, "reference_risk0.4");
     rows.push({ label: "Exact-belief heuristic", m: ref.discounted_return, h: 1.96 * ref.discounted_return_stderr, col: "var(--s3)", r: ref });
-    rows.push({ label: "Layout known (upper bound)", m: D.upper_bound, h: null, col: "var(--ink-2)", r: null });
 
     const host = document.getElementById("fig-returns");
     const W = 900, rowH = 34, L = 210, Rr = 70, T = 8, B = 40, H = T + rows.length * rowH + B;
     const s = svg(host, W, H, "Mean discounted return per agent");
-    const x = lin(-500, 1000, L, W - Rr);
-    [-500, -250, 0, 250, 500, 750, 1000].forEach((t) => {
+    const x = lin(-500, 750, L, W - Rr);
+    [-500, -250, 0, 250, 500, 750].forEach((t) => {
       el("line", { x1: x(t), x2: x(t), y1: T, y2: H - B, stroke: t === 0 ? "var(--axis)" : "var(--grid)" }, s);
       el("text", { x: x(t), y: H - B + 16, "text-anchor": "middle" }, s).textContent = num(t);
     });
@@ -573,83 +548,6 @@ input[type=range] { accent-color: var(--accent); }
     table(document.getElementById("tab-probes"), ["target", "histories", "accuracy", "95% ±", "supervised bound"], rows);
   }
 
-  // ---- Result 3: calibration
-  function calibrationFigure(D) {
-    const host = document.getElementById("fig-cal"), btns = document.getElementById("cal-btns");
-    const runs = [["before", "Before"], ["after", "Current agent"]];
-    let cur = runs.findIndex(([k]) => D.calibration[k]) ;
-    function draw() {
-      host.innerHTML = "";
-      const C = D.calibration[runs[cur][0]];
-      const W = 520, H = 360, L = 56, R = 16, T = 12, B = 46;
-      const s = svg(host, W, H, "Calibration of the predicted death probability");
-      s.style.maxWidth = "620px";
-      // Square-root axes: the diagonal stays straight and the low-probability bins, where the
-      // confident "safe" errors live, get room.
-      const sx = lin(0, 1, L, W - R), sy = lin(0, 1, H - B, T);
-      const x = (v) => sx(Math.sqrt(Math.max(0, v))), y = (v) => sy(Math.sqrt(Math.max(0, v)));
-      [0, 0.01, 0.05, 0.1, 0.25, 0.5, 1].forEach((t) => {
-        el("line", { x1: L, x2: W - R, y1: y(t), y2: y(t), stroke: "var(--grid)" }, s);
-        el("line", { x1: x(t), x2: x(t), y1: T, y2: H - B, stroke: "var(--grid)" }, s);
-        el("text", { x: L - 8, y: y(t) + 4, "text-anchor": "end" }, s).textContent = t;
-        el("text", { x: x(t), y: H - B + 16, "text-anchor": "middle" }, s).textContent = t;
-      });
-      el("line", { x1: x(0), y1: y(0), x2: x(1), y2: y(1), stroke: "var(--axis)", "stroke-dasharray": "4 4" }, s);
-      el("text", { x: (L + W - R) / 2, y: H - 8, "text-anchor": "middle", class: "lbl" }, s).textContent = "predicted P(death | forward), bin mean (square-root scale)";
-      const yl = el("text", { x: 14, y: (T + H - B) / 2, "text-anchor": "middle", class: "lbl", transform: `rotate(-90 14 ${(T + H - B) / 2})` }, s);
-      yl.textContent = "realised death rate";
-      [["buffer", "var(--s3)", "training games"], ["exploring", "var(--s4)", "fresh, exploring policy"], ["greedy", "var(--s2)", "fresh, greedy planner"]].forEach(([k, col, nm]) => {
-        const pts = C[k].filter((b) => b.n >= 10);
-        const d = pts.map((b, i) => (i ? "L" : "M") + x(b.predicted).toFixed(1) + " " + y(b.died).toFixed(1)).join(" ");
-        el("path", { d, fill: "none", stroke: col, "stroke-width": 2 }, s);
-        pts.forEach((b) => {
-          const r = Math.max(3, Math.min(9, Math.sqrt(b.n) / 8));
-          const c = el("circle", { cx: x(b.predicted), cy: y(b.died), r, fill: col, stroke: "var(--surface)", "stroke-width": 1.5 }, s);
-          hover(c, `${nm}<br>predicted ${b.predicted.toFixed(3)} · died ${b.died.toFixed(3)}<br>${b.n} forward steps`);
-        });
-      });
-      const rows = [];
-      ["buffer", "exploring", "greedy"].forEach((k) => C[k].forEach((b) => rows.push([k, `[${b.lo}, ${b.hi})`, b.n, b.predicted == null ? "–" : b.predicted.toFixed(3), b.died == null ? "–" : b.died.toFixed(3)])));
-      table(document.getElementById("tab-cal"), ["games", "predicted bin", "forward steps", "mean predicted", "realised"], rows);
-    }
-    const present = runs.filter(([k]) => D.calibration[k]);
-    if (present.length < 2) { btns.hidden = true; cur = runs.findIndex(([k]) => D.calibration[k]); draw(); return; }
-    runs.forEach(([k, label], i) => {
-      if (!D.calibration[k]) return;
-      const b = document.createElement("button"); b.type = "button"; b.className = "btn"; b.textContent = label;
-      b.addEventListener("click", () => { cur = i; Array.from(btns.children).forEach((x) => x.setAttribute("aria-pressed", x === b ? "true" : "false")); draw(); });
-      btns.appendChild(b);
-    });
-    Array.from(btns.children).forEach((x, j) => x.setAttribute("aria-pressed", j === btns.children.length - 1 ? "true" : "false"));
-    cur = runs.length - 1;
-    draw();
-  }
-
-  function abFigure(D) {
-    const host = document.getElementById("fig-ab"), A = D.overfit_ab;
-    const W = 900, H = 280, L = 56, R = 20, T = 12, B = 42;
-    const s = svg(host, W, H, "Observation loss on training and held-out games against updates");
-    const ups = [3200, 6400, 12800];
-    const x = lin(0, 13500, L, W - R), y = lin(0.1, 0.7, H - B, T);
-    [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7].forEach((t) => {
-      el("line", { x1: L, x2: W - R, y1: y(t), y2: y(t), stroke: "var(--grid)" }, s);
-      el("text", { x: L - 8, y: y(t) + 4, "text-anchor": "end" }, s).textContent = t.toFixed(1);
-    });
-    ups.forEach((u) => el("text", { x: x(u), y: H - B + 16, "text-anchor": "middle" }, s).textContent = u.toLocaleString("en-US"));
-    el("text", { x: (L + W - R) / 2, y: H - 6, "text-anchor": "middle", class: "lbl" }, s).textContent = "gradient updates";
-    const yl = el("text", { x: 14, y: (T + H - B) / 2, "text-anchor": "middle", class: "lbl", transform: `rotate(-90 14 ${(T + H - B) / 2})` }, s);
-    yl.textContent = "next-observation NLL (nats)";
-    [["a_base", "var(--s1)", "8,192 games"], ["d_data2048", "var(--s2)", "2,048 games"]].forEach(([arm, col, nm]) => {
-      if (!A[arm]) return;
-      [["head_nll_held", null, "held-out"], ["head_nll_train", "5 4", "training"]].forEach(([metric, dash, kind]) => {
-        const pts = ups.map((u) => { const v = A[arm][metric] && A[arm][metric][u]; return v ? [u, Object.values(v)] : null; }).filter(Boolean);
-        const d = pts.map((p, i) => { const m = p[1].reduce((a, b) => a + b, 0) / p[1].length; return (i ? "L" : "M") + x(p[0]).toFixed(1) + " " + y(m).toFixed(1); }).join(" ");
-        el("path", { d, fill: "none", stroke: col, "stroke-width": 2, "stroke-dasharray": dash || "none" }, s);
-        pts.forEach((p) => p[1].forEach((v) => { const c = el("circle", { cx: x(p[0]), cy: y(v), r: 3, fill: dash ? "var(--surface)" : col, stroke: col, "stroke-width": 1.5 }, s); hover(c, `${nm}, ${kind}<br>${p[0].toLocaleString("en-US")} updates: ${v.toFixed(3)}`); }));
-      });
-    });
-  }
-
   // ---- Result 2b: UMAP of the latent
   function umapFigure(U) {
     const host = document.getElementById("fig-umap"), btns = document.getElementById("umap-btns");
@@ -665,7 +563,6 @@ input[type=range] { accent-color: var(--accent); }
       { key: "danger", label: "Danger of a forward step", seq: [0, 1], of: (p) => p[F.danger], fmt: (v) => v.toFixed(2) },
       { key: "log_layouts", label: "Belief uncertainty (log₁₀ layouts)", seq: [0, 4.21], of: (p) => p[F.log_layouts], fmt: (v) => v.toFixed(1) },
       { key: "step", label: "Game step", seq: [0, 50], of: (p) => p[F.step], fmt: (v) => v.toFixed(0) },
-      { key: "source", label: "History source", cat: ["agent's own games", "random actions"], of: (p) => p[F.source] },
     ];
     let mode = modes[0];
     const W = 900, H = 600, P = 14;
@@ -724,10 +621,9 @@ input[type=range] { accent-color: var(--accent); }
     if (!cur) return;
     const frac = (cur.m - rnd.m) / (ref.m - rnd.m);
     document.getElementById("lede").textContent =
-      `The agent earns ${num(cur.m)} ± ${cur.h.toFixed(0)} per game over ${cur.seeds.length} seeds, with ${(100 * cur.r.death_rate).toFixed(1)}% deaths. A random hunter earns ${num(rnd.m)} and a hand-written heuristic acting on the exact belief earns ${num(ref.m)}, so the learned agent closes ${(100 * frac).toFixed(0)}% of that gap. Its death predictions stay calibrated on fresh games. Most of the remaining gap comes from games the agent leaves unfinished.`;
+      `The agent earns ${num(cur.m)} ± ${cur.h.toFixed(0)} per game over ${cur.seeds.length} seeds, with ${(100 * cur.r.death_rate).toFixed(1)}% deaths. A random hunter earns ${num(rnd.m)} and a hand-written heuristic acting on the exact belief earns ${num(ref.m)}, so the learned agent closes ${(100 * frac).toFixed(0)}% of that gap. Most of the remaining gap comes from games the agent leaves unfinished.`;
     document.getElementById("perf-cap").textContent +=
       ` Open circles on the current agent's bar are its individual seeds.`;
-    document.getElementById("status").innerHTML = D.status.map((p) => `<p>${p}</p>`).join("");
   }
 
   function render(D, U) {
@@ -742,8 +638,6 @@ input[type=range] { accent-color: var(--accent); }
     }
     gameViewer(D, UM, U);
     probesFigure(D);
-    calibrationFigure(D);
-    abFigure(D);
     texts(D, rows);
   }
 
