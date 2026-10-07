@@ -1,14 +1,39 @@
 {
   "main_prefix": "u64_store_eval_eps_decoder_k5_seed",
   "earlier": [
-    ["eps_decoder_k5_u256_seed0", "256 updates/collection + exploration"],
-    ["store_eval_eps_decoder_k5_u256_seed0", "same + greedy games stored"],
-    ["north50_decoder_seed0", "First decoder agent"],
-    ["north50_seed0", "First JEPA agent"]
+    [
+      "eps_decoder_k5_u256_seed0",
+      "256 updates/collection + exploration"
+    ],
+    [
+      "store_eval_eps_decoder_k5_u256_seed0",
+      "same + greedy games stored"
+    ],
+    [
+      "north50_decoder_seed0",
+      "First decoder agent"
+    ],
+    [
+      "north50_seed0",
+      "First JEPA agent"
+    ]
   ],
   "earlier_curves": [
-    ["eps_decoder_k5_u256_seed0", "256 updates/collection + exploration", "var(--s2)"],
-    ["store_eval_eps_decoder_k5_u256_seed0", "same + greedy games stored", "var(--muted)"]
+    [
+      "eps_decoder_k5_u256_seed0",
+      "256 updates/collection + exploration",
+      "var(--s2)"
+    ],
+    [
+      "store_eval_eps_decoder_k5_u256_seed0",
+      "same + greedy games stored",
+      "var(--muted)"
+    ]
   ],
-  "status": ["(filled in after the runs finish)"]
+  "status": [
+    "<b>Performance.</b> 189 \u00b1 62 per game over 3 seeds (185, 166 and 215; 95% interval). That is the best of every Wumpus configuration so far; the earlier best was 110 \u00b1 20. Deaths are down to 0.2\u20133.9%. The exact-belief reference earns 573. About 70% of the learned agent's games end unfinished after 50 steps, against 29% for the reference. The agent now rarely dies, but it often fails to find the gold in time.",
+    "<b>Interpretability.</b> A probe on the latent recovers the hunter's cell and heading 55\u201358% and 55\u201360% of the time on random-action histories, and 83\u201388% and 87\u201390% on the agent's own games. The same network trained on exact targets reaches 99.9% and 100%. The hazard beliefs beat a constant guess, but they stay coarse. The latent carries part of the exact belief, not all of it.",
+    "<b>What was fixed.</b> The jointly trained filter and observation model overfitted the games they had seen when they trained 4\u00d7 harder per game. They were calibrated in-sample, overconfident on fresh games, and the planner exploited exactly those errors. Going back to 64 updates per collection, together with uniform exploration and storing the greedy evaluation games, removed most deaths. Weight decay did not help, and the network architecture was never the limit.",
+    "<b>Next.</b> Close the unfinished-game gap: a value scale fitted to the game's \u00b11000 rewards, longer training at the same update rate, and measuring how much of the remaining gap the latent's coarse belief explains. The Tiger results are unchanged."
+  ]
 }

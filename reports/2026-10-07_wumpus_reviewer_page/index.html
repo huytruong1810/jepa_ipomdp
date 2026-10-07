@@ -107,7 +107,7 @@ input[type=range] { accent-color: var(--accent); }
 <div class="wrap">
 <header class="prose">
   <p class="eyebrow">Research progress · 7 October 2026</p>
-  <h1 style="margin-top:12px" id="headline">Wumpus World: what the learned belief agent gets right, and where it still fails</h1>
+  <h1 style="margin-top:12px" id="headline">Wumpus World: the learned belief agent now rarely dies, but earns a third of what exact beliefs allow</h1>
   <p class="lede" id="lede"></p>
 </header>
 
@@ -126,6 +126,7 @@ input[type=range] { accent-color: var(--accent); }
         <div><b>Percepts</b><span>Stench, breeze, glitter, bump and scream bits: 32 observations, plus one for game over. The start cell's percepts arrive before the first action.</span></div>
         <div><b>Rewards</b><span>−1 per action, −10 for a shot, +1000 for the gold, −1000 for death. γ = 0.99. A game ends at the first win or death, or after 50 steps.</span></div>
         <div><b>Ground truth</b><span>An exact filter enumerates all 16,380 layouts per game. It gives the true belief to score the latent against, but no optimal policy.</span></div>
+        <div><b>Agent</b><span>The same belief-tree planner and training loop as on Tiger. Here the belief filter learns by predicting the next observation (the decoder variant). JEPA learned the danger ahead less well in offline tests.</span></div>
         <div><b>Bounds</b><span>Knowing the layout is worth 936 on average, which is an upper bound. A hand-written agent acting on the exact belief earns 573, which is a lower bound on what a belief-based agent can reach.</span></div>
       </div>
     </div>
@@ -171,10 +172,10 @@ input[type=range] { accent-color: var(--accent); }
 </section>
 
 <section aria-labelledby="h-diag">
-  <div class="prose"><p class="eyebrow">Result 3 · Diagnosis</p><h2 id="h-diag">Why the planner walked into pits: its death prediction was overfitted</h2></div>
+  <div class="prose"><p class="eyebrow">Result 3 · Diagnosis</p><h2 id="h-diag">Why earlier agents walked into pits: an overfitted death model</h2></div>
   <figure class="figure">
     <div class="cap"><h3>Predicted against realised death after a forward step</h3>
-      <p>Each point is a bin of forward steps grouped by the model's predicted P(death). On its own training games the model is calibrated, close to the diagonal. On fresh games it is overconfident. The greedy planner then steps exactly where the model wrongly says "safe".</p></div>
+      <p>Each point is a bin of forward steps grouped by the model's predicted P(death), measured at the end of training on 256 fresh games per policy. Before the fix, the model was calibrated on its own training games but overconfident on fresh ones. Steps it called safe killed 4% of the time under the exploring policy and 10% under the greedy planner, which stepped exactly where the model was wrong. The current agent stays calibrated on fresh games: steps it calls safe killed 0.2% and 0.1% of the time.</p></div>
     <div style="display:flex;gap:6px;flex-wrap:wrap" id="cal-btns" role="group" aria-label="Run"></div>
     <div class="legend"><span><i class="sw" style="background:var(--s3)"></i>training games (in-sample)</span><span><i class="sw" style="background:var(--s4)"></i>fresh games, exploring policy</span><span><i class="sw" style="background:var(--s2)"></i>fresh games, greedy planner</span></div>
     <div id="fig-cal"></div>
@@ -558,7 +559,7 @@ input[type=range] { accent-color: var(--accent); }
     if (!cur) return;
     const frac = (cur.m - rnd.m) / (ref.m - rnd.m);
     document.getElementById("lede").textContent =
-      `The current agent earns ${num(cur.m)} per game (${cur.seeds.length} seed${cur.seeds.length > 1 ? "s" : ""}). A random hunter earns ${num(rnd.m)}, and an agent acting on the exact belief earns ${num(ref.m)}, so the agent closes ${(100 * frac).toFixed(0)}% of that gap. Its latent carries part of the exact belief. Its forward-step death predictions were the failure point, and the cause was overfitting.`;
+      `The current agent earns ${num(cur.m)} ± ${cur.h.toFixed(0)} per game over ${cur.seeds.length} seeds, with ${(100 * cur.r.death_rate).toFixed(1)}% deaths. A random hunter earns ${num(rnd.m)} and an agent acting on the exact belief earns ${num(ref.m)}, so the learned agent closes ${(100 * frac).toFixed(0)}% of that gap. Earlier agents died because their death model was overfitted. Training with fewer updates per game fixed that. Most of the remaining gap comes from games the agent leaves unfinished.`;
     document.getElementById("perf-cap").textContent +=
       ` Open circles on the current agent's bar are its individual seeds.`;
     document.getElementById("status").innerHTML = D.status.map((p) => `<p>${p}</p>`).join("");
