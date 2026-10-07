@@ -1,0 +1,14 @@
+{
+  "main_prefix": "u64_store_eval_eps_decoder_k5_seed",
+  "earlier": [
+    ["eps_decoder_k5_u256_seed0", "256 updates/collection + exploration"],
+    ["store_eval_eps_decoder_k5_u256_seed0", "same + greedy games stored"],
+    ["north50_decoder_seed0", "First decoder agent"],
+    ["north50_seed0", "First JEPA agent"]
+  ],
+  "earlier_curves": [
+    ["eps_decoder_k5_u256_seed0", "256 updates/collection + exploration", "var(--s2)"],
+    ["store_eval_eps_decoder_k5_u256_seed0", "same + greedy games stored", "var(--muted)"]
+  ],
+  "status": ["(filled in after the runs finish)"]
+}

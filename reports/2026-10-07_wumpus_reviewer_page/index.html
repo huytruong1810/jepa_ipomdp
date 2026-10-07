@@ -1,0 +1,582 @@
+<title>JEPA-IPOMDP Wumpus</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: same family as the Tiger page (2026-09-30): one reading column (~70ch); figures widen to 1040px;
+   caption above, chart, table view below. Hazard maps use one hue per hazard with opacity = probability. */
+:root {
+  --bg: #f6f7f9;
+  --surface: #fcfcfd;
+  --ink: #111418;
+  --ink-2: #4a515b;
+  --muted: #7d848e;
+  --grid: #e2e5ea;
+  --axis: #c2c7cf;
+  --rule: rgba(17, 20, 24, 0.10);
+  --accent: #2a78d6;
+  --s1: #2a78d6;           /* learned agent (current) */
+  --s2: #eb6834;           /* earlier runs / failure */
+  --s3: #1baf7a;           /* exact reference */
+  --s4: #8a63d2;           /* fresh-game calibration */
+  --pit: #2a78d6;
+  --wumpus: #e34948;
+  --gold: #c99a06;
+  --good: #006300;
+  --bad: #c0392b;
+  --band: rgba(42, 120, 214, 0.10);
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1114; --surface: #171a1e; --ink: #f3f5f7; --ink-2: #c1c6cd; --muted: #8b929b;
+    --grid: #262a30; --axis: #3a3f47; --rule: rgba(255, 255, 255, 0.10); --accent: #3987e5;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #9b7be0;
+    --pit: #4a95ec; --wumpus: #e66767; --gold: #e0b42a;
+    --good: #0ca30c; --bad: #e66767; --band: rgba(57, 135, 229, 0.16);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1114; --surface: #171a1e; --ink: #f3f5f7; --ink-2: #c1c6cd; --muted: #8b929b;
+  --grid: #262a30; --axis: #3a3f47; --rule: rgba(255, 255, 255, 0.10); --accent: #3987e5;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #9b7be0;
+  --pit: #4a95ec; --wumpus: #e66767; --gold: #e0b42a;
+  --good: #0ca30c; --bad: #e66767; --band: rgba(57, 135, 229, 0.16);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 16px/1.6 var(--f-body); }
+.wrap { max-width: 1040px; margin: 0 auto; padding-inline: 20px; padding-block: 40px 80px; }
+.prose { max-width: 70ch; }
+h1, h2, h3 { font-family: var(--f-display); font-weight: 600; text-wrap: balance; line-height: 1.15; margin: 0; }
+h1 { font-size: clamp(2rem, 4.6vw, 3rem); letter-spacing: -0.01em; }
+h2 { font-size: 1.6rem; margin-top: 0.2em; }
+h3 { font-size: 1.1rem; font-family: var(--f-body); font-weight: 600; }
+p { margin: 0; }
+.eyebrow { font: 500 0.75rem/1 var(--f-data); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.lede { font-size: 1.1rem; color: var(--ink-2); margin-top: 16px; }
+section { display: grid; gap: 16px; padding-block: 44px 8px; border-top: 1px solid var(--rule); margin-top: 44px; }
+header + section { border-top: 0; margin-top: 8px; }
+.figure { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 18px 12px; display: grid; gap: 10px; min-width: 0; margin: 0; }
+.figure .cap { display: grid; gap: 4px; }
+.figure .cap p { color: var(--ink-2); font-size: 0.92rem; max-width: 80ch; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 0.85rem; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.sw.line { height: 2px; border-radius: 1px; width: 16px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+svg.chart { width: 100%; height: auto; display: block; overflow: visible; }
+svg.chart text { font-family: var(--f-data); font-size: 11px; fill: var(--muted); }
+svg.chart .lbl { fill: var(--ink-2); }
+svg.chart .strong { fill: var(--ink); font-weight: 500; }
+details { font-size: 0.85rem; color: var(--ink-2); }
+summary { cursor: pointer; color: var(--muted); font-family: var(--f-data); font-size: 0.78rem; letter-spacing: 0.04em; }
+summary:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tscroll { overflow-x: auto; margin-top: 8px; }
+table { border-collapse: collapse; font: 0.8rem/1.4 var(--f-data); font-variant-numeric: tabular-nums; min-width: 100%; }
+th, td { text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--muted); font-weight: 500; }
+td { color: var(--ink); }
+.note { font-size: 0.85rem; color: var(--muted); }
+.mono { font-family: var(--f-data); font-size: 0.82rem; color: var(--ink-2); }
+.btn { font: 500 0.8rem/1 var(--f-data); padding: 8px 11px; border-radius: 4px; border: 1px solid var(--axis); background: var(--surface); color: var(--ink); cursor: pointer; }
+.btn:hover { border-color: var(--ink-2); }
+.btn[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+input[type=range] { accent-color: var(--accent); }
+#tip { position: fixed; pointer-events: none; z-index: 10; background: var(--ink); color: var(--bg); font: 0.78rem/1.4 var(--f-data); padding: 7px 9px; border-radius: 4px; max-width: 280px; opacity: 0; transition: opacity 0.08s; }
+#tip.on { opacity: 1; }
+.rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px 22px; }
+.rules div { display: grid; gap: 2px; align-content: start; }
+.rules b { font-family: var(--f-display); font-weight: 600; }
+.rules span { font-size: 0.88rem; color: var(--ink-2); line-height: 1.45; }
+.maps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 640px) { .maps { grid-template-columns: 1fr 1fr; } }
+.mapcol { display: grid; gap: 4px; justify-items: center; min-width: 0; }
+.mapcol .t { font: 500 0.75rem/1.2 var(--f-data); color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px 18px; font: 0.82rem/1.4 var(--f-data); color: var(--ink-2); }
+.readout b { color: var(--ink); font-weight: 500; }
+.verdict { display: inline-block; font: 500 0.72rem/1 var(--f-data); padding: 4px 7px; border-radius: 999px; border: 1px solid currentColor; }
+.verdict.ok { color: var(--good); } .verdict.no { color: var(--bad); }
+@media (prefers-reduced-motion: reduce) { #tip { transition: none; } }
+</style>
+
+<div class="wrap">
+<header class="prose">
+  <p class="eyebrow">Research progress · 7 October 2026</p>
+  <h1 style="margin-top:12px" id="headline">Wumpus World: what the learned belief agent gets right, and where it still fails</h1>
+  <p class="lede" id="lede"></p>
+</header>
+
+<section aria-labelledby="h-domain">
+  <div class="prose"><p class="eyebrow">Domain</p><h2 id="h-domain">Single-hunter 4×4 Wumpus World, 50-step games, no exact solver</h2></div>
+  <div class="grid2">
+    <figure class="figure">
+      <div class="cap"><h3>One layout, as the hunter cannot see it</h3><p>The hunter starts in the bottom-left cell facing north. It never observes its position or heading. It has to dead-reckon them from its own actions and the bump percept.</p></div>
+      <div id="fig-layout"></div>
+    </figure>
+    <div class="figure">
+      <div class="cap"><h3>Rules</h3></div>
+      <div class="rules">
+        <div><b>Hidden state</b><span>2 pits, 1 wumpus and 1 gold on distinct non-start cells: 16,380 equally likely layouts, plus the hunter's cell, heading, arrow and whether the wumpus lives.</span></div>
+        <div><b>Actions</b><span>Forward, turn left, turn right, grab, shoot. Grabbing the gold wins. There is no climb action.</span></div>
+        <div><b>Percepts</b><span>Stench, breeze, glitter, bump and scream bits: 32 observations, plus one for game over. The start cell's percepts arrive before the first action.</span></div>
+        <div><b>Rewards</b><span>−1 per action, −10 for a shot, +1000 for the gold, −1000 for death. γ = 0.99. A game ends at the first win or death, or after 50 steps.</span></div>
+        <div><b>Ground truth</b><span>An exact filter enumerates all 16,380 layouts per game. It gives the true belief to score the latent against, but no optimal policy.</span></div>
+        <div><b>Bounds</b><span>Knowing the layout is worth 936 on average, which is an upper bound. A hand-written agent acting on the exact belief earns 573, which is a lower bound on what a belief-based agent can reach.</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="h-perf">
+  <div class="prose"><p class="eyebrow">Result 1 · Performance</p><h2 id="h-perf">Return per game against the bounds</h2></div>
+  <figure class="figure">
+    <div class="cap"><h3>Mean discounted return on 512 fresh games (95% interval)</h3>
+      <p id="perf-cap">Every agent plays the same 512 layouts. The learned agents are scored from their best in-training checkpoint, re-estimated on these fresh games.</p></div>
+    <div id="fig-returns"></div>
+    <details><summary>Table view</summary><div class="tscroll" id="tab-returns"></div></details>
+  </figure>
+  <figure class="figure">
+    <div class="cap"><h3>Greedy evaluation during training (128 games every 5 collections)</h3>
+      <p>Each collection plays 64 games and then trains. The two earlier failures trained 4× harder on the same data (256 updates per collection).</p></div>
+    <div class="legend" id="curve-legend"></div>
+    <div id="fig-curves"></div>
+  </figure>
+</section>
+
+<section aria-labelledby="h-belief">
+  <div class="prose"><p class="eyebrow">Result 2 · Interpretability</p><h2 id="h-belief">Reading the exact belief out of the latent, one game step by step</h2></div>
+  <figure class="figure">
+    <div class="cap"><h3>Exact belief against the belief decoded from the agent's latent</h3>
+      <p>A held-out game played by the learned agent. Top row: the exact marginals from the enumeration filter. Bottom row: an MLP probe's reading of the agent's 128-dimensional latent, fitted on other games. Cell shading is the probability, from 0 (clear) to 1 (solid); hover a cell for its values. The arrow is the hunter, which the agent itself never observes.</p></div>
+    <div style="display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center">
+      <div style="display:flex;gap:6px;flex-wrap:wrap" id="game-btns" role="group" aria-label="Game"></div>
+      <button id="play" type="button" class="btn">Play</button>
+      <label for="step" class="mono" style="display:flex;gap:10px;align-items:center;flex:1 1 220px;min-width:0">step <input id="step" type="range" min="0" max="50" value="0" style="flex:1;min-width:0"></label>
+    </div>
+    <div class="readout" id="readout"></div>
+    <div class="maps" id="maps"></div>
+    <div class="legend"><span><i class="sw" style="background:var(--pit)"></i>P(pit)</span><span><i class="sw" style="background:var(--wumpus)"></i>P(wumpus)</span><span><i class="sw" style="background:var(--gold)"></i>P(gold)</span><span class="mono">▲ hunter and heading</span></div>
+  </figure>
+  <figure class="figure">
+    <div class="cap"><h3>What a probe can read from the latent (held-out games)</h3>
+      <p>The same filter network trained on privileged exact targets reaches the supervised bound, so capacity and architecture are not the limit. The gap is what the agent's own training signal fails to teach. The agent's own games score higher because they are simpler: it mostly stays near the start.</p></div>
+    <div id="fig-probes"></div>
+    <details><summary>Table view</summary><div class="tscroll" id="tab-probes"></div></details>
+  </figure>
+</section>
+
+<section aria-labelledby="h-diag">
+  <div class="prose"><p class="eyebrow">Result 3 · Diagnosis</p><h2 id="h-diag">Why the planner walked into pits: its death prediction was overfitted</h2></div>
+  <figure class="figure">
+    <div class="cap"><h3>Predicted against realised death after a forward step</h3>
+      <p>Each point is a bin of forward steps grouped by the model's predicted P(death). On its own training games the model is calibrated, close to the diagonal. On fresh games it is overconfident. The greedy planner then steps exactly where the model wrongly says "safe".</p></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap" id="cal-btns" role="group" aria-label="Run"></div>
+    <div class="legend"><span><i class="sw" style="background:var(--s3)"></i>training games (in-sample)</span><span><i class="sw" style="background:var(--s4)"></i>fresh games, exploring policy</span><span><i class="sw" style="background:var(--s2)"></i>fresh games, greedy planner</span></div>
+    <div id="fig-cal"></div>
+    <details><summary>Table view</summary><div class="tscroll" id="tab-cal"></div></details>
+  </figure>
+  <figure class="figure">
+    <div class="cap"><h3>Offline check: the observation model overfits when it trains too long on too few games</h3>
+      <p>The real trainer on a fixed pool of games, 2 seeds per arm. Its next-observation loss keeps falling on the training games but rises on held-out games. With a quarter of the data the rise is steep. Weight decay up to 0.1 made no difference. The fix is fewer updates per game, so the full runs went from 256 back to 64 updates per collection.</p></div>
+    <div class="legend"><span><i class="sw line" style="background:var(--s1)"></i>8,192 games</span><span><i class="sw line" style="background:var(--s2)"></i>2,048 games</span><span class="mono">solid: held-out · dashed: training</span></div>
+    <div id="fig-ab"></div>
+  </figure>
+</section>
+
+<section aria-labelledby="h-next">
+  <div class="prose"><p class="eyebrow">Status</p><h2 id="h-next">Where this leaves the Wumpus agent</h2></div>
+  <div class="prose" id="status" style="display:grid;gap:10px;color:var(--ink-2)"></div>
+</section>
+</div>
+<div id="tip" role="tooltip"></div>
+
+<script>
+(function () {
+  "use strict";
+  const NS = "http://www.w3.org/2000/svg";
+  const tip = document.getElementById("tip");
+  const ACTIONS = ["forward", "turn left", "turn right", "grab", "shoot"];
+  const HEAD_DEG = [90, 0, 270, 180];          // heading 0 E, 1 N, 2 W, 3 S -> rotation of an up-pointing arrow
+  const TCRIT = { 2: 12.706, 3: 4.303, 4: 3.182, 5: 2.776 };
+
+  function el(tag, attrs, parent) {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+  function svg(host, w, h, label) {
+    const s = el("svg", { viewBox: `0 0 ${w} ${h}`, class: "chart", role: "img", "aria-label": label });
+    host.appendChild(s);
+    return s;
+  }
+  const lin = (d0, d1, r0, r1) => (v) => r0 + ((v - d0) / (d1 - d0)) * (r1 - r0);
+  const num = (v, d = 0) => (v < 0 ? "−" : "") + Math.abs(v).toFixed(d);
+  function place(x, y) {
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    let left = x + 14, top = y - h - 10;
+    if (left + w > innerWidth - 8) left = x - w - 14;
+    if (top < 8) top = y + 16;
+    tip.style.left = left + "px"; tip.style.top = top + "px";
+  }
+  function hover(node, html) {
+    node.setAttribute("tabindex", "0");
+    const show = (x, y) => { tip.innerHTML = html; tip.classList.add("on"); place(x, y); };
+    node.addEventListener("mouseenter", (e) => show(e.clientX, e.clientY));
+    node.addEventListener("mousemove", (e) => place(e.clientX, e.clientY));
+    node.addEventListener("mouseleave", () => tip.classList.remove("on"));
+    node.addEventListener("focus", () => { const r = node.getBoundingClientRect(); show(r.right, r.top); });
+    node.addEventListener("blur", () => tip.classList.remove("on"));
+  }
+  function table(host, head, rows) {
+    host.innerHTML = "";
+    const t = document.createElement("table");
+    t.innerHTML = "<thead><tr>" + head.map((h) => `<th>${h}</th>`).join("") + "</tr></thead><tbody>" +
+      rows.map((r) => "<tr>" + r.map((c) => `<td>${c}</td>`).join("") + "</tr>").join("") + "</tbody>";
+    host.appendChild(t);
+  }
+  function meanCI(values) {
+    const n = values.length, m = values.reduce((a, b) => a + b, 0) / n;
+    if (n < 2) return [m, null];
+    const sd = Math.sqrt(values.reduce((a, b) => a + (b - m) ** 2, 0) / (n - 1));
+    return [m, (TCRIT[n] || 1.96) * sd / Math.sqrt(n)];
+  }
+
+  // ---- Figure: example layout (illustrative; the domain diagram)
+  function layoutFigure() {
+    const host = document.getElementById("fig-layout");
+    const S = 64, P = 30, W = 4 * S + 2 * P + 215, H = 4 * S + 2 * P;
+    const s = svg(host, W, H, "A 4 by 4 grid with two pits, a wumpus and gold; the hunter starts bottom left facing north.");
+    const cx = (x) => P + x * S, cy = (y) => P + (3 - y) * S;
+    const items = { 2: "pit", 9: "pit", 8: "wumpus", 10: "gold" };
+    for (let c = 0; c < 16; c++) {
+      const x = c % 4, y = Math.floor(c / 4);
+      el("rect", { x: cx(x), y: cy(y), width: S, height: S, fill: "var(--surface)", stroke: "var(--axis)" }, s);
+      const k = items[c];
+      if (k) {
+        el("rect", { x: cx(x) + 6, y: cy(y) + 6, width: S - 12, height: S - 12, rx: 4, fill: `var(--${k})`, "fill-opacity": 0.85 }, s);
+        el("text", { x: cx(x) + S / 2, y: cy(y) + S / 2 + 4, "text-anchor": "middle", class: "strong", style: "fill:var(--surface)" }, s).textContent = k;
+      }
+    }
+    // percept annotations
+    const tag = (c, txt, dy) => el("text", { x: cx(c % 4) + S / 2, y: cy(Math.floor(c / 4)) + S - 8 + dy, "text-anchor": "middle" }, s).textContent = txt;
+    // Percepts of the empty cells in this layout (pits 2 and 9, wumpus 8; cells next to them).
+    [1, 3, 5, 6, 13].forEach((c) => tag(c, "breeze", 0));
+    [4, 12].forEach((c) => tag(c, "stench", 0));
+    const ax = cx(0) + S / 2, ay = cy(0) + S / 2;
+    el("path", { d: `M${ax} ${ay - 16} L${ax + 10} ${ay + 10} L${ax} ${ay + 4} L${ax - 10} ${ay + 10} Z`, fill: "var(--ink)" }, s);
+    for (let i = 0; i < 4; i++) {
+      el("text", { x: cx(i) + S / 2, y: H - 10, "text-anchor": "middle" }, s).textContent = `x=${i}`;
+      el("text", { x: P - 6, y: cy(i) + S / 2 + 4, "text-anchor": "end" }, s).textContent = `${i}`;
+    }
+    const lx = 4 * S + P + 22;
+    [["start: cell 0, facing north", 40], ["breeze next to a pit", 64], ["stench next to the wumpus", 88], ["glitter on the gold", 112], ["bump at a wall", 136], ["scream when the arrow kills", 160]]
+      .forEach(([t, y]) => { el("text", { x: lx, y, class: "lbl" }, s).textContent = t; });
+  }
+
+  // ---- Result 1: returns
+  function returnsFigure(D) {
+    const R = D.reports, names = Object.keys(R);
+    const mainNames = names.filter((n) => n.startsWith(D.main_prefix));
+    const rows = [];
+    const pick = (run, key) => R[run].returns[key];
+    const anyRun = mainNames[0] || names[0];
+    rows.push({ label: "Random hunter", m: pick(anyRun, "random").discounted_return, h: 1.96 * pick(anyRun, "random").discounted_return_stderr, col: "var(--muted)", r: pick(anyRun, "random") });
+    D.earlier.forEach(([run, label]) => {
+      if (!R[run]) return;
+      const r = pick(run, "learned_planner");
+      rows.push({ label, m: r.discounted_return, h: 1.96 * r.discounted_return_stderr, col: "var(--s2)", r });
+    });
+    if (mainNames.length) {
+      const per = mainNames.map((n) => pick(n, "learned_planner"));
+      const [m, h] = meanCI(per.map((r) => r.discounted_return));
+      const avg = (k) => per.reduce((a, r) => a + r[k], 0) / per.length;
+      rows.push({ label: `Current agent (${mainNames.length} seed${mainNames.length > 1 ? "s" : ""})`, m, h: h ?? 1.96 * per[0].discounted_return_stderr, col: "var(--s1)", strong: true,
+                  r: { win_rate: avg("win_rate"), death_rate: avg("death_rate"), unfinished_rate: avg("unfinished_rate") }, seeds: per.map((r) => r.discounted_return) });
+    }
+    const ref = pick(anyRun, "reference_risk0.4");
+    rows.push({ label: "Exact-belief reference", m: ref.discounted_return, h: 1.96 * ref.discounted_return_stderr, col: "var(--s3)", r: ref });
+    rows.push({ label: "Layout known (upper bound)", m: D.upper_bound, h: null, col: "var(--ink-2)", r: null });
+
+    const host = document.getElementById("fig-returns");
+    const W = 900, rowH = 34, L = 210, Rr = 70, T = 8, B = 40, H = T + rows.length * rowH + B;
+    const s = svg(host, W, H, "Mean discounted return per agent");
+    const x = lin(-500, 1000, L, W - Rr);
+    [-500, -250, 0, 250, 500, 750, 1000].forEach((t) => {
+      el("line", { x1: x(t), x2: x(t), y1: T, y2: H - B, stroke: t === 0 ? "var(--axis)" : "var(--grid)" }, s);
+      el("text", { x: x(t), y: H - B + 16, "text-anchor": "middle" }, s).textContent = num(t);
+    });
+    el("text", { x: (L + W - Rr) / 2, y: H - 6, "text-anchor": "middle", class: "lbl" }, s).textContent = "mean discounted return per game";
+    rows.forEach((r, i) => {
+      const yc = T + i * rowH + rowH / 2;
+      el("text", { x: L - 10, y: yc + 4, "text-anchor": "end", class: r.strong ? "strong" : "lbl" }, s).textContent = r.label;
+      const x0 = x(Math.min(0, r.m)), x1 = x(Math.max(0, r.m));
+      const bar = el("rect", { x: x0, y: yc - 9, width: Math.max(1, x1 - x0), height: 18, rx: 2, fill: r.col, "fill-opacity": r.strong ? 1 : 0.75 }, s);
+      if (r.h != null) {
+        el("line", { x1: x(r.m - r.h), x2: x(r.m + r.h), y1: yc, y2: yc, stroke: "var(--ink)", "stroke-width": 1.5 }, s);
+        [r.m - r.h, r.m + r.h].forEach((v) => el("line", { x1: x(v), x2: x(v), y1: yc - 5, y2: yc + 5, stroke: "var(--ink)", "stroke-width": 1.5 }, s));
+      }
+      if (r.seeds) r.seeds.forEach((v) => el("circle", { cx: x(v), cy: yc, r: 3, fill: "var(--surface)", stroke: "var(--ink)", "stroke-width": 1.2 }, s));
+      el("text", { x: x(Math.max(0, r.m)) + (r.h ? x(r.m + r.h) - x(r.m) : 0) + 8, y: yc + 4, class: "strong" }, s).textContent = num(r.m);
+      const out = r.r ? `<br>win ${(100 * r.r.win_rate).toFixed(1)}% · death ${(100 * r.r.death_rate).toFixed(1)}% · unfinished ${(100 * r.r.unfinished_rate).toFixed(1)}%` : "";
+      hover(bar, `${r.label}<br>${num(r.m, 1)}${r.h != null ? " ± " + r.h.toFixed(1) : ""}${out}${r.seeds ? "<br>seeds: " + r.seeds.map((v) => num(v)).join(", ") : ""}`);
+    });
+    table(document.getElementById("tab-returns"), ["agent", "return", "95% ±", "win", "death", "unfinished"],
+      rows.map((r) => [r.label, num(r.m, 1), r.h != null ? r.h.toFixed(1) : "–",
+        r.r ? (100 * r.r.win_rate).toFixed(1) + "%" : "–", r.r ? (100 * r.r.death_rate).toFixed(1) + "%" : "–", r.r ? (100 * r.r.unfinished_rate).toFixed(1) + "%" : "–"]));
+    return rows;
+  }
+
+  function curvesFigure(D) {
+    const host = document.getElementById("fig-curves");
+    const series = [];
+    D.earlier_curves.forEach(([run, label, col]) => { if (D.curves[run]) series.push({ label, col, pts: D.curves[run], dash: "5 4" }); });
+    Object.keys(D.curves).filter((n) => n.startsWith(D.main_prefix)).sort().forEach((n, i) =>
+      series.push({ label: `Current agent, seed ${n.slice(-1)}`, col: "var(--s1)", pts: D.curves[n], dash: null, op: 1 - 0.25 * i }));
+    const W = 900, H = 300, L = 56, R = 16, T = 10, B = 40;
+    const s = svg(host, W, H, "Greedy evaluation return over training");
+    const x = lin(0, 100, L, W - R), y = lin(-600, 400, H - B, T);
+    [-600, -400, -200, 0, 200, 400].forEach((t) => {
+      el("line", { x1: L, x2: W - R, y1: y(t), y2: y(t), stroke: t === 0 ? "var(--axis)" : "var(--grid)" }, s);
+      el("text", { x: L - 8, y: y(t) + 4, "text-anchor": "end" }, s).textContent = num(t);
+    });
+    [0, 20, 40, 60, 80, 100].forEach((t) => el("text", { x: x(t), y: H - B + 16, "text-anchor": "middle" }, s).textContent = t);
+    el("text", { x: (L + W - R) / 2, y: H - 6, "text-anchor": "middle", class: "lbl" }, s).textContent = "collection (64 games each)";
+    series.forEach((se) => {
+      const d = se.pts.map((p, i) => (i ? "L" : "M") + x(p[0]).toFixed(1) + " " + y(Math.max(-600, Math.min(400, p[1]))).toFixed(1)).join(" ");
+      el("path", { d, fill: "none", stroke: se.col, "stroke-width": se.dash ? 1.6 : 2.2, "stroke-dasharray": se.dash || "none", "stroke-opacity": se.op ?? 0.9 }, s);
+      se.pts.forEach((p) => { const c = el("circle", { cx: x(p[0]), cy: y(Math.max(-600, Math.min(400, p[1]))), r: 3, fill: se.col, "fill-opacity": se.op ?? 0.9 }, s); hover(c, `${se.label}<br>collection ${p[0]}: ${num(p[1], 1)} ± ${p[2].toFixed(1)}`); });
+    });
+    document.getElementById("curve-legend").innerHTML = series.map((se) =>
+      `<span><i class="sw line" style="background:${se.col};opacity:${se.op ?? 0.9}"></i>${se.label}</span>`).join("");
+  }
+
+  // ---- Result 2: game viewer
+  function gameViewer(D) {
+    const games = D.games, mapsHost = document.getElementById("maps");
+    const btnHost = document.getElementById("game-btns"), slider = document.getElementById("step"), playBtn = document.getElementById("play");
+    let g = 0, timer = null;
+    const S = 34, P = 4, W = 4 * S + 2 * P;
+    const cols = [["pit", 0], ["wumpus", 16], ["gold", 32]];
+    const cells = {};
+    cols.forEach(([name, off]) => {
+      ["exact", "decoded"].forEach((kind) => {
+        const wrap = document.createElement("div"); wrap.className = "mapcol";
+        wrap.innerHTML = `<span class="t">${kind} P(${name})</span>`;
+        mapsHost.appendChild(wrap);
+        const s = svg(wrap, W, W, `${kind} probability of ${name} per cell`);
+        s.style.maxWidth = "180px";
+        const rects = [];
+        for (let c = 0; c < 16; c++) {
+          const x = c % 4, y = Math.floor(c / 4);
+          el("rect", { x: P + x * S, y: P + (3 - y) * S, width: S, height: S, fill: "var(--surface)", stroke: "var(--grid)" }, s);
+          const r = el("rect", { x: P + x * S + 1, y: P + (3 - y) * S + 1, width: S - 2, height: S - 2, fill: `var(--${name})`, "fill-opacity": 0 }, s);
+          rects.push(r);
+          const cellNo = c, hazard = name, offset = { pit: 0, wumpus: 16, gold: 32 }[name];
+          r.addEventListener("mouseenter", (e) => {
+            const st = current();
+            tip.innerHTML = `cell (${cellNo % 4}, ${Math.floor(cellNo / 4)}) · P(${hazard})<br>exact ${st.exact[offset + cellNo].toFixed(3)} · decoded ${st.decoded[offset + cellNo].toFixed(3)}`;
+            tip.classList.add("on"); place(e.clientX, e.clientY);
+          });
+          r.addEventListener("mousemove", (e) => place(e.clientX, e.clientY));
+          r.addEventListener("mouseleave", () => tip.classList.remove("on"));
+        }
+        const arrow = el("path", { d: "M0 -11 L8 8 L0 3 L-8 8 Z", fill: "var(--ink)" }, s);
+        cells[`${name}-${kind}`] = { rects, arrow, off, kind };
+      });
+    });
+    // reorder so exact sits above decoded per hazard: grid columns = 3 hazards, rows = exact/decoded
+    const order = [];
+    ["exact", "decoded"].forEach((kind) => cols.forEach(([name]) => order.push(`${name}-${kind}`)));
+    const wraps = Array.from(mapsHost.children);
+    const byKey = {}; let k = 0;
+    cols.forEach(([name]) => ["exact", "decoded"].forEach((kind) => { byKey[`${name}-${kind}`] = wraps[k++]; }));
+    order.forEach((key) => mapsHost.appendChild(byKey[key]));
+
+    function current() { const steps = games[g].steps; return steps[Math.min(+slider.value, steps.length - 1)]; }
+    function draw() {
+      const steps = games[g].steps, t = Math.min(+slider.value, steps.length - 1), st = steps[t];
+      Object.values(cells).forEach(({ rects, arrow, off, kind }) => {
+        const v = kind === "exact" ? st.exact : st.decoded;
+        rects.forEach((r, c) => r.setAttribute("fill-opacity", Math.max(0, Math.min(1, v[off + c])).toFixed(3)));
+        const x = st.cell % 4, y = Math.floor(st.cell / 4);
+        arrow.setAttribute("transform", `translate(${P + x * S + S / 2} ${P + (3 - y) * S + S / 2}) rotate(${HEAD_DEG[st.heading]})`);
+      });
+      const bits = [];
+      if (st.percept === 32) bits.push("game over");
+      else { ["stench", "breeze", "glitter", "bump", "scream"].forEach((b, i) => { if (st.percept & (1 << i)) bits.push(b); }); }
+      const l1 = (a, b) => a.reduce((acc, v, i) => acc + Math.abs(v - b[i]), 0) / a.length;
+      const fwdOk = st.danger > 0.4 ? (st.p_death > 0.25 ? "ok" : "no") : null;
+      document.getElementById("readout").innerHTML =
+        `<span>step <b>${st.t}</b> of ${steps[steps.length - 1].t} · ${games[g].outcome}</span>` +
+        `<span>percept <b>${bits.length ? bits.join(", ") : "none"}</b></span>` +
+        `<span>next action <b>${st.action == null ? "–" : ACTIONS[st.action]}</b></span>` +
+        `<span>death risk ahead: exact <b>${st.danger.toFixed(2)}</b> · model <b>${st.p_death.toFixed(2)}</b> ${fwdOk ? `<span class="verdict ${fwdOk}">${fwdOk === "ok" ? "model sees it" : "model misses it"}</span>` : ""}</span>` +
+        `<span>mean |decoded − exact| <b>${l1(st.decoded, st.exact).toFixed(3)}</b></span>`;
+    }
+    function select(i) {
+      g = i; slider.max = games[g].steps.length - 1; slider.value = 0;
+      Array.from(btnHost.children).forEach((b, j) => b.setAttribute("aria-pressed", j === g ? "true" : "false"));
+      draw();
+    }
+    games.forEach((game, i) => {
+      const b = document.createElement("button"); b.type = "button"; b.className = "btn";
+      b.textContent = `Game ${i + 1}: ${game.outcome}`; b.addEventListener("click", () => { stop(); select(i); }); btnHost.appendChild(b);
+    });
+    function stop() { if (timer) { clearInterval(timer); timer = null; playBtn.textContent = "Play"; } }
+    playBtn.addEventListener("click", () => {
+      if (timer) return stop();
+      if (+slider.value >= +slider.max) slider.value = 0;
+      playBtn.textContent = "Pause";
+      timer = setInterval(() => { if (+slider.value >= +slider.max) return stop(); slider.value = +slider.value + 1; draw(); }, 450);
+    });
+    slider.addEventListener("input", () => { stop(); draw(); });
+    select(0);
+  }
+
+  function probesFigure(D) {
+    const host = document.getElementById("fig-probes");
+    const R = D.reports, mainNames = Object.keys(R).filter((n) => n.startsWith(D.main_prefix));
+    const agg = (src, key) => meanCI(mainNames.map((n) => R[n].probes[src][key]));
+    const groups = [
+      { name: "Cell (16-way)", chance: null, vals: [["random histories", agg("mlp_random", "cell_accuracy")], ["agent's own games", agg("mlp_agent", "cell_accuracy")]], bound: D.supervised_bound.cell_acc },
+      { name: "Heading (4-way)", chance: null, vals: [["random histories", agg("mlp_random", "heading_accuracy")], ["agent's own games", agg("mlp_agent", "heading_accuracy")]], bound: D.supervised_bound.heading_acc },
+    ];
+    const W = 900, H = 200, L = 140, R2 = 60, T = 10, B = 36, rowH = 30;
+    const s = svg(host, W, T + groups.length * 2 * rowH + groups.length * 12 + B, "Probe accuracy for cell and heading");
+    const Hh = T + groups.length * 2 * rowH + groups.length * 12 + B;
+    const x = lin(0, 1, L, W - R2);
+    [0, 0.25, 0.5, 0.75, 1].forEach((t) => {
+      el("line", { x1: x(t), x2: x(t), y1: T, y2: Hh - B, stroke: "var(--grid)" }, s);
+      el("text", { x: x(t), y: Hh - B + 16, "text-anchor": "middle" }, s).textContent = `${t * 100}%`;
+    });
+    el("text", { x: (L + W - R2) / 2, y: Hh - 4, "text-anchor": "middle", class: "lbl" }, s).textContent = "held-out accuracy of an MLP probe on the agent's latent";
+    let yc = T;
+    const rows = [];
+    groups.forEach((gr) => {
+      gr.vals.forEach(([src, [m, h]], j) => {
+        const y0 = yc + j * rowH + rowH / 2;
+        if (j === 0) el("text", { x: L - 10, y: y0 + 4, "text-anchor": "end", class: "strong" }, s).textContent = gr.name;
+        el("text", { x: L - 10, y: y0 + 4 + (j === 0 ? 0 : 0), "text-anchor": "end", class: "lbl" }, s).textContent = j === 0 ? "" : "";
+        const bar = el("rect", { x: x(0), y: y0 - 8, width: x(m) - x(0), height: 16, rx: 2, fill: j === 0 ? "var(--s1)" : "var(--s4)" }, s);
+        if (h != null) el("line", { x1: x(m - h), x2: x(Math.min(1, m + h)), y1: y0, y2: y0, stroke: "var(--ink)", "stroke-width": 1.5 }, s);
+        const inside = m > 0.6;
+        el("text", { x: inside ? x(m) - 8 : x(m) + 8, y: y0 + 4, "text-anchor": inside ? "end" : "start", class: "strong", style: inside ? "fill:var(--surface)" : "" }, s).textContent = `${(100 * m).toFixed(0)}% · ${src}`;
+        hover(bar, `${gr.name}, ${src}<br>${(100 * m).toFixed(1)}%${h != null ? " ± " + (100 * h).toFixed(1) : ""}`);
+        rows.push([gr.name, src, (100 * m).toFixed(1) + "%", h != null ? (100 * h).toFixed(1) : "–", (100 * gr.bound).toFixed(1) + "%"]);
+      });
+      const yb0 = yc, yb1 = yc + gr.vals.length * rowH;
+      el("line", { x1: x(gr.bound), x2: x(gr.bound), y1: yb0, y2: yb1, stroke: "var(--s3)", "stroke-width": 2.5 }, s);
+      el("text", { x: x(gr.bound) - 4, y: yb0 + 10, "text-anchor": "end", style: "fill:var(--s3)" }, s).textContent = "supervised bound";
+      yc += gr.vals.length * rowH + 12;
+    });
+    table(document.getElementById("tab-probes"), ["target", "histories", "accuracy", "95% ±", "supervised bound"], rows);
+  }
+
+  // ---- Result 3: calibration
+  function calibrationFigure(D) {
+    const host = document.getElementById("fig-cal"), btns = document.getElementById("cal-btns");
+    const runs = [["before", "Before: 256 updates per collection"], ["after", "Current agent"]];
+    let cur = runs.findIndex(([k]) => D.calibration[k]) ;
+    function draw() {
+      host.innerHTML = "";
+      const C = D.calibration[runs[cur][0]];
+      const W = 520, H = 360, L = 56, R = 16, T = 12, B = 46;
+      const s = svg(host, W, H, "Calibration of the predicted death probability");
+      s.style.maxWidth = "620px";
+      // Square-root axes: the diagonal stays straight and the low-probability bins, where the
+      // confident "safe" errors live, get room.
+      const sx = lin(0, 1, L, W - R), sy = lin(0, 1, H - B, T);
+      const x = (v) => sx(Math.sqrt(Math.max(0, v))), y = (v) => sy(Math.sqrt(Math.max(0, v)));
+      [0, 0.01, 0.05, 0.1, 0.25, 0.5, 1].forEach((t) => {
+        el("line", { x1: L, x2: W - R, y1: y(t), y2: y(t), stroke: "var(--grid)" }, s);
+        el("line", { x1: x(t), x2: x(t), y1: T, y2: H - B, stroke: "var(--grid)" }, s);
+        el("text", { x: L - 8, y: y(t) + 4, "text-anchor": "end" }, s).textContent = t;
+        el("text", { x: x(t), y: H - B + 16, "text-anchor": "middle" }, s).textContent = t;
+      });
+      el("line", { x1: x(0), y1: y(0), x2: x(1), y2: y(1), stroke: "var(--axis)", "stroke-dasharray": "4 4" }, s);
+      el("text", { x: (L + W - R) / 2, y: H - 8, "text-anchor": "middle", class: "lbl" }, s).textContent = "predicted P(death | forward), bin mean (square-root scale)";
+      const yl = el("text", { x: 14, y: (T + H - B) / 2, "text-anchor": "middle", class: "lbl", transform: `rotate(-90 14 ${(T + H - B) / 2})` }, s);
+      yl.textContent = "realised death rate";
+      [["buffer", "var(--s3)", "training games"], ["exploring", "var(--s4)", "fresh, exploring policy"], ["greedy", "var(--s2)", "fresh, greedy planner"]].forEach(([k, col, nm]) => {
+        const pts = C[k].filter((b) => b.n >= 10);
+        const d = pts.map((b, i) => (i ? "L" : "M") + x(b.predicted).toFixed(1) + " " + y(b.died).toFixed(1)).join(" ");
+        el("path", { d, fill: "none", stroke: col, "stroke-width": 2 }, s);
+        pts.forEach((b) => {
+          const r = Math.max(3, Math.min(9, Math.sqrt(b.n) / 8));
+          const c = el("circle", { cx: x(b.predicted), cy: y(b.died), r, fill: col, stroke: "var(--surface)", "stroke-width": 1.5 }, s);
+          hover(c, `${nm}<br>predicted ${b.predicted.toFixed(3)} · died ${b.died.toFixed(3)}<br>${b.n} forward steps`);
+        });
+      });
+      const rows = [];
+      ["buffer", "exploring", "greedy"].forEach((k) => C[k].forEach((b) => rows.push([k, `[${b.lo}, ${b.hi})`, b.n, b.predicted == null ? "–" : b.predicted.toFixed(3), b.died == null ? "–" : b.died.toFixed(3)])));
+      table(document.getElementById("tab-cal"), ["games", "predicted bin", "forward steps", "mean predicted", "realised"], rows);
+    }
+    runs.forEach(([k, label], i) => {
+      if (!D.calibration[k]) return;
+      const b = document.createElement("button"); b.type = "button"; b.className = "btn"; b.textContent = label;
+      b.addEventListener("click", () => { cur = i; Array.from(btns.children).forEach((x) => x.setAttribute("aria-pressed", x === b ? "true" : "false")); draw(); });
+      btns.appendChild(b);
+    });
+    Array.from(btns.children).forEach((x, j) => x.setAttribute("aria-pressed", j === btns.children.length - 1 ? "true" : "false"));
+    cur = runs.length - 1;
+    draw();
+  }
+
+  function abFigure(D) {
+    const host = document.getElementById("fig-ab"), A = D.overfit_ab;
+    const W = 900, H = 280, L = 56, R = 20, T = 12, B = 42;
+    const s = svg(host, W, H, "Observation loss on training and held-out games against updates");
+    const ups = [3200, 6400, 12800];
+    const x = lin(0, 13500, L, W - R), y = lin(0.1, 0.7, H - B, T);
+    [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7].forEach((t) => {
+      el("line", { x1: L, x2: W - R, y1: y(t), y2: y(t), stroke: "var(--grid)" }, s);
+      el("text", { x: L - 8, y: y(t) + 4, "text-anchor": "end" }, s).textContent = t.toFixed(1);
+    });
+    ups.forEach((u) => el("text", { x: x(u), y: H - B + 16, "text-anchor": "middle" }, s).textContent = u.toLocaleString("en-US"));
+    el("text", { x: (L + W - R) / 2, y: H - 6, "text-anchor": "middle", class: "lbl" }, s).textContent = "gradient updates";
+    const yl = el("text", { x: 14, y: (T + H - B) / 2, "text-anchor": "middle", class: "lbl", transform: `rotate(-90 14 ${(T + H - B) / 2})` }, s);
+    yl.textContent = "next-observation NLL (nats)";
+    [["a_base", "var(--s1)", "8,192 games"], ["d_data2048", "var(--s2)", "2,048 games"]].forEach(([arm, col, nm]) => {
+      if (!A[arm]) return;
+      [["head_nll_held", null, "held-out"], ["head_nll_train", "5 4", "training"]].forEach(([metric, dash, kind]) => {
+        const pts = ups.map((u) => { const v = A[arm][metric] && A[arm][metric][u]; return v ? [u, Object.values(v)] : null; }).filter(Boolean);
+        const d = pts.map((p, i) => { const m = p[1].reduce((a, b) => a + b, 0) / p[1].length; return (i ? "L" : "M") + x(p[0]).toFixed(1) + " " + y(m).toFixed(1); }).join(" ");
+        el("path", { d, fill: "none", stroke: col, "stroke-width": 2, "stroke-dasharray": dash || "none" }, s);
+        pts.forEach((p) => p[1].forEach((v) => { const c = el("circle", { cx: x(p[0]), cy: y(v), r: 3, fill: dash ? "var(--surface)" : col, stroke: col, "stroke-width": 1.5 }, s); hover(c, `${nm}, ${kind}<br>${p[0].toLocaleString("en-US")} updates: ${v.toFixed(3)}`); }));
+      });
+    });
+  }
+
+  function texts(D, rows) {
+    const cur = rows.find((r) => r.strong), ref = rows.find((r) => r.label.startsWith("Exact")), rnd = rows[0];
+    if (!cur) return;
+    const frac = (cur.m - rnd.m) / (ref.m - rnd.m);
+    document.getElementById("lede").textContent =
+      `The current agent earns ${num(cur.m)} per game (${cur.seeds.length} seed${cur.seeds.length > 1 ? "s" : ""}). A random hunter earns ${num(rnd.m)}, and an agent acting on the exact belief earns ${num(ref.m)}, so the agent closes ${(100 * frac).toFixed(0)}% of that gap. Its latent carries part of the exact belief. Its forward-step death predictions were the failure point, and the cause was overfitting.`;
+    document.getElementById("perf-cap").textContent +=
+      ` Open circles on the current agent's bar are its individual seeds.`;
+    document.getElementById("status").innerHTML = D.status.map((p) => `<p>${p}</p>`).join("");
+  }
+
+  function render(D) {
+    layoutFigure();
+    const rows = returnsFigure(D);
+    curvesFigure(D);
+    gameViewer(D);
+    probesFigure(D);
+    calibrationFigure(D);
+    abFigure(D);
+    texts(D, rows);
+  }
+
+  fetch("data.json").then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }).then(render).catch((e) => {
+    document.getElementById("lede").textContent = "The figure data failed to load (" + e.message + "). Reload the page to try again.";
+  });
+})();
+</script>
