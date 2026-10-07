@@ -25,6 +25,8 @@
   --good: #006300;
   --bad: #c0392b;
   --band: rgba(42, 120, 214, 0.10);
+  --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c4: #8a63d2; --c5: #c99a06; --c6: #9aa1ab;
+  --seq0: #dfe7f5; --seq1: #1b4f99;       /* sequential ramp, low -> high */
   --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
   --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --f-data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
@@ -36,6 +38,8 @@
     --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #9b7be0;
     --pit: #4a95ec; --wumpus: #e66767; --gold: #e0b42a;
     --good: #0ca30c; --bad: #e66767; --band: rgba(57, 135, 229, 0.16);
+    --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #9b7be0; --c5: #e0b42a; --c6: #6f7680;
+    --seq0: #3d5274; --seq1: #9cc8ff;
     color-scheme: dark;
   }
 }
@@ -45,6 +49,8 @@
   --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #9b7be0;
   --pit: #4a95ec; --wumpus: #e66767; --gold: #e0b42a;
   --good: #0ca30c; --bad: #e66767; --band: rgba(57, 135, 229, 0.16);
+  --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #9b7be0; --c5: #e0b42a; --c6: #6f7680;
+  --seq0: #3d5274; --seq1: #9cc8ff;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -168,6 +174,18 @@ input[type=range] { accent-color: var(--accent); }
       <p>The same filter network trained on privileged exact targets reaches the supervised bound, so capacity and architecture are not the limit. The gap is what the agent's own training signal fails to teach. Probes score higher on the agent's own games than on random-action histories.</p></div>
     <div id="fig-probes"></div>
     <details><summary>Table view</summary><div class="tscroll" id="tab-probes"></div></details>
+  </figure>
+</section>
+
+<section aria-labelledby="h-umap">
+  <div class="prose"><p class="eyebrow">Result 2b · Latent map</p><h2 id="h-umap">UMAP of the agent's latent, coloured by the exact belief</h2></div>
+  <figure class="figure">
+    <div class="cap"><h3>Each point is one latent z_t of the current agent (seed 0)</h3>
+      <p id="umap-cap">Latents from 256 of the agent's own games and 256 random-action games, embedded together in 2D with UMAP. UMAP keeps neighbourhoods, not distances, so read clusters and colours, not the gaps between clusters. Colours come from the exact enumeration filter on the same histories. The map is organised first by the percept just received, and only weakly by position and heading: on random-action histories a point's 10 nearest neighbours share its percept 93% of the time (36% by chance), its heading 44% (25%) and its cell 43% (24%). On the agent's own games position and heading are more organised (74% and 71%). The danger ahead and the belief uncertainty vary within the percept clusters.</p></div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap" id="umap-btns" role="group" aria-label="Colour by"></div>
+    <div class="legend" id="umap-legend"></div>
+    <div id="fig-umap"></div>
+    <details><summary>Neighbourhood agreement (table view)</summary><div class="tscroll" id="tab-umap"></div></details>
   </figure>
 </section>
 
@@ -554,6 +572,70 @@ input[type=range] { accent-color: var(--accent); }
     });
   }
 
+  // ---- Result 2b: UMAP of the latent
+  function umapFigure(U) {
+    const host = document.getElementById("fig-umap"), btns = document.getElementById("umap-btns");
+    const F = Object.fromEntries(U.fields.map((f, i) => [f, i])), pts = U.points;
+    const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+    const PERCEPT = (o) => o === 0 ? 0 : o === 1 ? 1 : o === 2 ? 2 : o === 3 ? 3 : (o & 8) ? 4 : 5;
+    const PNAMES = ["none", "stench", "breeze", "stench + breeze", "bump (+ others)", "glitter or scream"];
+    const dist = (c) => (c % 4) + Math.floor(c / 4);
+    const modes = [
+      { key: "percept", label: "Percept just received", cat: PNAMES, of: (p) => PERCEPT(p[F.percept]) },
+      { key: "heading", label: "Heading", cat: ["east", "north", "west", "south"], of: (p) => p[F.heading] },
+      { key: "dist", label: "Cells from start", seq: [0, 6], of: (p) => dist(p[F.cell]), fmt: (v) => v.toFixed(0) },
+      { key: "danger", label: "Danger of a forward step", seq: [0, 1], of: (p) => p[F.danger], fmt: (v) => v.toFixed(2) },
+      { key: "log_layouts", label: "Belief uncertainty (log₁₀ layouts)", seq: [0, 4.21], of: (p) => p[F.log_layouts], fmt: (v) => v.toFixed(1) },
+      { key: "step", label: "Game step", seq: [0, 50], of: (p) => p[F.step], fmt: (v) => v.toFixed(0) },
+      { key: "source", label: "History source", cat: ["agent's own games", "random actions"], of: (p) => p[F.source] },
+    ];
+    let mode = modes[0];
+    const W = 900, H = 600, P = 14;
+    const xs = pts.map((p) => p[F.x]), ys = pts.map((p) => p[F.y]);
+    const x = lin(Math.min(...xs), Math.max(...xs), P, W - P), y = lin(Math.min(...ys), Math.max(...ys), H - P, P);
+    const s = svg(host, W, H, "UMAP of the agent's latent states");
+    el("rect", { x: 0, y: 0, width: W, height: H, fill: "none", stroke: "var(--grid)" }, s);
+    const dots = pts.map((p) => el("circle", { cx: x(p[F.x]).toFixed(1), cy: y(p[F.y]).toFixed(1), r: 2.2, "fill-opacity": 0.8 }, s));
+    const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+    const mix = (a, b, t) => "rgb(" + hex(a).map((v, i) => Math.round(v + (hex(b)[i] - v) * t)).join(",") + ")";
+    function paint() {
+      const catCols = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6"].map(css);
+      const lo = css("--seq0"), hi = css("--seq1");
+      dots.forEach((d, i) => {
+        const v = mode.of(pts[i]);
+        d.setAttribute("fill", mode.cat ? catCols[v % 6] : mix(lo, hi, Math.max(0, Math.min(1, (v - mode.seq[0]) / (mode.seq[1] - mode.seq[0])))));
+      });
+      document.getElementById("umap-legend").innerHTML = mode.cat
+        ? mode.cat.map((n, i) => `<span><i class="sw" style="background:var(${["--c1", "--c2", "--c3", "--c4", "--c5", "--c6"][i]})"></i>${n}</span>`).join("")
+        : `<span>${mode.fmt(mode.seq[0])}</span><span><i class="sw" style="width:120px;background:linear-gradient(90deg,var(--seq0),var(--seq1))"></i></span><span>${mode.fmt(mode.seq[1])}</span>`;
+      Array.from(btns.children).forEach((b) => b.setAttribute("aria-pressed", b.dataset.key === mode.key ? "true" : "false"));
+    }
+    modes.forEach((m) => {
+      const b = document.createElement("button"); b.type = "button"; b.className = "btn"; b.textContent = m.label; b.dataset.key = m.key;
+      b.addEventListener("click", () => { mode = m; paint(); }); btns.appendChild(b);
+    });
+    const hit = el("rect", { x: 0, y: 0, width: W, height: H, fill: "transparent" }, s);
+    const ring = el("circle", { r: 5, fill: "none", stroke: "var(--ink)", "stroke-width": 1.5, opacity: 0 }, s);
+    const HN = ["east", "north", "west", "south"];
+    hit.addEventListener("mousemove", (e) => {
+      const pt = s.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY;
+      const q = pt.matrixTransform(s.getScreenCTM().inverse());
+      let best = -1, bd = 1e9;
+      for (let i = 0; i < pts.length; i++) { const dx = x(pts[i][F.x]) - q.x, dy = y(pts[i][F.y]) - q.y, dd = dx * dx + dy * dy; if (dd < bd) { bd = dd; best = i; } }
+      if (bd > 200) { ring.setAttribute("opacity", 0); tip.classList.remove("on"); return; }
+      const p = pts[best];
+      ring.setAttribute("cx", x(p[F.x])); ring.setAttribute("cy", y(p[F.y])); ring.setAttribute("opacity", 1);
+      tip.innerHTML = `${p[F.source] ? "random-action game" : "agent's own game"} · step ${p[F.step]}<br>cell (${p[F.cell] % 4}, ${Math.floor(p[F.cell] / 4)}) facing ${HN[p[F.heading]]}<br>percept: ${PNAMES[PERCEPT(p[F.percept])]}<br>danger ahead ${p[F.danger].toFixed(2)} · ${Math.round(10 ** p[F.log_layouts])} layouts left`;
+      tip.classList.add("on"); place(e.clientX, e.clientY);
+    });
+    hit.addEventListener("mouseleave", () => { ring.setAttribute("opacity", 0); tip.classList.remove("on"); });
+    paint();
+    const A = U.agreement;
+    if (A) table(document.getElementById("tab-umap"), ["histories", "label", "10 nearest neighbours share it", "by chance"],
+      A.map((r) => [r.source, r.label, (100 * r.agree).toFixed(0) + "%", (100 * r.chance).toFixed(0) + "%"]));
+    document.getElementById("umap-cap").textContent += ` Trustworthiness of the 2D neighbourhoods: ${U.trustworthiness.toFixed(3)} (1 = perfect).`;
+  }
+
   function texts(D, rows) {
     const cur = rows.find((r) => r.strong), ref = rows.find((r) => r.label.startsWith("Exact")), rnd = rows[0];
     if (!cur) return;
@@ -575,7 +657,13 @@ input[type=range] { accent-color: var(--accent); }
     abFigure(D);
     texts(D, rows);
   }
+  function renderUmap(U) {
+    try { umapFigure(U); } catch (e) { document.getElementById("fig-umap").textContent = "The latent map failed to draw: " + e.message; }
+  }
 
+  fetch("umap.json").then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }).then(renderUmap).catch((e) => {
+    document.getElementById("fig-umap").textContent = "The latent map data failed to load (" + e.message + "). Reload the page to try again.";
+  });
   fetch("data.json").then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }).then(render).catch((e) => {
     document.getElementById("lede").textContent = "The figure data failed to load (" + e.message + "). Reload the page to try again.";
   });
