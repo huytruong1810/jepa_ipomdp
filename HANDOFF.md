@@ -12,7 +12,7 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
 - **What the latent encodes.** Its UMAP is organised first by the percept just received, and only weakly by position and heading. Probes recover cell and heading 55–60% of the time on random histories, against 99.9–100% for the same network trained on exact targets.
 - **The main diagnosis of the last week.** The jointly trained filter and observation head **overfit** when they train too many times per game. They were calibrated in-sample and overconfident on fresh games, and the greedy planner exploited exactly those confident "safe" errors. Going back to 64 updates per collection fixed most deaths.
 - **The reviewer meeting (2026-10-07, 3pm) is over.** The page is https://claude.ai/artifact/1m1jkSud5xbFCidGMkc6VN (section 3).
-- **Open:** the JEPA arm with the same recipe was started and stopped at about collection 15; it is resumable (section 6, step 1).
+- **Open:** the JEPA arm with the same recipe was resumed from collection 40 on 2026-10-07 and is running (section 3). The unfinished games are diagnosed: the value head does not reward exploration progress (section 5.3).
 
 ## 1. Goals
 
@@ -93,7 +93,8 @@ Stages:
 | `runs/sweeps/polyak` | Tiger JEPA, 5 seeds: **the Tiger numbers to cite** |
 | `runs/sweeps/decoder` | Tiger decoder baseline, 5 seeds |
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_seed{0,1,2}` | **The current Wumpus agent**, analysed (`analysis/report.json`); seed 0 also has `analysis/latents_umap_input.npz` |
-| `runs/wumpus/u64_store_eval_eps_jepa_k5_seed{0,1}` | JEPA with the same recipe, **stopped at about collection 15–17**; `latest.pt` from collection 10 resumes them |
+| `runs/wumpus/u64_store_eval_eps_jepa_k5_seed{0,1}` | JEPA with the same recipe. They had actually stopped at collection 40 (not about 15, as an earlier HANDOFF said). **Resumed from collection 40 on 2026-10-07 at 18:44** by `runs/wumpus/jepa_resume_chain.sh` (detached; it trains to 100, then runs `analyze.py`; log `jepa_resume_chain.log`) |
+| `runs/wumpus/u64_store_eval_eps_decoder_k5_seed*.unfinished_diag.log` | Unfinished-games diagnosis (section 5.3) |
 | `runs/wumpus/store_eval_eps_decoder_k5_u256_seed0`, `eps_decoder_k5_u256_seed0` | The two failed 256-update runs (−84 and −283) |
 | `runs/wumpus/north50_seed0`, `north50_decoder_seed0` | The first JEPA and decoder agents (110 and 85) |
 | `runs/wumpus/overfit_ab/` | Offline overfitting A/B logs (stopped at about 12,800 updates) |
@@ -186,7 +187,11 @@ A hand-written, deterministic policy on the exact belief. It is **not optimal** 
 | **Mean, 3 seeds** | **189 ± 62** (t-interval) | | | |
 
 - **The death model generalises** (seed 0, `latest.pt`, 256 fresh games per policy). Steps predicted below 0.02 killed 0.2% of the time under the exploring policy and 0.1% under the greedy planner. Before the fix this was 4.1% and 9.6%.
-- **The remaining gap is unfinished games, not deaths.** The cause has not been diagnosed (section 6, step 2).
+- **The remaining gap is unfinished games, not deaths.** Diagnosed on 2026-10-07 (`unfinished_diag.py`, 3 seeds × 512 games):
+  - In unfinished games the hunter stops finding new cells around step 11–14 and then idles for about 35 steps, mostly with no-ops: SHOOT without the arrow, GRAB on an empty cell, turns.
+  - In 47–50% of them a provably safe, unvisited, reachable cell still existed at the end.
+  - Facing such a cell, the planner steps in only 29–42% of the time. The death head is not the reason (median P(death) about 0.001). The value head rates the latent after the step about 15 below the latent after a no-op (median γ·E[V̂ next] gap −15 to −17).
+  - Under the bootstrapped (truncated-window) objective a wasted step costs only about 1 + (1−γ)·V̂ ≈ 7.5, less than those V̂ errors. Exploration progress is not valued.
 - **Value overestimation persists.** V̂ at live states is about 905 in the store-eval run and higher in the 256-update runs, against a reference return of 573. Re-measure it on the current agent with `absorbing_value.py`. It is a candidate cause of the unfinished games.
 - **Not ablated:** at 64 updates per collection, the separate effects of ε and of `store_eval_episodes` are unknown. The recipe changed only the update rate relative to the −84 run.
 
@@ -224,10 +229,7 @@ A hand-written, deterministic policy on the exact belief. It is **not optimal** 
    - Resume both runs: `main.py resume=runs/wumpus/u64_store_eval_eps_jepa_k5_seed<s>/checkpoints/latest.pt` with the overrides in `runs/wumpus/jepa_chain.sh` (`model.representation=jepa`, otherwise the current recipe). Resume is bit-exact from collection 10.
    - Then run `analyze.py` and compare paired with decoder seeds 0–1.
    - Only when the machine is quiet: about 3 h for two in parallel without ipomcp load.
-2. **Diagnose the unfinished games** (the remaining gap to the heuristic).
-   - Look at the action mix and cell coverage in unfinished games.
-   - Check whether V̂ overestimation or a flat Q makes the agent idle (`absorbing_value.py`, `value_diag.py`).
-   - Candidates to offer the user: a value support fitted to the episodic return range (`value_bound` is 100,100, so only 153 of 255 bins are reachable and the spacing near 500 is 49; a domain decision); longer training at the same update rate (`training.total_episodes=12800`); more simulations only if Q is close.
+2. **Unfinished games: diagnosed (section 5.3); the remedy is the user's decision.** The value head does not value progress, and idling is cheap under the bootstrapped objective. Note that the two-hot spacing near 500–700 is about 49 (`value_bound` 100,100; only 153 of 255 bins reachable), coarser than the 15-point V̂ gaps that decide FORWARD versus wait. Candidates were offered to the user on 2026-10-07.
 3. **Ablate the recipe at 64 updates per collection:** ε off and `store_eval_episodes` off, one at a time, 2–3 seeds each. It is cheap evidence of which parts matter.
 4. **Push the latent towards position and heading.** It is organised by percept; probes are 55–60% against 100% supervised. Candidates: longer horizons for the multi-step term at the fixed update rate; an auxiliary objective that does not use privileged state. Use offline A/Bs on `pools.pt` first, and save the networks this time.
 5. **Seeds and tooling:** 5 seeds for the current agent; make `sweep.py` and `experiments/aggregate.py` work for Wumpus (they are Tiger-only).
