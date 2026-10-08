@@ -20,6 +20,21 @@
 #      (models/distributions.py); the decoded mean is unbiased. The final projection is
 #      zero-initialised so the initial prediction is uniform, whose mean is exactly 0.
 #
+# 2b. Horizon Value Head (optional, model.time_aware_value; user decision 2026-10-07):
+#    - V(z_t, k_t) where k_t = H - t is the number of steps left in the agent's fixed window of H
+#      steps. k is the agent's own step counter, not privileged information. It enters as k / H
+#      concatenated to the latent.
+#    - Why: Wumpus World is scored on the return inside a 50-step window, but the window is a
+#      truncation and a stationary V(z) bootstraps through it, i.e. it optimises an infinite-
+#      horizon game in which a wasted step costs only about 1 + (1 - gamma) * V ~ 7.5. The
+#      greedy planner then idled in front of provably safe unvisited cells whenever V-hat errors
+#      between neighbouring latents exceeded that (~15 measured;
+#      reports/2026-10-02_wumpus_diagnostics/unfinished_diag.py). With k the value is the
+#      finite-horizon value of the window, so a wasted step costs a step of a scarce budget.
+#    - Only the value depends on time: the dynamics (reward and observation heads) are
+#      stationary and get no k. The terminal rule V(z, 0) = 0 is applied by the callers
+#      (planning/search_model.py, section 5; training/trainer.py, section 3b), never learned.
+#
 # 3. Observation Head (the planning model):
 #    - P(o_{t+1} | z_t, a_t). The planner branches over its outcomes and steps the belief
 #      filter (world_model.py, section 6). It is trained on DETACHED latents, so it never
@@ -62,6 +77,22 @@ class ValueHead(nn.Module):
     def forward(self, latent: Tensor) -> Tensor:
         """(B, D) -> (B, num_bins) logits."""
         return self.net(latent)
+
+
+class HorizonValueHead(nn.Module):
+    """V(z_t, k_t) as two-hot logits, k_t the steps left in the window (section 2b)."""
+
+    def __init__(self, latent_dim: int, hidden_dim: int, num_blocks: int, num_bins: int, horizon: int):
+        super().__init__()
+        if horizon < 1:
+            raise ValueError(f"horizon must be >= 1, got {horizon}.")
+        self.horizon = horizon
+        self.net = _zero_init_last_layer(build_residual_stack(latent_dim + 1, hidden_dim, num_bins, num_blocks))
+
+    def forward(self, latent: Tensor, steps_left: Tensor) -> Tensor:
+        """(B, D) latents and (B,) steps left -> (B, num_bins) logits."""
+        fraction = (steps_left / self.horizon).to(latent.dtype).unsqueeze(-1)
+        return self.net(torch.cat([latent, fraction], dim=-1))
 
 
 class RewardHead(nn.Module):

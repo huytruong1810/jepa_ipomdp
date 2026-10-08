@@ -28,7 +28,8 @@
 #      cell ahead is provably safe and unvisited, the script reports the head's P(GAME_OVER | z,
 #      FORWARD) and Q(FORWARD) - max Q, and splits the one-step learned Q(FORWARD) - Q(chosen
 #      action) (SearchModel.expand) into its reward and gamma * E[V_hat(next)] parts.
-#    - Usage: uv run python <this> <run dir> <games>. Use a small <games> as a smoke check.
+#    - Usage: uv run python <this> <run dir> <games>. Use a small <games> as a smoke check. Works for
+#      time-aware runs too (training/run.py, section 9): V_hat is then V(z, steps left).
 #
 # 3. Result 2026-10-07 (best.pt of seeds 0/1/2, 512 games each; outcomes reproduce report.json exactly):
 #    - Unfinished games (67-71%): the hunter visits 3.2-3.6 cells, finds its last new cell around step
@@ -97,9 +98,10 @@ class Recorder:
 
     def act(self):
         with torch.no_grad():
-            v_hat = run.codec.mean(run.acting_value_head(planner.state).float()).cpu().numpy()
+            v_hat = model.values(planner.state).float().cpu().numpy()        # V(z), or V(z, k) when time-aware
+            latents = planner.state if model.horizon is None else planner.state[:, :-1]
             forward = F.one_hot(torch.full((n,), int(WumpusAction.FORWARD), device=dev), world.num_actions).float()
-            p_death = F.softmax(model.observation_head(planner.state, forward).float(), -1)[:, GAME_OVER].cpu().numpy()
+            p_death = F.softmax(model.observation_head(latents, forward).float(), -1)[:, GAME_OVER].cpu().numpy()
             expansion = model.expand(planner.state)
             one_step_r = expansion.rewards.double().cpu().numpy()                                   # (B, A)
             one_step_v = (world.discount * (expansion.observation_probs * expansion.next_values).sum(-1)).double().cpu().numpy()

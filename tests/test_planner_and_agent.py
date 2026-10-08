@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from ipomdp.agents import PlanningAgent
 from ipomdp.domain import (BatchedPOMDPEnv, TigerAction, belief_update, build_tiger_pomdp, observation_distribution,
                            solve_finite_horizon, solve_infinite_horizon)
-from ipomdp.models import BeliefFilter, ObservationHead, RewardHead, TwoHotSymlog, ValueHead
+from ipomdp.models import BeliefFilter, HorizonValueHead, ObservationHead, RewardHead, TwoHotSymlog, ValueHead
 from ipomdp.planning import BeliefTreeSearch, ExactSearchModel, LearnedSearchModel, MinMaxStats
 
 CPU = torch.device("cpu")
@@ -173,6 +173,41 @@ class TestLearnedSearchModel:
                 assert torch.allclose(expansion.next_states[:, a, o], expected, atol=1e-6)
         stepped = model.update(states, torch.tensor([0, 1, 2, 0]), torch.tensor([1, 0, 1, 0]))
         assert stepped.shape == (4, dim)
+
+    def test_finite_horizon_counts_down_to_a_terminal_zero(self):
+        # search_model.py, section 5: state [z, k]; k counts down; reward and value are exactly 0 past the window.
+        torch.manual_seed(0)
+        num_a, num_o, dim, hidden, horizon = 3, 2, 16, 32, 3
+        belief_filter = BeliefFilter(num_a, num_o, dim, hidden, 1)
+        reward_head, value_head = RewardHead(dim, num_a, hidden, 1, 255), HorizonValueHead(dim, hidden, 1, 255, horizon)
+        for head in (reward_head, value_head):                       # leave the zero initialisation
+            torch.nn.init.normal_(head.net[-1].weight)
+        codec = TwoHotSymlog(255, 2000.0)
+        model = LearnedSearchModel(belief_filter, reward_head, ObservationHead(dim, num_a, num_o, hidden, 1), value_head,
+                                   codec, num_a, num_o, discount=0.95, horizon=horizon)
+        states = model.initial_states(4, None)
+        assert states.shape == (4, dim + 1) and torch.equal(states[:, -1], torch.full((4,), 3.0))
+        actions, observations = torch.tensor([0, 1, 2, 0]), torch.tensor([1, 0, 1, 0])
+        stepped = model.update(states, actions, observations)
+        assert torch.equal(stepped[:, -1], torch.full((4,), 2.0))
+        assert torch.allclose(stepped[:, :-1], belief_filter.step(states[:, :-1], F.one_hot(actions, num_a).float(),
+                                                                  F.one_hot(observations, num_o).float()))
+        expansion = model.expand(stepped)                            # k = 2: children at k = 1 are valued by the head
+        child = expansion.next_states[:, 1, 0]
+        assert torch.equal(child[:, -1], torch.ones(4))
+        assert torch.allclose(expansion.next_values[:, 1, 0], codec.mean(value_head(child[:, :-1], child[:, -1])))
+        assert (expansion.rewards != 0).any()
+        last = stepped.clone()
+        last[:, -1] = 1.0                                            # last step: children are terminal
+        assert torch.equal(model.expand(last).next_values, torch.zeros(4, num_a, num_o))
+        ended = stepped.clone()
+        ended[:, -1] = 0.0                                           # past the window: no reward either
+        assert torch.equal(model.expand(ended).rewards, torch.zeros(4, num_a))
+        with pytest.raises(RuntimeError):
+            model.update(ended, actions, observations)
+        with pytest.raises(ValueError):
+            LearnedSearchModel(belief_filter, reward_head, ObservationHead(dim, num_a, num_o, hidden, 1),
+                               ValueHead(dim, hidden, 1, 255), codec, num_a, num_o, discount=0.95, horizon=horizon)
 
 
 class TestUniformRandomAgent:

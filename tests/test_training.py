@@ -5,7 +5,8 @@ import pytest
 import torch
 
 from ipomdp.domain import BatchedPOMDPEnv, build_tiger_pomdp
-from ipomdp.models import BeliefFilter, LatentPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueHead
+from ipomdp.models import (BeliefFilter, HorizonValueHead, LatentPredictor, ObservationHead, RecurrentJEPA, RewardHead,
+                           TwoHotSymlog, ValueHead)
 from ipomdp.training import EpisodeBatch, EpisodeBuffer, Representation, TrainerConfig, WorldModelTrainer
 
 CPU = torch.device("cpu")
@@ -84,6 +85,27 @@ class TestWorldModelTrainer:
                     q = q + 0.95 * probs[:, o] * codec.mean(trainer.target_value_head(child))
                 expected.append(q)
         assert torch.allclose(trainer.value_targets(latents), torch.stack(expected, -1).max(-1).values, atol=1e-4)
+
+    def test_finite_horizon_targets_end_the_window(self):
+        # trainer.py, section 3b: at k = 1 the target is max_a R(z, a) (no bootstrap); train_step runs on whole windows.
+        torch.manual_seed(0)
+        belief_filter = BeliefFilter(A, O, D, H, 1)
+        reward_head = RewardHead(D, A, H, 1, 255)
+        torch.nn.init.normal_(reward_head.net[-1].weight)
+        trainer = WorldModelTrainer(belief_filter, None, HorizonValueHead(D, H, 1, 255, T), reward_head,
+                                    ObservationHead(D, A, O, H, 1), TwoHotSymlog(255, 2000.0), A, O, discount=0.95,
+                                    config=CONFIG, device=CPU, horizon=T)
+        latents = torch.randn(5, D)
+        with torch.no_grad():
+            rewards = torch.stack([trainer.twohot.mean(reward_head(latents, torch.nn.functional.one_hot(
+                torch.full((5,), a), A).float())) for a in range(A)], -1)
+        last = torch.cat([latents, torch.ones(5, 1)], -1)
+        assert torch.allclose(trainer.value_targets(last), rewards.max(-1).values, atol=1e-4)
+        metrics = trainer.train_step(_episodes(4, 0))
+        assert all(torch.isfinite(torch.tensor(v)) for v in metrics.values())
+        short = _episodes(4, 0)
+        with pytest.raises(ValueError):                              # only whole windows (T = H)
+            trainer.train_step(EpisodeBatch(short.actions[:, :-1], short.observations[:, :-1], short.rewards[:, :-1], None))
 
     def test_target_value_head_tracks_online_head_by_ema(self):
         trainer = _trainer()

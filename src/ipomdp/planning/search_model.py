@@ -35,6 +35,20 @@
 #    - The exact model computes in float64 (ground truth). The learned model runs its networks
 #      in float32 without autocast: planning evaluates few, small batches, and bfloat16 logits
 #      would perturb the two-hot means the search compares.
+#
+# 5. Optional Finite Horizon (LearnedSearchModel(horizon=H); model.time_aware_value, user decision 2026-10-07):
+#    - The state becomes [z, k]: the latent with the number of steps left in the agent's
+#      H-step window appended as one more column (exact small integers in float32). The agent's
+#      own step counter is not privileged. initial_states sets k = H, update and every imagined
+#      successor count k down, and the filter only ever sees z.
+#    - The value is V(z, k) (models/heads.py, section 2b) with the terminal rule V(z, 0) = 0
+#      applied here, never learned. A node whose window has ended (k = 0) earns reward 0 for
+#      every action, so the search cannot collect reward past the window. The tree search
+#      (planning/mcts.py) only stores and stacks states, so it needs no change.
+#    - Why: the scored return is the return inside the window. A stationary V(z) bootstraps
+#      through the truncation and values a wasted step at only about 1 + (1 - gamma) * V
+#      (reports/2026-10-02_wumpus_diagnostics/unfinished_diag.py).
+#    - horizon=None (the default and canonical Tiger) leaves every computation unchanged.
 # ==============================================================================
 
 from dataclasses import dataclass
@@ -46,7 +60,7 @@ from torch import Tensor
 
 from ..domain import AlphaVectorSet, FinitePOMDP, belief_update, initial_beliefs, observation_distribution
 from ..models.distributions import TwoHotSymlog
-from ..models.heads import ObservationHead, RewardHead, ValueHead
+from ..models.heads import HorizonValueHead, ObservationHead, RewardHead, ValueHead
 from ..models.world_model import BeliefFilter
 
 
@@ -135,12 +149,23 @@ class LearnedSearchModel:
         belief_filter: BeliefFilter,
         reward_head: RewardHead,
         observation_head: ObservationHead,
-        value_head: ValueHead,
+        value_head: ValueHead | HorizonValueHead,
         codec: TwoHotSymlog,
         num_actions: int,
         num_observations: int,
         discount: float,
+        horizon: int | None = None,
     ):
+        """
+        Args:
+            value_head: ValueHead, or HorizonValueHead exactly when horizon is given (section 5).
+            horizon: Steps per window H for the finite-horizon state [z, k] (section 5), or None.
+        """
+        if (horizon is not None) != isinstance(value_head, HorizonValueHead):
+            raise ValueError("A HorizonValueHead needs a horizon, and a horizon needs a HorizonValueHead.")
+        if horizon is not None and value_head.horizon != horizon:
+            raise ValueError(f"value head horizon {value_head.horizon} != search model horizon {horizon}.")
+        self.horizon = horizon
         self.belief_filter = belief_filter
         self.reward_head = reward_head
         self.observation_head = observation_head
@@ -150,22 +175,39 @@ class LearnedSearchModel:
         self.num_observations = num_observations
         self.discount = discount
 
+    def values(self, states: Tensor) -> Tensor:
+        """Decoded V of states (N, ...) -> (N,); with a horizon, V(z, k) and exactly 0 at k = 0 (section 5)."""
+        if self.horizon is None:
+            return self.codec.mean(self.value_head(states))
+        latents, steps_left = states[:, :-1], states[:, -1]
+        return torch.where(steps_left > 0, self.codec.mean(self.value_head(latents, steps_left)), 0.0)
+
     @torch.no_grad()
     def initial_states(self, batch_size: int, initial_observations: Tensor | None) -> Tensor:
         onehot = (None if initial_observations is None
                   else F.one_hot(initial_observations, self.num_observations).float())
-        return self.belief_filter.start(batch_size, onehot).clone()
+        latents = self.belief_filter.start(batch_size, onehot).clone()
+        if self.horizon is None:
+            return latents
+        return torch.cat([latents, latents.new_full((batch_size, 1), float(self.horizon))], dim=-1)
 
     @torch.no_grad()
     def update(self, states: Tensor, actions: Tensor, observations: Tensor) -> Tensor:
-        return self.belief_filter.step(states, F.one_hot(actions, self.num_actions).float(),
-                                       F.one_hot(observations, self.num_observations).float())
+        latents = states if self.horizon is None else states[:, :-1]
+        next_latents = self.belief_filter.step(latents, F.one_hot(actions, self.num_actions).float(),
+                                               F.one_hot(observations, self.num_observations).float())
+        if self.horizon is None:
+            return next_latents
+        if bool((states[:, -1] <= 0).any()):
+            raise RuntimeError("update() past the end of the window (k = 0).")
+        return torch.cat([next_latents, states[:, -1:] - 1.0], dim=-1)
 
     @torch.no_grad()
     def expand(self, states: Tensor) -> Expansion:
         n, num_a, num_o = states.shape[0], self.num_actions, self.num_observations
+        z = states if self.horizon is None else states[:, :-1]
         eye_a = torch.eye(num_a, device=states.device)
-        latents = states.repeat_interleave(num_a, dim=0)                                 # (N*A, D)
+        latents = z.repeat_interleave(num_a, dim=0)                                      # (N*A, D)
         actions = eye_a.repeat(n, 1)                                                     # (N*A, A)
         rewards = self.codec.mean(self.reward_head(latents, actions)).view(n, num_a)
         observation_probs = F.softmax(self.observation_head(latents, actions).float(), dim=-1).view(n, num_a, num_o)
@@ -174,5 +216,10 @@ class LearnedSearchModel:
             actions.repeat_interleave(num_o, dim=0),
             torch.eye(num_o, device=states.device).repeat(n * num_a, 1),
         )                                                                                # (N*A*O, D)
-        next_values = self.codec.mean(self.value_head(next_states)).view(n, num_a, num_o)
+        if self.horizon is not None:
+            steps_left = states[:, -1]
+            rewards = torch.where((steps_left > 0).unsqueeze(-1), rewards, 0.0)           # no reward past the window
+            next_steps = (steps_left - 1.0).clamp(min=0.0).repeat_interleave(num_a * num_o)
+            next_states = torch.cat([next_states, next_steps.unsqueeze(-1)], dim=-1)
+        next_values = self.values(next_states).view(n, num_a, num_o)
         return Expansion(rewards, observation_probs, next_states.view(n, num_a, num_o, -1), next_values)

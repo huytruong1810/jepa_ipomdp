@@ -100,6 +100,7 @@ model:
   ema_momentum: 0.99          # JEPA target filter EMA momentum (unused by representation=decoder)
   acting_ema_momentum: 0.99   # Polyak averaging of the weights the planner acts with (training/run.py, section 4)
   num_bins: 255               # Two-hot bins for value and reward
+  time_aware_value: false     # V(z, steps left in the window), terminal at the window end (training/run.py, section 9)
 
 mcts:
   num_simulations: 50         # Search simulations per decision (per parallel episode)

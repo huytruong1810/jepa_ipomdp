@@ -73,6 +73,19 @@
 #      always-listen return, at every evaluation).
 #    - gamma is the domain's discount (0.95 for canonical Tiger), passed in by TrainingRun.
 #
+# 3b. Optional Finite-Horizon Value (horizon = H; model.time_aware_value, user decision 2026-10-07):
+#      V_target(z_t, k_t) = max_a [ R(z_t, a) + gamma * sum_o P(o | z_t, a) * V-bar(tau(z_t, a, o), k_t - 1) ],
+#      k_t = H - t,   V(., 0) = 0
+#    - The value head becomes V(z, k) (models/heads.py, section 2b), and the backup counts the
+#      steps left down to the end of the window, where the value is exactly 0 (terminal, not
+#      bootstrapped). It is still computed by LearnedSearchModel.expand, now on states [z, k]
+#      (planning/search_model.py, section 5), so targets and planner stay the same backup.
+#    - The buffer stores whole windows (T = H), so latent z_t of every episode has k_t = H - t.
+#      The rows with k = 0 (z_T) are dropped from the value loss: their value is defined, not learned.
+#    - Motivation: reports/2026-10-02_wumpus_diagnostics/unfinished_diag.py (the stationary value
+#      makes a wasted step cost only about 1 + (1 - gamma) * V, so the greedy planner idled).
+#    - horizon=None (the default and canonical Tiger) leaves the computation unchanged.
+#
 # 4. No Imagination Losses:
 #    - An earlier version also trained V on latents imagined by a stochastic latent
 #      transition ("consistency"). Planning now imagines through the real filter
@@ -98,7 +111,7 @@ from torch import Tensor
 
 from ..models.distributions import TwoHotSymlog
 from ..models.ema import ema_update, frozen_copy
-from ..models.heads import MultiStepObservationPredictor, ObservationHead, RewardHead, ValueHead
+from ..models.heads import HorizonValueHead, MultiStepObservationPredictor, ObservationHead, RewardHead, ValueHead
 from ..models.world_model import BeliefFilter, RecurrentJEPA
 from ..planning.search_model import LearnedSearchModel
 from .episode_buffer import EpisodeBatch
@@ -128,7 +141,7 @@ class WorldModelTrainer:
         self,
         belief_filter: BeliefFilter,
         jepa: RecurrentJEPA | None,
-        value_head: ValueHead,
+        value_head: ValueHead | HorizonValueHead,
         reward_head: RewardHead,
         observation_head: ObservationHead,
         codec: TwoHotSymlog,
@@ -138,6 +151,7 @@ class WorldModelTrainer:
         config: TrainerConfig,
         device: torch.device,
         multistep_predictor: MultiStepObservationPredictor | None = None,
+        horizon: int | None = None,
     ):
         """
         Args:
@@ -145,6 +159,7 @@ class WorldModelTrainer:
             jepa: The JEPA parts built around belief_filter (Representation.JEPA), or None for
                 the decoder baseline (Representation.DECODER, section 2b).
             multistep_predictor: The optional multi-step observation term (section 2c), or None.
+            horizon: Steps per window H for the finite-horizon value (section 3b), or None.
         """
         if jepa is not None and jepa.belief_filter is not belief_filter:
             raise ValueError("jepa must wrap the trained belief_filter")
@@ -159,6 +174,7 @@ class WorldModelTrainer:
         self.num_actions = num_actions
         self.num_observations = num_observations
         self.discount = discount
+        self.horizon = horizon
         self.config = config
         self.device = device
         self.parameters = [
@@ -172,15 +188,16 @@ class WorldModelTrainer:
         self.optimizer = torch.optim.AdamW(self.parameters, lr=config.learning_rate, weight_decay=config.weight_decay)
         self.target_value_head = frozen_copy(value_head)
         self.target_model = LearnedSearchModel(belief_filter, reward_head, observation_head,
-                                               self.target_value_head, codec, num_actions, num_observations, discount)
+                                               self.target_value_head, codec, num_actions, num_observations, discount,
+                                               horizon)
 
     @torch.no_grad()
     def value_targets(self, latents: Tensor) -> Tensor:
         """
-        Bellman optimality backup through the learned model (module header, section 3).
+        Bellman optimality backup through the learned model (module header, sections 3 and 3b).
 
         Args:
-            latents: Belief latents of shape (N, D).
+            latents: Search-model states: belief latents (N, D), or [z, k] (N, D + 1) with a horizon.
 
         Returns:
             max_a [R + gamma sum_o P(o) V-bar(tau)], shape (N,), float32.
@@ -221,8 +238,17 @@ class WorldModelTrainer:
                                                 episodes.rewards.reshape(-1)).mean()
 
             all_latents = latents.reshape(batch * (steps + 1), -1)
-            targets_value = self.value_targets(all_latents.detach())
-            value_logits = self.value_head(all_latents.detach())
+            if self.horizon is None:
+                targets_value = self.value_targets(all_latents.detach())
+                value_logits = self.value_head(all_latents.detach())
+            else:
+                if steps != self.horizon:
+                    raise ValueError(f"finite-horizon value needs whole windows: T = {steps}, H = {self.horizon}.")
+                steps_left = (self.horizon - torch.arange(steps + 1, device=self.device)).repeat(batch).float()
+                live = steps_left > 0                                                    # k = 0 rows: V = 0 by definition
+                states = torch.cat([all_latents.detach().float(), steps_left.unsqueeze(-1)], dim=-1)[live]
+                targets_value = self.value_targets(states)
+                value_logits = self.value_head(all_latents.detach()[live], steps_left[live])
             losses["value"] = self.twohot.loss(value_logits, targets_value).mean()
 
             # The decoder baseline's representation term; a detached planning-model fit otherwise.

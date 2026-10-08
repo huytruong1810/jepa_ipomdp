@@ -91,6 +91,16 @@
 #      biases nothing. Evaluation keeps its own simulator stream, and every evaluation plays fresh
 #      layouts, so storing the games does not leak evaluation layouts into later evaluations.
 #    - Off by default (canonical Tiger): the buffer and every random stream are then untouched.
+#
+# 9. Time-Aware (Finite-Horizon) Value (user decision, 2026-10-07):
+#    - cfg.time_aware_value replaces the value head by HorizonValueHead V(z, k) over the steps
+#      left in the episode_length window. The trainer's targets and the planner's search model
+#      count k down to a terminal 0 (models/heads.py, 2b; trainer.py, 3b; search_model.py, 5).
+#    - Motivation: on Wumpus World the greedy planner idled in front of provably safe cells,
+#      because a stationary value bootstraps through the window's truncation and a wasted step
+#      looks almost free (reports/2026-10-02_wumpus_diagnostics/unfinished_diag.py).
+#    - The value head is built in the same place in the initialisation order. With the flag off
+#      (the default, canonical Tiger) it is the same ValueHead, so the run is unchanged.
 # ==============================================================================
 
 from collections.abc import Callable
@@ -101,7 +111,7 @@ import numpy as np
 import torch
 
 from ..agents import PlanningAgent, UniformRandomAgent
-from ..models import (BeliefFilter, LatentPredictor, MultiStepObservationPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueHead,
+from ..models import (BeliefFilter, HorizonValueHead, LatentPredictor, MultiStepObservationPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueHead,
                       ema_update, frozen_copy)
 from ..planning import BeliefTreeSearch, LearnedSearchModel
 from .episode_buffer import EpisodeBatch, EpisodeBuffer
@@ -179,6 +189,7 @@ class RunConfig:
     epsilon: float                    # epsilon-uniform exploration in collection (section 7); 0 = off
     epsilon_min: float
     store_eval_episodes: bool         # add greedy evaluation games to the replay buffer (section 8)
+    time_aware_value: bool            # finite-horizon value V(z, steps left) (section 9)
 
 
 class TrainingRun:
@@ -196,7 +207,10 @@ class TrainingRun:
                                    LatentPredictor(cfg.latent_dim, num_a, cfg.hidden_dim, cfg.num_blocks),
                                    cfg.ema_momentum).to(device)
                      if cfg.representation is Representation.JEPA else None)
-        self.value_head = ValueHead(cfg.latent_dim, cfg.hidden_dim, cfg.num_blocks, cfg.num_bins).to(device)
+        horizon = cfg.episode_length if cfg.time_aware_value else None
+        self.value_head = (HorizonValueHead(cfg.latent_dim, cfg.hidden_dim, cfg.num_blocks, cfg.num_bins, horizon)
+                           if cfg.time_aware_value
+                           else ValueHead(cfg.latent_dim, cfg.hidden_dim, cfg.num_blocks, cfg.num_bins)).to(device)
         self.reward_head = RewardHead(cfg.latent_dim, num_a, cfg.hidden_dim, cfg.num_blocks, cfg.num_bins).to(device)
         self.observation_head = ObservationHead(cfg.latent_dim, num_a, num_o, cfg.hidden_dim, cfg.num_blocks).to(device)
         self.codec = TwoHotSymlog(cfg.num_bins, domain.value_bound).to(device)
@@ -205,7 +219,7 @@ class TrainingRun:
                                     if cfg.observation_horizon > 0 else None)
         self.trainer = WorldModelTrainer(self.belief_filter, self.jepa, self.value_head, self.reward_head, self.observation_head,
                                          self.codec, num_a, num_o, domain.discount, cfg.trainer, device,
-                                         self.multistep_predictor)
+                                         self.multistep_predictor, horizon)
 
         # Polyak-averaged copies the agent acts with (section 4).
         self.acting_filter = frozen_copy(self.belief_filter)
@@ -213,7 +227,7 @@ class TrainingRun:
         self.acting_observation_head = frozen_copy(self.observation_head)
         self.acting_value_head = frozen_copy(self.value_head)
         model = LearnedSearchModel(self.acting_filter, self.acting_reward_head, self.acting_observation_head,
-                                   self.acting_value_head, self.codec, num_a, num_o, domain.discount)
+                                   self.acting_value_head, self.codec, num_a, num_o, domain.discount, horizon)
         self.train_agent = PlanningAgent(
             model, BeliefTreeSearch(model, cfg.num_simulations, cfg.c_puct, cfg.dirichlet_alpha, cfg.dirichlet_epsilon,
                                     seed=seed(RunStream.TRAIN_PLANNER), observation_prune=cfg.observation_prune),
