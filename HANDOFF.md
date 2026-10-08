@@ -235,10 +235,15 @@ A hand-written, deterministic policy on the exact belief. It is **not optimal** 
 
 ## 6. Next steps (in order; ask the user at each research decision, recommendation first)
 
-1. **Time-aware horizon (user decision, 2026-10-07).**
-   - Give the value and observation heads the agent's own steps-remaining count, which is not privileged, and treat the end of the 50-step window as terminal in the value targets.
-   - It must default to off, with Tiger bit-identical (fingerprint), and get a small check first.
-   - Motivation: section 5.3's diagnosis of the unfinished games.
+1. **Time-aware horizon (user decision, 2026-10-07; value head only, also the user's choice): implemented at `8ca58d0`, running.**
+   - `model.time_aware_value=true`:
+     - `HorizonValueHead` V(z, k), where k is the steps left in the window;
+     - the search model's state becomes [z, k] and counts k down, with V(·, 0) = 0 and no reward past the window;
+     - the trainer's targets use k = H − t and drop k = 0 rows.
+   - Default off. The Tiger fingerprint (both representations) is bit-identical to `80a3628`. There are 3 new fast tests (157 pass), and saved run configs got `time_aware_value: false`.
+   - Small check `runs/wumpus/smoke_time_aware` (6 collections): runs cleanly.
+   - **Overnight chain** `runs/wumpus/time_aware_chain.sh` (log `time_aware_chain.log`, launched 2026-10-07 23:36): decoder recipe plus time-aware value, seeds 0–1 in parallel, then seed 2, then `analyze.py` and `unfinished_diag.py` on each. Run directories `runs/wumpus/u64_store_eval_eps_decoder_k5_time_seed{0,1,2}`.
+   - **Next:** compare paired with the decoder seeds 0–2 (return, unfinished rate, idle steps in front of safe cells).
    - (The JEPA arm with the same recipe is done; see section 5.3.)
 2. **Unfinished games: diagnosed (section 5.3); the remedy is the user's decision.** The value head does not value progress, and idling is cheap under the bootstrapped objective. Note that the two-hot spacing near 500–700 is about 49 (`value_bound` 100,100; only 153 of 255 bins reachable), coarser than the 15-point V̂ gaps that decide FORWARD versus wait. Candidates were offered to the user on 2026-10-07.
 3. **Ablate the recipe at 64 updates per collection:** ε off and `store_eval_episodes` off, one at a time, 2–3 seeds each. It is cheap evidence of which parts matter.
