@@ -7,8 +7,11 @@
 # DESIGN DECISIONS (user decisions, 2026-10-01):
 # 1. No Dynamics in Configuration:
 #    - Grid, placement rule (2 pits, 1 wumpus, 1 gold on distinct non-start cells), the five
-#      actions (no Climb), R&N rewards, the discount 0.99, the 5 percept bits, the initial
-#      start-cell percept and the absorbing end of game are fixed in domain/wumpus.py.
+#      actions (no Climb), R&N rewards, the 5 percept bits, the initial start-cell percept and
+#      the absorbing end of game are fixed in domain/wumpus.py.
+#    - The one exception is env.discount (user decision, 2026-10-09; domain/wumpus.py, section 1):
+#      0.99 is the domain's value; lower values test whether a costlier wasted step stops the
+#      learned agent idling.
 #
 # 2. One Game per 50-Step Window (user decision, 2026-10-02; was 100):
 #    - The game usually ends (win or death) well inside the window; the absorbing GAME_OVER
@@ -26,6 +29,7 @@
 env:
   name: wumpus
   max_steps: 50               # Steps per window (one game, then the absorbing GAME_OVER state)
+  discount: 0.99              # gamma (domain/wumpus.py, section 1)
 
 model:
   latent_dim: 128

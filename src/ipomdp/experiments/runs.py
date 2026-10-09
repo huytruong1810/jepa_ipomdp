@@ -16,7 +16,9 @@
 #      sweep) rebuilds a run identically and no script imports another script.
 #    - DOMAIN_BUILDERS maps conf/env/<name>.yaml to a DomainSetup (training/run.py, section 6):
 #      canonical Tiger is its exact FinitePOMDP sampled by BatchedPOMDPEnv; Wumpus World is
-#      the generative WumpusSimulator, summarised by its win/death rates. analyze_run is the
+#      the generative WumpusSimulator, summarised by its win/death rates. Each builder receives
+#      cfg.env: Tiger reads nothing from it (canonical, fixed gamma), Wumpus reads env.discount
+#      (domain/wumpus.py, section 1); a saved config without the key fails loudly. analyze_run is the
 #      Tiger analysis (it needs the exact solver); Wumpus runs are analysed by
 #      experiments/wumpus.py.
 #
@@ -58,15 +60,16 @@ def tiger_setup(device: torch.device) -> DomainSetup:
                        lambda episodes: {})
 
 
-def wumpus_setup(device: torch.device) -> DomainSetup:
-    """4x4 Wumpus World: generative simulator (tables on `device`), win/death rates per window."""
-    world = WumpusWorld(device)
+def wumpus_setup(device: torch.device, discount: float) -> DomainSetup:
+    """4x4 Wumpus World with discount gamma: generative simulator (tables on `device`), win/death rates per window."""
+    world = WumpusWorld(device, discount)
     return DomainSetup(world, lambda batch, steps, seed, dev: WumpusSimulator(world, batch, steps, seed, dev),
                        lambda episodes: game_outcomes(episodes.rewards))
 
 
 # Domains selectable through conf/env/<name>.yaml (section 2).
-DOMAIN_BUILDERS = {"tiger": tiger_setup, "wumpus": wumpus_setup}
+DOMAIN_BUILDERS = {"tiger": lambda env, device: tiger_setup(device),
+                   "wumpus": lambda env, device: wumpus_setup(device, env.discount)}
 
 
 def build_run_config(cfg: DictConfig) -> RunConfig:
@@ -91,7 +94,7 @@ def build_run_config(cfg: DictConfig) -> RunConfig:
 
 def build_training_run(cfg: DictConfig, device: torch.device) -> tuple[DomainSetup, TrainingRun]:
     """The domain named by cfg.env.name and a freshly initialised TrainingRun over it."""
-    setup = DOMAIN_BUILDERS[cfg.env.name](device)
+    setup = DOMAIN_BUILDERS[cfg.env.name](cfg.env, device)
     return setup, TrainingRun(setup, build_run_config(cfg), device)
 
 

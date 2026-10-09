@@ -19,7 +19,7 @@ import pytest
 import torch
 
 from ipomdp.domain.wumpus import (GAME_OVER, Heading, Percept, WumpusAction, WumpusBeliefTracker, WumpusSimulator,
-                                  WumpusState, WumpusWorld, game_outcomes)
+                                  DISCOUNT, WumpusState, WumpusWorld, game_outcomes)
 
 CPU = torch.device("cpu")
 A = WumpusAction
@@ -217,7 +217,7 @@ class TestLearningStack:
     def test_training_stores_o0_and_resumes_bit_for_bit(self, tmp_path):
         from ipomdp.experiments import wumpus_setup
         from ipomdp.training import TrainingRun, load_checkpoint, save_checkpoint
-        setup = wumpus_setup(CPU)
+        setup = wumpus_setup(CPU, DISCOUNT)
         reference = TrainingRun(setup, self._config(), CPU)
         expected = [reference.collect_and_train() for _ in range(3)] + [reference.evaluate()]
         assert reference.buffer.sample(2).initial_observations.shape == (2,)
@@ -235,7 +235,7 @@ class TestLearningStack:
         from ipomdp.experiments import wumpus_setup
         from ipomdp.models import HorizonValueHead
         from ipomdp.training import TrainingRun, load_checkpoint, save_checkpoint
-        setup = wumpus_setup(CPU)
+        setup = wumpus_setup(CPU, DISCOUNT)
         reference = TrainingRun(setup, self._config(time_aware_value=True), CPU)
         assert isinstance(reference.value_head, HorizonValueHead)
         expected = [reference.collect_and_train() for _ in range(3)] + [reference.evaluate()]
@@ -253,7 +253,7 @@ class TestLearningStack:
         # training/run.py, section 10: greedy games feed the n-step target; resume stays bit-exact.
         from ipomdp.experiments import wumpus_setup
         from ipomdp.training import TrainingRun, load_checkpoint, save_checkpoint
-        setup = wumpus_setup(CPU)
+        setup = wumpus_setup(CPU, DISCOUNT)
         config = lambda **kw: self._config(value_nstep=3, store_eval_episodes=True, **kw)  # noqa: E731
         with pytest.raises(ValueError):
             TrainingRun(setup, self._config(value_nstep=3), CPU)
@@ -274,7 +274,7 @@ class TestLearningStack:
     def test_multistep_observation_term_trains_and_resumes(self, tmp_path):
         from ipomdp.experiments import wumpus_setup
         from ipomdp.training import TrainingRun, load_checkpoint, save_checkpoint
-        setup = wumpus_setup(CPU)
+        setup = wumpus_setup(CPU, DISCOUNT)
         reference = TrainingRun(setup, self._config(observation_horizon=3), CPU)
         expected = [reference.collect_and_train() for _ in range(2)]
         assert "loss_multistep_observation" in expected[0] and "multistep_observation" in reference.networks
@@ -303,7 +303,7 @@ class TestLearningStack:
     def test_agent_starts_from_the_o0_conditioned_latent(self):
         from ipomdp.experiments import wumpus_setup
         from ipomdp.training import TrainingRun
-        run = TrainingRun(wumpus_setup(CPU), self._config(), CPU)
+        run = TrainingRun(wumpus_setup(CPU, DISCOUNT), self._config(), CPU)
         model = run.eval_agent.model
         breezy, quiet = torch.tensor([Percept.BREEZE]), torch.tensor([0])
         assert not torch.equal(model.initial_states(1, breezy), model.initial_states(1, quiet))
@@ -315,7 +315,7 @@ class TestLearningStack:
         from ipomdp.experiments import wumpus_setup
         from ipomdp.planning import BeliefTreeSearch
         from ipomdp.training import TrainingRun
-        run = TrainingRun(wumpus_setup(CPU), self._config(), CPU)
+        run = TrainingRun(wumpus_setup(CPU, DISCOUNT), self._config(), CPU)
         model = run.eval_agent.model
         search = BeliefTreeSearch(model, 8, 1.25, 0.3, 0.0, seed=0, observation_prune=0.02)
         search.search(model.initial_states(2, torch.tensor([0, 3])), temperature=0.0)
@@ -381,3 +381,38 @@ class TestReferenceAgent:
         steps = self._play_layout(world, layout, WumpusReferenceAgent(world, 1, 0.0), 2)
         assert steps[0] == (A.SHOOT, Percept.STENCH | Percept.SCREAM, -10.0)
         assert steps[1][0] == A.FORWARD and steps[1][2] == -1.0     # (0,1) is safe now: the wumpus is dead
+
+
+class TestConfigurableDiscount:
+    """env.discount (domain/wumpus.py, section 1; experiments/runs.py, section 2)."""
+
+    @staticmethod
+    def _cfg(discount):
+        from omegaconf import OmegaConf
+        cfg = OmegaConf.load("conf/config.yaml")
+        cfg.merge_with(OmegaConf.load("conf/env/wumpus.yaml"))
+        cfg.model.num_blocks, cfg.model.latent_dim, cfg.model.hidden_dim = 1, 8, 16
+        if discount is None:
+            del cfg.env["discount"]
+        else:
+            cfg.env.discount = discount
+        return cfg
+
+    def test_default_is_the_domain_value(self):
+        assert self._cfg(DISCOUNT).env.discount == DISCOUNT == 0.99
+        assert WumpusWorld(CPU).discount == DISCOUNT
+
+    def test_discount_reaches_domain_codec_and_trainer(self):
+        from ipomdp.experiments import build_training_run
+        setup, run = build_training_run(self._cfg(0.95), CPU)
+        assert setup.domain.discount == run.trainer.discount == 0.95
+        assert setup.domain.value_bound == pytest.approx(1001.0 / 0.05)
+        assert run.codec.max_abs_value == pytest.approx(1001.0 / 0.05)
+
+    def test_missing_or_invalid_discount_fails_loudly(self):
+        from omegaconf.errors import ConfigAttributeError
+        from ipomdp.experiments import build_training_run
+        with pytest.raises(ConfigAttributeError):
+            build_training_run(self._cfg(None), CPU)
+        with pytest.raises(ValueError):
+            WumpusWorld(CPU, 1.0)

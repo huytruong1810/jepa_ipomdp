@@ -18,10 +18,16 @@
 #    - The arrow flies straight ahead from the hunter's cell to the wall; it kills the wumpus
 #      if the wumpus is anywhere on that line. A shot without the arrow costs -1 and does
 #      nothing. The dead wumpus's cell is safe to enter.
-#    - Discount gamma = 0.99 (user decision). R&N's performance measure is undiscounted; the
-#      discount keeps values finite. The window is 50 steps (user decision, 2026-10-02;
+#    - Discount gamma = 0.99 (user decision; DISCOUNT). R&N's performance measure is undiscounted;
+#      the discount keeps values finite. The window is 50 steps (user decision, 2026-10-02;
 #      conf/env/wumpus.yaml), shorter than the effective horizon 1/(1 - gamma) = 100 but ample
 #      for a 4x4 game: with the layout known, every winnable layout is won within 50 steps.
+#    - gamma is the one rule that configuration may change (env.discount, conf/env/wumpus.yaml;
+#      user decision 2026-10-09). The learned value overestimates idle states by ~650, and a
+#      wasted step costs only about 1 + (1 - gamma) V under the Bellman backup (HANDOFF section
+#      5.6), so a lower gamma is the experiment. It also changes value_bound and with it the
+#      two-hot support. Returns at different gammas are not comparable; win, death and
+#      unfinished rates are.
 #
 # 2. Percepts (the 5 R&N bits, user decision; position and heading are NOT observed):
 #      STENCH   the wumpus (alive or dead) is in the hunter's cell or a 4-neighbour
@@ -193,14 +199,17 @@ class WumpusWorld:
     name = "wumpus"
     action_names = tuple(a.name for a in WumpusAction)
     observation_names = tuple(_observation_name(o) for o in range(NUM_OBSERVATIONS))
-    discount = DISCOUNT
     has_initial_observation = True
 
-    def __init__(self, device: torch.device):
+    def __init__(self, device: torch.device, discount: float = DISCOUNT):
         """
         Args:
             device: Device of the layout tables (the simulator's and the filter's device).
+            discount: gamma in (0, 1) (section 1; the domain's own value is DISCOUNT).
         """
+        if not 0.0 < discount < 1.0:
+            raise ValueError(f"discount must lie in (0, 1), got {discount}.")
+        self.discount = discount
         self.device = device
         pit, wumpus, gold = _enumerate_layouts()
         adjacent = _adjacency()
