@@ -1,4 +1,4 @@
-# HANDOFF: JEPA I-POMDP (as of 2026-10-09, after the value-grounding experiments)
+# HANDOFF: JEPA I-POMDP (as of 2026-10-09 evening, after the offline value-target screens)
 
 Read `CLAUDE.md` first: it covers the architecture, commands and conventions. This file covers goals, the user's rules, the current state, every result that matters, the next steps, the dead ends and the files touched. Each module starts with a `DESIGN DECISIONS & THEORETICAL FOUNDATIONS` header with the evidence behind its design; read it before changing that module. Every diagnostic script in `reports/` explains its question, usage and result in its header. The user's auto-memory (`~/.claude/projects/-home-andyj1810-projects-jepa-ipomdp/memory/`) repeats the standing rules of section 2.
 
@@ -22,7 +22,12 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
   - the time-aware (finite-horizon) value: 200 / 108 / 143 against 186 / 166 / 215;
   - n-step returns of the agent's own greedy games: 88 / 93 / 126.
   Both options are in the code, default off, and unused.
-- **Next (section 6, step 1):** ground the value with returns that separate exploring from idling. The greedy policy's own returns do not. **Ask the user for the remedy.**
+- **Offline screens of value targets (2026-10-09, section 5.6), on the current agent's frozen latents:**
+  - the optimistic target max(V̂, G) fails on all 3 seeds;
+  - the agent's own Monte Carlo returns are inconsistent;
+  - **the heuristic-return result (M4) is not robust**: the FORWARD preference depends on the fit protocol and initialisation, and early-stopped fits fail seed 2 even with 2,048 games. That is extrapolation to idle states the heuristic never visits.
+  - No value-target remedy currently has offline support.
+- **Next (section 6, step 1): the user's decision.** Value-target remedies are exhausted offline. Remaining options are listed there.
 
 ## 1. Goals
 
@@ -109,6 +114,7 @@ Stages:
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_seed*.{unfinished_diag,value_chain_diag}.log` | Unfinished-games and value-chain diagnoses of the current agent (section 5.6) |
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_time_seed{0,1,2}` | Current recipe + `model.time_aware_value=true` (`8ca58d0`), analysed, plus both diagnostics (time seed 0 only for value-chain): **failed** (section 5.6) |
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_nstep10_seed{0,1,2}` | Current recipe + `model.value_nstep=10` (`52ac3fc`), analysed, plus both diagnostics: **failed** (section 5.6) |
+| `runs/wumpus/u64_store_eval_eps_decoder_k5_seed*.{grounding_screen,teacher_robustness}.log`, `{screen,teacher}_chain.sh` | The offline value-target screens of 2026-10-09 (section 5.6) |
 | `runs/wumpus/smoke_time_aware`, `smoke_nstep` | 6-collection small checks of the two options |
 | `runs/wumpus/{jepa_resume,time_aware,value_chain,nstep}_chain.sh` (+ `.log`) | The detached pipelines of 2026-10-07/08 |
 | `runs/wumpus/store_eval_eps_decoder_k5_u256_seed0`, `eps_decoder_k5_u256_seed0` | The two failed 256-update runs (−84 and −283) |
@@ -281,18 +287,36 @@ The agent idles all the same, with GRAB instead of SHOOT. The window being treat
 
 - **Idle V̂ fell** (650 → 290–380), as intended.
 - **But the agent steps into safe cells *less*:** 14–27% of the time. Its value's no-op preference widened to −30 to −37.
-- **Reading:** the greedy policy's own games end unfinished whether a state is "about to explore" or "idling", so their returns pull every value down without separating the two. Only returns from a policy that explores separate them, which is why the heuristic's returns worked in the diagnostic.
+- **Reading:** the greedy policy's own games end unfinished whether a state is "about to explore" or "idling", so their returns pull every value down without separating the two.
+
+**Offline screens of value targets (2026-10-09; user choice "screen offline, then train").** On frozen latents, a fresh MLP value is scored with the M4 test: Q(FORWARD) − Q(chosen) at the agent's declined safe-cell steps.
+
+`grounding_screen.py` (the agent's own replay buffer from `latest.pt`, 8,960 games; early-stopped fits). FORWARD preferred, seeds 0 / 1 / 2:
+
+| Target | FORWARD preferred | Note |
+|---|---|---|
+| learned V̂ | 23 / 13 / 34% | |
+| **A** max(V̂, G), all buffer games | 23 / 16 / 35% | **fails**: G > V̂ on only 5% of steps, since V̂ already overestimates by 480–690 |
+| G, exploring collection games | 40 / 27 / 65% | returns explain 9–13% of variance (layout luck) |
+| G, all buffer games | 53 / 25 / 54% | |
+| G, heuristic games (M4's target) | 69 / 62 / 39% | weaker than M4 |
+
+A correction to the earlier write-up: a single realised return is **not** ≤ V*(b). Only its expectation over layouts is, so max(V̂, G) is also biased upward by luck.
+
+`teacher_robustness.py` (heuristic returns; 4 protocols × 3 initialisations; 2,048 fresh heuristic games):
+- Long (3000-step) fits pass on every seed, but their median gaps vary 3–6× across initialisations.
+- Early-stopped fits (150–550 steps) **fail seed 2** with 512 and with 2,048 games (39–47%).
+- Held-out fit quality barely differs between protocols (MSE explained 0.79–0.86).
+- **Reading:** the test evaluates V on imagined children of idle-region states, which the heuristic's games barely cover. The ranking is extrapolation, not a property of the teacher's returns. M4's 66–73% is one draw from that spread, so H3 in `value_chain_diag.py` is weaker than stated: the information is in the latent, but no screened return target robustly ranks FORWARD first.
 
 ## 6. Next steps (in order; ask the user at each research decision, recommendation first)
 
-1. **Ground the value with returns that separate exploring from idling: the user's decision; offer options with a recommendation, then a small check, then 3 seeds paired with the current agent.**
-   - The evidence (section 5.6): the information is in the latent, and real returns of an *exploring* policy rank correctly on it. The greedy policy's own returns (n-step) and a finite horizon did not help.
-   - Candidates to offer:
-     - **Optimistic grounding from the best returns seen:** a lower-bound target max(Bellman, the realised return of any stored game from that state) on all games, exploring ones included. It is valid for V* because any policy's return is ≤ V*. It raises the values of states from which exploring paid off, rather than lowering everything. Self-imitation-style; it biases nothing upward beyond what was achieved.
-     - **Teacher returns:** an auxiliary value fitted to the exact-belief heuristic's returns, which works in the diagnostic. It makes the agent depend on a hand-written exact-belief teacher, and earlier heuristic data hurt the representation (`offpolicy_reference.py`).
-     - **Value-side capacity/resolution:** the two-hot spacing near 500–700 is about 49 (`value_bound` 100,100; only 153 of 255 bins reachable), coarser than the 15–35-point gaps that decide FORWARD versus a no-op. A support fitted to the episodic return range is a domain decision.
-     - **Lower γ** (e.g. 0.95): a wasted step then costs about 1 + 0.05·V̂ instead of about 7. It changes the domain's γ = 0.99.
-   - Diagnostics to rerun on any new agent: `unfinished_diag.py <run> 512` and `value_chain_diag.py <run> 512` (512 games reproduce `report.json`).
+1. **The idling problem: the user's decision.** Every value-target remedy has failed in training (time-aware, n-step) or offline (optimistic, own MC, teacher returns; section 5.6). Candidates:
+   - **Lower γ** (e.g. 0.95): a wasted step then costs about 1 + 0.05·V̂ instead of about 7, which attacks the 500+ idle overestimation directly. It is a domain change, and the heuristic must be re-scored.
+   - **Planner-side:** count idle actions as no-progress at search time, e.g. a model-based check that a no-op child latent ≈ its parent. That is engineering, not learning; weigh it against the research goals.
+   - **Value-side support:** the two-hot resolution near 500–700 is about 49.
+   - **Accept the plateau** and move on to steps 2 and 4.
+   - Diagnostics to rerun on any new agent: `unfinished_diag.py <run> 512` and `value_chain_diag.py <run> 512`.
 2. **Ablate the recipe at 64 updates per collection:** ε off and `store_eval_episodes` off, one at a time, 2–3 seeds each. It is cheap evidence of which parts matter.
 4. **Push the latent towards position and heading.** It is organised by percept; probes are 55–60% against 100% supervised. Candidates: longer horizons for the multi-step term at the fixed update rate; an auxiliary objective that does not use privileged state. Use offline A/Bs on `pools.pt` first, and save the networks this time.
 5. **Seeds and tooling:** 5 seeds for the current agent; make `sweep.py` and `experiments/aggregate.py` work for Wumpus (they are Tiger-only).
@@ -322,6 +346,8 @@ The agent idles all the same, with GRAB instead of SHOOT. The window being treat
 - **Acting with online (non-averaged) weights:** head jitter flips close decisions. Keep the Polyak copies.
 
 - **Wumpus, time-aware (finite-horizon) value** (`model.time_aware_value`): no gain; still ~69% unfinished (section 5.6).
+- **Wumpus, offline value-target screens** (`grounding_screen.py`, `teacher_robustness.py`): optimistic max(V̂, G) cannot lower an overestimated V̂ (fails 3/3); the agent's own MC returns are luck-dominated; heuristic returns rank FORWARD first only under some fit protocols (extrapolation). Do not build any of them as a training option without new evidence.
+- **Trusting one frozen-latent fit's ranking at imagined children** (M4): check fit protocols and initialisations first.
 - **Wumpus, n-step returns of the agent's own greedy games mixed into the value target** (`model.value_nstep=10`, mix 0.5): worse (88–126 against 166–215). The greedy policy's returns are uniformly poor and push all values down without separating exploring from idling.
 
 **Planning**
@@ -372,6 +398,7 @@ The agent idles all the same, with GRAB instead of SHOOT. The window being treat
 - `8ca58d0`, `483f1c3`: **`model.time_aware_value`** (default off; fingerprinted) and its launch.
 - `59bd83c`: `value_chain_diag.py` (latent has progress info; value ungrounded).
 - `52ac3fc`: **`model.value_nstep`** and the buffer's `greedy` flags (default off; fingerprinted).
+- `2eec2bb`: HANDOFF rewrite. `fb57b11`, `45bb861`: offline value-target screens (no remedy has support).
 
 ## 9. Files touched since the last push (`9a9b726`)
 
@@ -414,6 +441,7 @@ The agent idles all the same, with GRAB instead of SHOOT. The window being treat
 | `head_coverage.py` | Coverage diagnostic |
 | `absorbing_value.py`, `greedy_deaths.py`, `start_danger.py`, `head_shift.py` | V̂ by game status; danger at the greedy planner's FORWARDs; first-step danger; **calibration in-sample vs fresh exploring vs fresh greedy** |
 | `unfinished_diag.py` | **Why games end unfinished:** action mix, idling, safe cells left, root Q gaps, the one-step Q(FORWARD) − Q(chosen) split into reward and γ·E[V̂ next] (section 5.6) |
+| `grounding_screen.py`, `teacher_robustness.py` | **Offline screens of value targets** on frozen latents (section 5.6): optimistic, own MC, heuristic returns; robustness of the heuristic result to protocol, data and initialisation |
 | `value_chain_diag.py` | **Why the value prefers idling:** Bellman residual and drift on idle chains, progress probes, a value refit to the heuristic's returns (section 5.6) |
 | `tiger_acceptance_seed.py` | Tiger acceptance at another seed and update count |
 | `hoist_forward_check.py`, `hoist_training_check.py`, `profile_train_step.py` | Hoist equivalence and runtime profile |
