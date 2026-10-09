@@ -27,7 +27,7 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
   - the agent's own Monte Carlo returns are inconsistent;
   - **the heuristic-return result (M4) is not robust**: the FORWARD preference depends on the fit protocol and initialisation, and early-stopped fits fail seed 2 even with 2,048 games. That is extrapolation to idle states the heuristic never visits.
   - No value-target remedy currently has offline support.
-- **Next (section 6, step 1): the user's decision.** Value-target remedies are exhausted offline. Remaining options are listed there.
+- **Running now (launched 2026-10-09 15:06, commit `1c05c16`): lower γ.** The user chose `env.discount=0.95` (new key; default 0.99, Tiger bit-identical). It is the current recipe at 3 decoder seeds via `runs/wumpus/gamma95_chain.sh`, with `analyze.py` and both diagnostics chained; about 8–9 h in all. Compare paired with the current agent on **win, death and unfinished rates**, since returns at different γ are not comparable. The report's heuristic and random rows are re-scored at 0.95 automatically. γ also changes `value_bound` (20,020 instead of 100,100), so the two-hot support is 5× finer: a confound to state.
 
 ## 1. Goals
 
@@ -58,7 +58,7 @@ Stages:
 - No fallback paths, no deprecated code, no backward compatibility, no schema versions. Fail loudly.
 - Code should read as if written from scratch, with verbose design-decision comments; DDD/DRY/KISS/SOLID.
 - Every source file starts with `# ABSOLUTE PATH:` and a design-decisions header. Exception: Hydra files must have `# @package _global_` on the very first line, above the header.
-- When a config key is added, add it with its old value to the saved `.hydra/config.yaml` of every existing run so they still reload. Done for `representation`, `observation_prune`, `observation_horizon`, `agent.epsilon`/`epsilon_min`, `training.store_eval_episodes`, `model.time_aware_value` (false) and `model.value_nstep`/`value_nstep_mix` (0 / 0.5).
+- When a config key is added, add it with its old value to the saved `.hydra/config.yaml` of every existing run so they still reload. Done for `env.discount` (0.99), `representation`, `observation_prune`, `observation_horizon`, `agent.epsilon`/`epsilon_min`, `training.store_eval_episodes`, `model.time_aware_value` (false) and `model.value_nstep`/`value_nstep_mix` (0 / 0.5).
 - A new option must default to off and leave Tiger bit-identical. Prove it with a fingerprint: a small CPU `TrainingRun` (the test `_config`), 4 collections with evaluations, then compare metrics and every parameter sum against the previous commit in a `git worktree`. This was done for ε, `store_eval_episodes`, `time_aware_value` and `value_nstep`.
   - Fingerprint recipe: a script that imports `_config` and `tiger_setup` from `tests/test_training_run.py`, runs both representations for 4 collections plus evaluations, and prints `repr(metrics)` and every parameter sum. Run it in the worktree with `PYTHONPATH=<worktree>/src` and a symlinked `.venv`, then `cmp` the two outputs. Check that the worktree run imported the worktree's `src`.
 
@@ -115,6 +115,8 @@ Stages:
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_time_seed{0,1,2}` | Current recipe + `model.time_aware_value=true` (`8ca58d0`), analysed, plus both diagnostics (time seed 0 only for value-chain): **failed** (section 5.6) |
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_nstep10_seed{0,1,2}` | Current recipe + `model.value_nstep=10` (`52ac3fc`), analysed, plus both diagnostics: **failed** (section 5.6) |
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_seed*.{grounding_screen,teacher_robustness}.log`, `{screen,teacher}_chain.sh` | The offline value-target screens of 2026-10-09 (section 5.6) |
+| `runs/wumpus/u64_store_eval_eps_decoder_k5_gamma95_seed{0,1,2}`, `gamma95_chain.sh` (+ `.log`) | Current recipe + `env.discount=0.95` (`1c05c16`), **running** |
+| `runs/wumpus/smoke_gamma95` | 6-collection small check at γ = 0.95 (clean) |
 | `runs/wumpus/smoke_time_aware`, `smoke_nstep` | 6-collection small checks of the two options |
 | `runs/wumpus/{jepa_resume,time_aware,value_chain,nstep}_chain.sh` (+ `.log`) | The detached pipelines of 2026-10-07/08 |
 | `runs/wumpus/store_eval_eps_decoder_k5_u256_seed0`, `eps_decoder_k5_u256_seed0` | The two failed 256-update runs (−84 and −283) |
@@ -399,6 +401,7 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
 - `59bd83c`: `value_chain_diag.py` (latent has progress info; value ungrounded).
 - `52ac3fc`: **`model.value_nstep`** and the buffer's `greedy` flags (default off; fingerprinted).
 - `2eec2bb`: HANDOFF rewrite. `fb57b11`, `45bb861`: offline value-target screens (no remedy has support).
+- `1c05c16`: **`env.discount`**, a configurable Wumpus γ (default 0.99; fingerprinted).
 
 ## 9. Files touched since the last push (`9a9b726`)
 
