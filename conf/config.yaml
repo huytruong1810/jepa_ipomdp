@@ -101,6 +101,8 @@ model:
   acting_ema_momentum: 0.99   # Polyak averaging of the weights the planner acts with (training/run.py, section 4)
   num_bins: 255               # Two-hot bins for value and reward
   time_aware_value: false     # V(z, steps left in the window), terminal at the window end (training/run.py, section 9)
+  value_nstep: 0              # n > 0: mix n-step returns of stored greedy games into the value target (run.py, section 10)
+  value_nstep_mix: 0.5        # weight of the n-step return in that mix
 
 mcts:
   num_simulations: 50         # Search simulations per decision (per parallel episode)

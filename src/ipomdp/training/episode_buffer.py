@@ -25,7 +25,14 @@
 #      rewards[C, T]           r_0 .. r_{T-1}
 #      initial_observations[C] o_0             only for domains that emit one (Wumpus World);
 #                                              canonical Tiger emits none and stores None
+#      greedy[C]               whether the episode was played by the greedy evaluation planner
 #    Every stored episode ends by truncation, never termination (continuing task).
+#
+# 4. Episode Source (2026-10-08):
+#    - add(episodes, greedy) records whether a batch came from the greedy evaluation planner
+#      (training/run.py, section 8) or from collection. sample() returns the flag with the batch.
+#      The trainer's optional n-step greedy-return value target (trainer.py, section 3c) uses it;
+#      nothing else reads it, and storing it draws no random numbers.
 # ==============================================================================
 
 from dataclasses import dataclass
@@ -36,12 +43,18 @@ from torch import Tensor
 
 @dataclass(frozen=True)
 class EpisodeBatch:
-    """A batch of complete episodes: (B, T) tensors and o_0 of shape (B,) or None (section 3)."""
+    """
+    A batch of complete episodes: (B, T) tensors and o_0 of shape (B,) or None (section 3).
+
+    greedy (B,) bool is set on batches sampled from an EpisodeBuffer (section 4); freshly played
+    episodes carry None.
+    """
 
     actions: Tensor
     observations: Tensor
     rewards: Tensor
     initial_observations: Tensor | None
+    greedy: Tensor | None = None
 
 
 class EpisodeBuffer:
@@ -66,13 +79,14 @@ class EpisodeBuffer:
         self._rewards = torch.zeros(shape, dtype=torch.float32, device=device)
         self._initial_observations = (torch.zeros(capacity, dtype=torch.int64, device=device)
                                       if initial_observation else None)
+        self._greedy = torch.zeros(capacity, dtype=torch.bool, device=device)
         self._generator = torch.Generator(device=device)
         self._generator.manual_seed(seed)
         self._next = 0
         self.size = 0
 
-    def add(self, episodes: EpisodeBatch) -> None:
-        """Stores a batch of complete episodes, overwriting the oldest when full."""
+    def add(self, episodes: EpisodeBatch, greedy: bool) -> None:
+        """Stores a batch of complete episodes, overwriting the oldest when full; greedy: their source (section 4)."""
         count = episodes.actions.shape[0]
         if episodes.actions.shape != (count, self.episode_length):
             raise ValueError(f"episodes must have shape (B, {self.episode_length}), got {tuple(episodes.actions.shape)}.")
@@ -84,13 +98,14 @@ class EpisodeBuffer:
         self._rewards[slots] = episodes.rewards
         if self._initial_observations is not None:
             self._initial_observations[slots] = episodes.initial_observations
+        self._greedy[slots] = greedy
         self._next = (self._next + count) % self.capacity
         self.size = min(self.size + count, self.capacity)
 
     def state_dict(self) -> dict:
         """Stored episodes, write position and sampling-generator state (checkpointing)."""
         return {"actions": self._actions, "observations": self._observations, "rewards": self._rewards,
-                "initial_observations": self._initial_observations, "next": self._next, "size": self.size, "generator": self._generator.get_state()}
+                "initial_observations": self._initial_observations, "greedy": self._greedy, "next": self._next, "size": self.size, "generator": self._generator.get_state()}
 
     def load_state_dict(self, state: dict) -> None:
         """Restores a state produced by state_dict()."""
@@ -101,6 +116,7 @@ class EpisodeBuffer:
             raise ValueError("checkpoint and buffer disagree on whether the domain emits an initial observation.")
         if self._initial_observations is not None:
             self._initial_observations = state["initial_observations"].to(self.device)
+        self._greedy = state["greedy"].to(self.device)
         self._next, self.size = state["next"], state["size"]
         self._generator.set_state(state["generator"])
 
@@ -110,4 +126,5 @@ class EpisodeBuffer:
             raise RuntimeError("Cannot sample from an empty EpisodeBuffer.")
         index = torch.randint(0, self.size, (batch_size,), generator=self._generator, device=self.device)
         initial = None if self._initial_observations is None else self._initial_observations[index]
-        return EpisodeBatch(self._actions[index], self._observations[index], self._rewards[index], initial)
+        return EpisodeBatch(self._actions[index], self._observations[index], self._rewards[index], initial,
+                            self._greedy[index])

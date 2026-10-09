@@ -101,6 +101,14 @@
 #      looks almost free (reports/2026-10-02_wumpus_diagnostics/unfinished_diag.py).
 #    - The value head is built in the same place in the initialisation order. With the flag off
 #      (the default, canonical Tiger) it is the same ValueHead, so the run is unchanged.
+#
+# 10. n-Step Greedy-Return Value Grounding (user decision, 2026-10-08; trainer.py, section 3c):
+#    - cfg.value_nstep = n > 0 mixes n-step returns of the stored greedy evaluation games into the
+#      value targets with weight cfg.value_nstep_mix. It requires store_eval_episodes (section 8),
+#      the only source of greedy games; the buffer records each game's source (episode_buffer.py, 4).
+#    - Motivation: reports/2026-10-02_wumpus_diagnostics/value_chain_diag.py (the bootstrapped value
+#      is ungrounded on the greedy planner's idle chains).
+#    - n = 0 (the default, canonical Tiger) builds and draws nothing new.
 # ==============================================================================
 
 from collections.abc import Callable
@@ -190,6 +198,8 @@ class RunConfig:
     epsilon_min: float
     store_eval_episodes: bool         # add greedy evaluation games to the replay buffer (section 8)
     time_aware_value: bool            # finite-horizon value V(z, steps left) (section 9)
+    value_nstep: int                  # n-step greedy-return value grounding (section 10); 0 = off
+    value_nstep_mix: float
 
 
 class TrainingRun:
@@ -197,6 +207,8 @@ class TrainingRun:
 
     def __init__(self, setup: DomainSetup, cfg: RunConfig, device: torch.device):
         self.setup, self.cfg, self.device = setup, cfg, device
+        if cfg.value_nstep > 0 and not cfg.store_eval_episodes:
+            raise ValueError("value_nstep > 0 needs store_eval_episodes: greedy games are its only data (section 10).")
         domain = self.domain = setup.domain
         seed = lambda stream: stream_seed(cfg.seed, stream)  # noqa: E731
         torch.manual_seed(seed(RunStream.NETWORK_INIT))
@@ -219,7 +231,7 @@ class TrainingRun:
                                     if cfg.observation_horizon > 0 else None)
         self.trainer = WorldModelTrainer(self.belief_filter, self.jepa, self.value_head, self.reward_head, self.observation_head,
                                          self.codec, num_a, num_o, domain.discount, cfg.trainer, device,
-                                         self.multistep_predictor, horizon)
+                                         self.multistep_predictor, horizon, cfg.value_nstep, cfg.value_nstep_mix)
 
         # Polyak-averaged copies the agent acts with (section 4).
         self.acting_filter = frozen_copy(self.belief_filter)
@@ -271,7 +283,7 @@ class TrainingRun:
         """One collection of env_batch_size episodes followed by the gradient updates."""
         warmup = self.in_warmup
         episodes, _ = play_episodes(self.env, self.warmup_agent if warmup else self.train_agent)
-        self.buffer.add(episodes)
+        self.buffer.add(episodes, greedy=False)
         metrics: dict[str, float] = {}
         for _ in range(self.cfg.updates_per_collection):
             metrics = self.trainer.train_step(self.buffer.sample(self.cfg.batch_size))
@@ -295,7 +307,7 @@ class TrainingRun:
         """Greedy evaluation (section 2); updates best_eval_return."""
         episodes, _ = play_episodes(self.eval_env, self.eval_agent)
         if self.cfg.store_eval_episodes:
-            self.buffer.add(episodes)
+            self.buffer.add(episodes, greedy=True)
         returns = discounted_returns(episodes.rewards, self.domain.discount)
         mean, stderr = float(returns.mean()), float(returns.std()) / np.sqrt(len(returns))
         self.best_eval_return = max(self.best_eval_return, mean)

@@ -86,6 +86,22 @@
 #      makes a wasted step cost only about 1 + (1 - gamma) * V, so the greedy planner idled).
 #    - horizon=None (the default and canonical Tiger) leaves the computation unchanged.
 #
+# 3c. Optional n-Step Greedy-Return Grounding (nstep = n > 0; model.value_nstep, user decision 2026-10-08):
+#      G_t = sum_{i<m} gamma^i r_{t+i} + gamma^m V-bar(z_{t+m}),   m = min(n, T - t)
+#      V_target(z_t) = (1 - mix) * Bellman(z_t) + mix * G_t   on rows t < T of GREEDY episodes only
+#    - Why (reports/2026-10-02_wumpus_diagnostics/value_chain_diag.py): on Wumpus the bootstrapped value
+#      is self-consistent but ungrounded on the greedy planner's idle chains (V-hat ~650 against a
+#      realised -22). A one-step backup along a no-op can lower V-hat by only about 1 + (1 - gamma) V
+#      per iteration; an n-step return of real rewards lowers it by about (1 - gamma^n) V. A value fitted
+#      to real returns on the same latents ranked "step into a safe cell" above a no-op.
+#    - Greedy episodes only (EpisodeBuffer, section 4; stored by training/run.py, section 8): they are
+#      on-policy for the greedy planner, whose own idling must be priced in. The exploring
+#      policy's returns are NOT used, since they valued Tiger's confident beliefs as if doors
+#      were opened at random and made the greedy agent listen forever (section 3).
+#    - V-bar is the target value head on the batch's own detached latents (with k on finite-horizon
+#      runs, where V-bar(z_T, 0) = 0 ends the sum). Rows t = T keep the Bellman target.
+#    - nstep = 0 (the default and canonical Tiger) leaves the computation unchanged.
+#
 # 4. No Imagination Losses:
 #    - An earlier version also trained V on latents imagined by a stochastic latent
 #      transition ("consistency"). Planning now imagines through the real filter
@@ -152,6 +168,8 @@ class WorldModelTrainer:
         device: torch.device,
         multistep_predictor: MultiStepObservationPredictor | None = None,
         horizon: int | None = None,
+        nstep: int = 0,
+        nstep_mix: float = 0.0,
     ):
         """
         Args:
@@ -160,7 +178,10 @@ class WorldModelTrainer:
                 the decoder baseline (Representation.DECODER, section 2b).
             multistep_predictor: The optional multi-step observation term (section 2c), or None.
             horizon: Steps per window H for the finite-horizon value (section 3b), or None.
+            nstep, nstep_mix: n and the mixing weight of the n-step greedy-return target (section 3c); n = 0 is off.
         """
+        if nstep < 0 or not 0.0 <= nstep_mix <= 1.0 or (nstep > 0 and nstep_mix == 0.0):
+            raise ValueError(f"need nstep >= 0 and nstep_mix in (0, 1] when nstep > 0; got {nstep}, {nstep_mix}.")
         if jepa is not None and jepa.belief_filter is not belief_filter:
             raise ValueError("jepa must wrap the trained belief_filter")
         self.belief_filter = belief_filter
@@ -175,6 +196,8 @@ class WorldModelTrainer:
         self.num_observations = num_observations
         self.discount = discount
         self.horizon = horizon
+        self.nstep = nstep
+        self.nstep_mix = nstep_mix
         self.config = config
         self.device = device
         self.parameters = [
@@ -206,6 +229,28 @@ class WorldModelTrainer:
             expansion = self.target_model.expand(latents.float())
             q = expansion.rewards + self.discount * (expansion.observation_probs * expansion.next_values).sum(-1)
         return q.max(dim=-1).values
+
+    @torch.no_grad()
+    def nstep_returns(self, states: Tensor, rewards: Tensor) -> Tensor:
+        """
+        n-step returns bootstrapped with the target value (module header, section 3c).
+
+        Args:
+            states: Search-model states of every step, (B, T + 1, D) or (B, T + 1, D + 1) with a horizon.
+            rewards: Rewards r_0 .. r_{T-1}, (B, T).
+
+        Returns:
+            G_t for t = 0 .. T - 1, shape (B, T), float32.
+        """
+        batch, steps = rewards.shape
+        n = self.nstep
+        with torch.autocast(self.device.type, enabled=False):
+            boot = self.target_model.values(states.flatten(0, 1).float()).view(batch, steps + 1)
+            padded = torch.cat([rewards.float(), rewards.new_zeros(batch, n).float()], dim=1)    # zero past T
+            t = torch.arange(steps, device=rewards.device)
+            returns = sum(self.discount ** i * padded[:, i:i + steps] for i in range(n))
+            m = torch.clamp(steps - t, max=n)
+            return returns + (self.discount ** m.float()) * boot[:, t + m]
 
     def train_step(self, episodes: EpisodeBatch) -> dict[str, float]:
         """
@@ -249,6 +294,8 @@ class WorldModelTrainer:
                 states = torch.cat([all_latents.detach().float(), steps_left.unsqueeze(-1)], dim=-1)[live]
                 targets_value = self.value_targets(states)
                 value_logits = self.value_head(all_latents.detach()[live], steps_left[live])
+            if self.nstep > 0:
+                targets_value, nstep_metrics = self._mix_nstep(latents.detach(), episodes, targets_value)
             losses["value"] = self.twohot.loss(value_logits, targets_value).mean()
 
             # The decoder baseline's representation term; a detached planning-model fit otherwise.
@@ -281,8 +328,30 @@ class WorldModelTrainer:
             value_error = (self.twohot.mean(value_logits) - targets_value).abs().mean()
 
         return {
+            **(nstep_metrics if self.nstep > 0 else {}),
             "loss_total": total.item(),
             **{f"loss_{name}": loss.item() for name, loss in losses.items()},
             "value_target_mean": targets_value.mean().item(),
             "value_abs_error": value_error.item(),
         }
+
+    def _mix_nstep(self, latents: Tensor, episodes: EpisodeBatch,
+                   bellman: Tensor) -> tuple[Tensor, dict[str, float]]:
+        """Section 3c: the value targets with greedy rows t < T mixed with their n-step returns."""
+        if episodes.greedy is None:
+            raise ValueError("the n-step greedy-return target needs batches sampled from an EpisodeBuffer.")
+        batch, steps = episodes.rewards.shape
+        states = latents.float()
+        if self.horizon is not None:
+            steps_left = (self.horizon - torch.arange(steps + 1, device=self.device)).float()
+            states = torch.cat([states, steps_left.expand(batch, -1).unsqueeze(-1)], dim=-1)
+        returns = torch.cat([self.nstep_returns(states, episodes.rewards),
+                             torch.zeros(batch, 1, device=self.device)], dim=1)          # (B, T + 1); t = T unused
+        use = episodes.greedy.unsqueeze(1) & (torch.arange(steps + 1, device=self.device) < steps)
+        if self.horizon is not None:                                                     # rows k = 0 are not trained
+            returns, use = returns[:, :-1], use[:, :-1]
+        returns, use = returns.flatten(), use.flatten()
+        mixed = torch.where(use, (1.0 - self.nstep_mix) * bellman + self.nstep_mix * returns, bellman)
+        greedy_rows = int(use.sum())
+        return mixed, {"value_nstep_rows": float(greedy_rows),
+                       "value_nstep_minus_bellman": float((returns - bellman)[use].mean()) if greedy_rows else 0.0}

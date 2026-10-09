@@ -48,6 +48,6 @@ def test_tiger_collection_and_training_cycle():
             observations.append(out.observation)
             rewards.append(out.reward)
         assert bool(out.truncated.all())
-        buffer.add(EpisodeBatch(torch.stack(actions, 1), torch.stack(observations, 1), torch.stack(rewards, 1), None))
+        buffer.add(EpisodeBatch(torch.stack(actions, 1), torch.stack(observations, 1), torch.stack(rewards, 1), None), greedy=False)
         metrics = trainer.train_step(buffer.sample(4))
         assert {"loss_prediction", "loss_reward", "loss_value", "loss_observation"} <= metrics.keys()

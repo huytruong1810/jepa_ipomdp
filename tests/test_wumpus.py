@@ -210,7 +210,7 @@ class TestLearningStack:
             trainer=TrainerConfig(learning_rate=3e-4, weight_decay=1e-4, grad_clip_norm=1.0, value_target_momentum=0.99),
             num_simulations=4, observation_prune=1e-3, c_puct=1.25, dirichlet_alpha=0.3, dirichlet_epsilon=0.25,
             temperature=1.0, temperature_min=0.1, temperature_decay=0.5, epsilon=0.0, epsilon_min=0.0, store_eval_episodes=False,
-            time_aware_value=False)
+            time_aware_value=False, value_nstep=0, value_nstep_mix=0.5)
         values.update(overrides)
         return RunConfig(**values)
 
@@ -248,6 +248,28 @@ class TestLearningStack:
         resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
         continued = [resumed.collect_and_train() for _ in range(2)] + [resumed.evaluate()]
         assert repr(continued) == repr(expected[1:])
+
+    def test_nstep_greedy_value_trains_and_resumes(self, tmp_path):
+        # training/run.py, section 10: greedy games feed the n-step target; resume stays bit-exact.
+        from ipomdp.experiments import wumpus_setup
+        from ipomdp.training import TrainingRun, load_checkpoint, save_checkpoint
+        setup = wumpus_setup(CPU)
+        config = lambda **kw: self._config(value_nstep=3, store_eval_episodes=True, **kw)  # noqa: E731
+        with pytest.raises(ValueError):
+            TrainingRun(setup, self._config(value_nstep=3), CPU)
+        reference = TrainingRun(setup, config(), CPU)
+        expected = [reference.collect_and_train(), reference.evaluate(), reference.collect_and_train(),
+                    reference.collect_and_train(), reference.evaluate()]
+        assert {"value_nstep_rows", "value_nstep_minus_bellman"} <= expected[2].keys() & expected[3].keys()
+        assert bool(reference.buffer._greedy.any()) and not bool(reference.buffer._greedy.all())
+        first = TrainingRun(setup, config(), CPU)
+        first.collect_and_train()
+        first.evaluate()
+        save_checkpoint(tmp_path / "latest.pt", first.state_dict())
+        resumed = TrainingRun(setup, config(seed=99), CPU)
+        resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
+        continued = [resumed.collect_and_train(), resumed.collect_and_train(), resumed.evaluate()]
+        assert repr(continued) == repr(expected[2:])
 
     def test_multistep_observation_term_trains_and_resumes(self, tmp_path):
         from ipomdp.experiments import wumpus_setup

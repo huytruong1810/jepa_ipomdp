@@ -45,24 +45,26 @@ class TestEpisodeBuffer:
         with pytest.raises(RuntimeError):
             buffer.sample(1)
         first, second = _episodes(3, 0), _episodes(3, 1)
-        buffer.add(first)
+        buffer.add(first, greedy=False)
         assert buffer.size == 3
-        buffer.add(second)  # 6 episodes into capacity 5: the oldest is overwritten
+        buffer.add(second, greedy=True)  # 6 episodes into capacity 5: the oldest is overwritten
         assert buffer.size == 5
         assert torch.equal(buffer._actions[0], second.actions[2])
         assert torch.equal(buffer._actions[1], first.actions[1])
+        assert buffer._greedy.tolist() == [True, False, False, True, True]     # slot 0 was overwritten by `second`
         sample = buffer.sample(8)
         assert sample.actions.shape == (8, T) and sample.rewards.dtype == torch.float32
+        assert sample.greedy.dtype == torch.bool and sample.greedy.shape == (8,)
 
     def test_rejects_wrong_episode_length(self):
         buffer = EpisodeBuffer(capacity=5, episode_length=T + 1, initial_observation=False, device=CPU, seed=0)
         with pytest.raises(ValueError):
-            buffer.add(_episodes(2, 0))
+            buffer.add(_episodes(2, 0), greedy=False)
 
     def test_sampling_is_seeded(self):
         def draw(seed):
             buffer = EpisodeBuffer(capacity=16, episode_length=T, initial_observation=False, device=CPU, seed=seed)
-            buffer.add(_episodes(16, 0))
+            buffer.add(_episodes(16, 0), greedy=False)
             return buffer.sample(8).actions
         assert torch.equal(draw(3), draw(3))
 
@@ -106,6 +108,34 @@ class TestWorldModelTrainer:
         short = _episodes(4, 0)
         with pytest.raises(ValueError):                              # only whole windows (T = H)
             trainer.train_step(EpisodeBatch(short.actions[:, :-1], short.observations[:, :-1], short.rewards[:, :-1], None))
+
+    def test_nstep_greedy_returns(self):
+        # trainer.py, section 3c: G_t = sum_{i<m} gamma^i r_{t+i} + gamma^m V-bar(z_{t+m}), m = min(n, T - t).
+        torch.manual_seed(0)
+        belief_filter = BeliefFilter(A, O, D, H, 1)
+        trainer = WorldModelTrainer(belief_filter, None, ValueHead(D, H, 1, 255), RewardHead(D, A, H, 1, 255),
+                                    ObservationHead(D, A, O, H, 1), TwoHotSymlog(255, 2000.0), A, O, discount=0.95,
+                                    config=CONFIG, device=CPU, nstep=2, nstep_mix=0.5)
+        torch.nn.init.normal_(trainer.target_value_head.net[-1].weight)
+        states, rewards = torch.randn(3, T + 1, D), torch.randn(3, T)
+        with torch.no_grad():
+            boot = trainer.twohot.mean(trainer.target_value_head(states.flatten(0, 1))).view(3, T + 1)
+        expected = torch.zeros(3, T)
+        for t in range(T):
+            m = min(2, T - t)
+            expected[:, t] = sum(0.95 ** i * rewards[:, t + i] for i in range(m)) + 0.95 ** m * boot[:, t + m]
+        assert torch.allclose(trainer.nstep_returns(states, rewards), expected, atol=1e-4)
+        episodes = _episodes(4, 0)
+        with pytest.raises(ValueError):                              # needs the buffer's greedy flags
+            trainer.train_step(episodes)
+        greedy = EpisodeBatch(episodes.actions, episodes.observations, episodes.rewards, None,
+                              torch.tensor([True, False, True, False]))
+        metrics = trainer.train_step(greedy)
+        assert metrics["value_nstep_rows"] == 2 * T
+        with pytest.raises(ValueError):
+            WorldModelTrainer(belief_filter, None, ValueHead(D, H, 1, 255), RewardHead(D, A, H, 1, 255),
+                              ObservationHead(D, A, O, H, 1), TwoHotSymlog(255, 2000.0), A, O, discount=0.95,
+                              config=CONFIG, device=CPU, nstep=2, nstep_mix=0.0)
 
     def test_target_value_head_tracks_online_head_by_ema(self):
         trainer = _trainer()

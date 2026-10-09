@@ -75,7 +75,7 @@ def main() -> None:
 
     for collection in range(1, total_collections + 1):
         episodes = _concat(play_episodes(simulator, reference)[0], play_episodes(simulator, random_agent)[0])
-        run.buffer.add(episodes)
+        run.buffer.add(episodes, greedy=False)
         for _ in range(t.updates_per_collection):
             run.trainer.train_step(run.buffer.sample(t.batch_size))
             run._update_acting()
