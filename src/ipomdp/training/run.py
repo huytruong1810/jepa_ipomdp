@@ -101,6 +101,9 @@
 #      looks almost free (reports/2026-10-02_wumpus_diagnostics/unfinished_diag.py).
 #    - The value head is built in the same place in the initialisation order. With the flag off
 #      (the default, canonical Tiger) it is the same ValueHead, so the run is unchanged.
+#    - Result 2026-10-08 (Wumpus, current recipe + this flag, 3 seeds, paired): returns 200 / 108 / 143
+#      against 186 / 166 / 215; still ~69% unfinished (the agent idles with GRAB instead of SHOOT).
+#      The truncation was not the cause. Kept as an option, not used.
 #
 # 10. n-Step Greedy-Return Value Grounding (user decision, 2026-10-08; trainer.py, section 3c):
 #    - cfg.value_nstep = n > 0 mixes n-step returns of the stored greedy evaluation games into the
@@ -109,6 +112,11 @@
 #    - Motivation: reports/2026-10-02_wumpus_diagnostics/value_chain_diag.py (the bootstrapped value
 #      is ungrounded on the greedy planner's idle chains).
 #    - n = 0 (the default, canonical Tiger) builds and draws nothing new.
+#    - Result 2026-10-09 (Wumpus, current recipe + n = 10, mix 0.5, 3 seeds, paired): returns 88 / 93 / 126
+#      against 186 / 166 / 215; unfinished 68-79%. Idle V-hat fell (650 -> 290-380) but the value still
+#      ranks a no-op above stepping into a safe cell (median gap -30 to -37, was -15): the greedy
+#      policy's own returns are uniformly poor and do not separate exploring from idling.
+#      Kept as an option, not used.
 # ==============================================================================
 
 from collections.abc import Callable

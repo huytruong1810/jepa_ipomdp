@@ -1,4 +1,4 @@
-# HANDOFF: JEPA I-POMDP (as of 2026-10-07, after the Wumpus reviewer meeting)
+# HANDOFF: JEPA I-POMDP (as of 2026-10-09, after the value-grounding experiments)
 
 Read `CLAUDE.md` first: it covers the architecture, commands and conventions. This file covers goals, the user's rules, the current state, every result that matters, the next steps, the dead ends and the files touched. Each module starts with a `DESIGN DECISIONS & THEORETICAL FOUNDATIONS` header with the evidence behind its design; read it before changing that module. Every diagnostic script in `reports/` explains its question, usage and result in its header. The user's auto-memory (`~/.claude/projects/-home-andyj1810-projects-jepa-ipomdp/memory/`) repeats the standing rules of section 2.
 
@@ -13,7 +13,16 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
 - **The main diagnosis of the last week.** The jointly trained filter and observation head **overfit** when they train too many times per game. They were calibrated in-sample and overconfident on fresh games, and the greedy planner exploited exactly those confident "safe" errors. Going back to 64 updates per collection fixed most deaths.
 - **The reviewer meeting (2026-10-07, 3pm) is over.** The page is https://claude.ai/artifact/1m1jkSud5xbFCidGMkc6VN (section 3).
 - **JEPA with the same recipe (2 seeds, finished 2026-10-07): no detectable difference from the decoder in return** (paired: −16 and +26). Its probes are slightly worse on random histories (section 5.3).
-- **Unfinished games are diagnosed:** the value head does not reward exploration progress (section 5.3). **Next:** the user chose the time-aware horizon remedy (section 6, step 1).
+- **Why games end unfinished, diagnosed 2026-10-07/08** (section 5.6):
+  - the greedy planner idles in front of provably safe unvisited cells;
+  - the latent DOES encode progress (probes 93–97%);
+  - the bootstrapped **value** is self-consistent but ungrounded on idle chains (V̂ ≈ 650 against a realised −22);
+  - a value fitted to real returns of an *exploring* policy (the heuristic's games) on the same frozen latents ranks "step forward" first.
+- **Two value remedies were tried and both failed (3 seeds each, section 5.6):**
+  - the time-aware (finite-horizon) value: 200 / 108 / 143 against 186 / 166 / 215;
+  - n-step returns of the agent's own greedy games: 88 / 93 / 126.
+  Both options are in the code, default off, and unused.
+- **Next (section 6, step 1):** ground the value with returns that separate exploring from idling. The greedy policy's own returns do not. **Ask the user for the remedy.**
 
 ## 1. Goals
 
@@ -44,8 +53,9 @@ Stages:
 - No fallback paths, no deprecated code, no backward compatibility, no schema versions. Fail loudly.
 - Code should read as if written from scratch, with verbose design-decision comments; DDD/DRY/KISS/SOLID.
 - Every source file starts with `# ABSOLUTE PATH:` and a design-decisions header. Exception: Hydra files must have `# @package _global_` on the very first line, above the header.
-- When a config key is added, add it with its old value to the saved `.hydra/config.yaml` of every existing run so they still reload. Done for `representation`, `observation_prune`, `observation_horizon`, `agent.epsilon`/`epsilon_min` and `training.store_eval_episodes`.
-- A new option must default to off and leave Tiger bit-identical. Prove it with a fingerprint: a small CPU `TrainingRun` (the test `_config`), 4 collections with evaluations, then compare metrics and every parameter sum against the previous commit in a `git worktree`. This was done for ε and `store_eval_episodes`.
+- When a config key is added, add it with its old value to the saved `.hydra/config.yaml` of every existing run so they still reload. Done for `representation`, `observation_prune`, `observation_horizon`, `agent.epsilon`/`epsilon_min`, `training.store_eval_episodes`, `model.time_aware_value` (false) and `model.value_nstep`/`value_nstep_mix` (0 / 0.5).
+- A new option must default to off and leave Tiger bit-identical. Prove it with a fingerprint: a small CPU `TrainingRun` (the test `_config`), 4 collections with evaluations, then compare metrics and every parameter sum against the previous commit in a `git worktree`. This was done for ε, `store_eval_episodes`, `time_aware_value` and `value_nstep`.
+  - Fingerprint recipe: a script that imports `_config` and `tiger_setup` from `tests/test_training_run.py`, runs both representations for 4 collections plus evaluations, and prints `repr(metrics)` and every parameter sum. Run it in the worktree with `PYTHONPATH=<worktree>/src` and a symlinked `.venv`, then `cmp` the two outputs. Check that the worktree run imported the worktree's `src`.
 
 **Architecture and efficiency** (user guidance of 2026-10-03 and 2026-10-04, also in memory)
 - **The network architecture must never be the bottleneck.** When results look wrong, A/B-test state-of-the-art upgrades: a Transformer over history tokens with a KV-cache, residuals, (flash) attention, MoE, GQA, MLA. Use good statistics (several seeds, paired comparisons, 95% intervals).
@@ -79,11 +89,12 @@ Stages:
 
 **Git**
 - **`origin/main` is at `9a9b726`.** Everything after it (`61991c7` … HEAD) is local and unpushed: **ask before pushing.** The previous HANDOFF wrongly said `61991c7` was pushed.
-- The working tree is clean after the HANDOFF commit.
+- The working tree is clean after the HANDOFF commit. Nothing is running.
 
 **Tests**
-- The fast suite passes: 154 tests, about 50–100 s.
-- **The slow suite passed 7/7 on 2026-10-05**, at `cd9d116` plus the stale-test fix `d4911a8`. Later source changes (ε, `store_eval_episodes`) are default-off, fingerprinted and covered by fast tests. Rerunning the slow suite once at HEAD is still advisable (about 50 min).
+- The fast suite passes: 159 tests, about 2 min.
+- **The slow suite passed 7/7 on 2026-10-05**, at `cd9d116` plus the stale-test fix `d4911a8`. Later source changes (ε, `store_eval_episodes`, `time_aware_value`, `value_nstep`) are default-off, fingerprinted and covered by fast tests. Rerunning the slow suite once at HEAD is still advisable (about 50 min).
+- **Checkpoints from before `52ac3fc` cannot be resumed:** their buffer state has no `greedy` flags (no back-compat, by rule). They still load for analysis (`load_trained_run` reads networks only).
 - **The Tiger acceptance test now trains 6000 updates.** At 3000 the value gate (mean |V − V*| < 8) failed at 3–5 of 9 seeds. The two worst seeds drop to 5.3 and 1.1 at 6000. The seed table is in the test header; the logs are in `runs/tiger_acceptance_seeds/`.
 - The input-network hoist (`6af8f8f`) stays: its paired effect on the value error is +4.2 ± 6.2, not significant.
 
@@ -95,7 +106,11 @@ Stages:
 | `runs/sweeps/decoder` | Tiger decoder baseline, 5 seeds |
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_seed{0,1,2}` | **The current Wumpus agent**, analysed (`analysis/report.json`); seed 0 also has `analysis/latents_umap_input.npz` |
 | `runs/wumpus/u64_store_eval_eps_jepa_k5_seed{0,1}` | **JEPA with the same recipe, finished and analysed** (`analysis/report.json`). Collections 1–40 were trained at `f5740e4`; collections 41–100 were resumed bit-exactly on 2026-10-07 at `2a6e326` (no source change) by `runs/wumpus/jepa_resume_chain.sh` |
-| `runs/wumpus/u64_store_eval_eps_decoder_k5_seed*.unfinished_diag.log` | Unfinished-games diagnosis (section 5.3) |
+| `runs/wumpus/u64_store_eval_eps_decoder_k5_seed*.{unfinished_diag,value_chain_diag}.log` | Unfinished-games and value-chain diagnoses of the current agent (section 5.6) |
+| `runs/wumpus/u64_store_eval_eps_decoder_k5_time_seed{0,1,2}` | Current recipe + `model.time_aware_value=true` (`8ca58d0`), analysed, plus both diagnostics (time seed 0 only for value-chain): **failed** (section 5.6) |
+| `runs/wumpus/u64_store_eval_eps_decoder_k5_nstep10_seed{0,1,2}` | Current recipe + `model.value_nstep=10` (`52ac3fc`), analysed, plus both diagnostics: **failed** (section 5.6) |
+| `runs/wumpus/smoke_time_aware`, `smoke_nstep` | 6-collection small checks of the two options |
+| `runs/wumpus/{jepa_resume,time_aware,value_chain,nstep}_chain.sh` (+ `.log`) | The detached pipelines of 2026-10-07/08 |
 | `runs/wumpus/store_eval_eps_decoder_k5_u256_seed0`, `eps_decoder_k5_u256_seed0` | The two failed 256-update runs (−84 and −283) |
 | `runs/wumpus/north50_seed0`, `north50_decoder_seed0` | The first JEPA and decoder agents (110 and 85) |
 | `runs/wumpus/overfit_ab/` | Offline overfitting A/B logs (stopped at about 12,800 updates) |
@@ -188,12 +203,12 @@ A hand-written, deterministic policy on the exact belief. It is **not optimal** 
 | **Mean, 3 seeds** | **189 ± 62** (t-interval) | | | |
 
 - **The death model generalises** (seed 0, `latest.pt`, 256 fresh games per policy). Steps predicted below 0.02 killed 0.2% of the time under the exploring policy and 0.1% under the greedy planner. Before the fix this was 4.1% and 9.6%.
-- **The remaining gap is unfinished games, not deaths.** Diagnosed on 2026-10-07 (`unfinished_diag.py`, 3 seeds × 512 games):
+- **The remaining gap is unfinished games, not deaths.** Diagnosed on 2026-10-07 (`unfinished_diag.py`, 3 seeds × 512 games; continued in section 5.6):
   - In unfinished games the hunter stops finding new cells around step 11–14 and then idles for about 35 steps, mostly with no-ops: SHOOT without the arrow, GRAB on an empty cell, turns.
   - In 47–50% of them a provably safe, unvisited, reachable cell still existed at the end.
   - Facing such a cell, the planner steps in only 29–42% of the time. The death head is not the reason (median P(death) about 0.001). The value head rates the latent after the step about 15 below the latent after a no-op (median γ·E[V̂ next] gap −15 to −17).
   - Under the bootstrapped (truncated-window) objective a wasted step costs only about 1 + (1−γ)·V̂ ≈ 7.5, less than those V̂ errors. Exploration progress is not valued.
-- **Value overestimation persists.** V̂ at live states is about 905 in the store-eval run and higher in the 256-update runs, against a reference return of 573. Re-measure it on the current agent with `absorbing_value.py`. It is a candidate cause of the unfinished games.
+- **Value overestimation, measured on the current agent:** V̂ ≈ 620–660 on idle states of unfinished games against a realised −22, and 680–750 on progress steps (`value_chain_diag.py`). The full mechanism is in section 5.6.
 - **JEPA, same recipe** (2 seeds, `best.pt`, the same 512 analysis games, paired with decoder seeds 0–1):
 
 | Seed | Decoder return | JEPA return | JEPA win / death / unfinished | MLP probe cell / heading, random histories (decoder → JEPA) | Same, agent histories |
@@ -233,20 +248,52 @@ A hand-written, deterministic policy on the exact belief. It is **not optimal** 
    - weight decay up to 0.1 had no effect.
 9. **Back to 64 updates per collection, keeping the other changes:** 189 ± 62 (section 5.3).
 
+### 5.6 The unfinished games: diagnosis and two failed value remedies (2026-10-07 to 10-09)
+
+**Diagnosis** (`unfinished_diag.py`, `value_chain_diag.py`; current agent, 3 seeds × 512 games; both replay the analysis games exactly, with outcomes equal to `report.json`):
+- **Behaviour:** in unfinished games the hunter stops finding new cells around step 11–14, then spends about 35 steps on no-ops (SHOOT without the arrow, GRAB on an empty cell, turns).
+- **It isn't just stuck behind risk:** in 47–50% of those games a provably safe, unvisited, reachable cell still existed at the end. Facing such a cell, the planner steps in only 29–42% of the time.
+- **Not the death head:** median P(death | FORWARD) there is about 0.001. The whole one-step deficit is γ·E[V̂(next)]: the value rates the latent after the step about 15 below the latent after a no-op.
+- **H2 rejected, the latent knows about progress.** Held-out MLP probes on frozen latents:
+  - "safe unvisited cell directly ahead": 93–97% correct, against 79–84% for always guessing the majority answer;
+  - cells visited: off by 0.15–0.37, against 1.6–2.3 for always guessing the average;
+  - steps since the last new cell: off by 1.9, against 12.
+- **H1, how idling sustains itself:** on idle steps V̂ ≈ 620–660 against a realised −22, and the Bellman residual is small. A no-op backup lowers V̂ by only about 1 + (1−γ)·V̂ ≈ 7 per iteration. On seeds 0 and 1 the latent barely moves under idle actions (0.17 against 4–6 on progress steps); seed 2 drifts and idles anyway.
+- **H3 confirmed, the value learning is the failure.** A fresh value fitted on the same frozen latents to the **exact-belief heuristic's** Monte Carlo returns (held-out error 59–65, against 450 for a constant) prefers FORWARD at the agent's declined safe-cell steps: median +76 to +225, FORWARD first 66–73% of the time. The learned value prefers the no-op there (median −9 to −27).
+
+**Remedy 1, time-aware value** (`model.time_aware_value`, `8ca58d0`; user choice: value head only). V(z, k), where k is the steps left in the window; the search counts k down to a terminal 0.
+
+| Seed | Current | Time-aware | Unfinished |
+|---|---|---|---|
+| 0 | 185.5 ± 20.0 | 200.2 ± 19.0 | 66.6% → 70.7% |
+| 1 | 166.0 ± 19.6 | 107.9 ± 19.7 | 70.3% → 69.3% |
+| 2 | 215.2 ± 18.6 | 143.1 ± 20.4 | 70.7% → 67.6% |
+
+The agent idles all the same, with GRAB instead of SHOOT. The window being treated as a cut-off is not the cause.
+
+**Remedy 2, n-step greedy-return grounding** (`model.value_nstep=10`, mix 0.5, `52ac3fc`). On stored greedy evaluation games the value target is 0.5·Bellman + 0.5·Gₜ⁽¹⁰⁾, where G is the 10-step return of real rewards bootstrapped with the target value head.
+
+| Seed | Current | n-step | Unfinished |
+|---|---|---|---|
+| 0 | 185.5 ± 20.0 | 87.9 ± 20.5 | 66.6% → 68.2% |
+| 1 | 166.0 ± 19.6 | 93.4 ± 16.0 | 70.3% → 79.1% |
+| 2 | 215.2 ± 18.6 | 126.1 ± 17.0 | 70.7% → 77.5% |
+
+- **Idle V̂ fell** (650 → 290–380), as intended.
+- **But the agent steps into safe cells *less*:** 14–27% of the time. Its value's no-op preference widened to −30 to −37.
+- **Reading:** the greedy policy's own games end unfinished whether a state is "about to explore" or "idling", so their returns pull every value down without separating the two. Only returns from a policy that explores separate them, which is why the heuristic's returns worked in the diagnostic.
+
 ## 6. Next steps (in order; ask the user at each research decision, recommendation first)
 
-1. **Time-aware horizon (user decision, 2026-10-07; value head only, also the user's choice): implemented at `8ca58d0`, running.**
-   - `model.time_aware_value=true`:
-     - `HorizonValueHead` V(z, k), where k is the steps left in the window;
-     - the search model's state becomes [z, k] and counts k down, with V(·, 0) = 0 and no reward past the window;
-     - the trainer's targets use k = H − t and drop k = 0 rows.
-   - Default off. The Tiger fingerprint (both representations) is bit-identical to `80a3628`. There are 3 new fast tests (157 pass), and saved run configs got `time_aware_value: false`.
-   - Small check `runs/wumpus/smoke_time_aware` (6 collections): runs cleanly.
-   - **Overnight chain** `runs/wumpus/time_aware_chain.sh` (log `time_aware_chain.log`, launched 2026-10-07 23:36): decoder recipe plus time-aware value, seeds 0–1 in parallel, then seed 2, then `analyze.py` and `unfinished_diag.py` on each. Run directories `runs/wumpus/u64_store_eval_eps_decoder_k5_time_seed{0,1,2}`.
-   - **Next:** compare paired with the decoder seeds 0–2 (return, unfinished rate, idle steps in front of safe cells).
-   - (The JEPA arm with the same recipe is done; see section 5.3.)
-2. **Unfinished games: diagnosed (section 5.3); the remedy is the user's decision.** The value head does not value progress, and idling is cheap under the bootstrapped objective. Note that the two-hot spacing near 500–700 is about 49 (`value_bound` 100,100; only 153 of 255 bins reachable), coarser than the 15-point V̂ gaps that decide FORWARD versus wait. Candidates were offered to the user on 2026-10-07.
-3. **Ablate the recipe at 64 updates per collection:** ε off and `store_eval_episodes` off, one at a time, 2–3 seeds each. It is cheap evidence of which parts matter.
+1. **Ground the value with returns that separate exploring from idling: the user's decision; offer options with a recommendation, then a small check, then 3 seeds paired with the current agent.**
+   - The evidence (section 5.6): the information is in the latent, and real returns of an *exploring* policy rank correctly on it. The greedy policy's own returns (n-step) and a finite horizon did not help.
+   - Candidates to offer:
+     - **Optimistic grounding from the best returns seen:** a lower-bound target max(Bellman, the realised return of any stored game from that state) on all games, exploring ones included. It is valid for V* because any policy's return is ≤ V*. It raises the values of states from which exploring paid off, rather than lowering everything. Self-imitation-style; it biases nothing upward beyond what was achieved.
+     - **Teacher returns:** an auxiliary value fitted to the exact-belief heuristic's returns, which works in the diagnostic. It makes the agent depend on a hand-written exact-belief teacher, and earlier heuristic data hurt the representation (`offpolicy_reference.py`).
+     - **Value-side capacity/resolution:** the two-hot spacing near 500–700 is about 49 (`value_bound` 100,100; only 153 of 255 bins reachable), coarser than the 15–35-point gaps that decide FORWARD versus a no-op. A support fitted to the episodic return range is a domain decision.
+     - **Lower γ** (e.g. 0.95): a wasted step then costs about 1 + 0.05·V̂ instead of about 7. It changes the domain's γ = 0.99.
+   - Diagnostics to rerun on any new agent: `unfinished_diag.py <run> 512` and `value_chain_diag.py <run> 512` (512 games reproduce `report.json`).
+2. **Ablate the recipe at 64 updates per collection:** ε off and `store_eval_episodes` off, one at a time, 2–3 seeds each. It is cheap evidence of which parts matter.
 4. **Push the latent towards position and heading.** It is organised by percept; probes are 55–60% against 100% supervised. Candidates: longer horizons for the multi-step term at the fixed update rate; an auxiliary objective that does not use privileged state. Use offline A/Bs on `pools.pt` first, and save the networks this time.
 5. **Seeds and tooling:** 5 seeds for the current agent; make `sweep.py` and `experiments/aggregate.py` work for Wumpus (they are Tiger-only).
 6. **Rerun the slow suite at HEAD once** (section 3, Tests).
@@ -274,6 +321,9 @@ A hand-written, deterministic policy on the exact belief. It is **not optimal** 
 - **20-step episodes:** the bootstrap is unanchored. **Chunked prioritised replay** from a zero belief: replaced by whole-episode uniform replay.
 - **Acting with online (non-averaged) weights:** head jitter flips close decisions. Keep the Polyak copies.
 
+- **Wumpus, time-aware (finite-horizon) value** (`model.time_aware_value`): no gain; still ~69% unfinished (section 5.6).
+- **Wumpus, n-step returns of the agent's own greedy games mixed into the value target** (`model.value_nstep=10`, mix 0.5): worse (88–126 against 166–215). The greedy policy's returns are uniformly poor and push all values down without separating exploring from idling.
+
 **Planning**
 - **Mean (MuZero-style) backups with a uniform prior** degrade as search grows. Use expectimax.
 - **More simulations on Wumpus** (200 vs 50): no gain.
@@ -290,6 +340,8 @@ A hand-written, deterministic policy on the exact belief. It is **not optimal** 
 - **Hydra `@package` below a header comment** is silently ignored. It must be line 1.
 - **Comparing metric dicts with `==`:** `mean_win_step` is NaN when no game is won. Compare `repr()`.
 - **Harness runs that do not save networks** (`objective_ab.py`): later diagnostics need retraining. Save the final networks next time.
+- **Expanding a whole data set at once through `LearnedSearchModel.expand`** (N × A × O children; 20,000 states → 6.4 M rows) runs out of GPU memory. Chunk it (`value_chain_diag.py`, `one_step`).
+- **`echo "... $(date ...) exit $?"`** logs the exit status of `date`, not of the job, so crashed runs looked successful once. Capture `status=$?` first.
 
 **Machine and tooling**
 - **Running heavy jobs under ipomcp load:** CPU-bound search slows about 4×, and parallel runs can exhaust RAM (section 2, Machine).
@@ -316,6 +368,10 @@ A hand-written, deterministic policy on the exact belief. It is **not optimal** 
 - `1d7801b`: **`training.store_eval_episodes`** (default off; fingerprinted).
 - `87cfa37`, `aa46d46`, `68d66b4`, `f5740e4`, `d4b476e`: store-eval run, overfitting finding, overfitting A/B, 64-update runs launched.
 - `03caa22` … `d8325b7`: Wumpus reviewer page (versions 1–6), UMAP, synced player, export tooling, results in HANDOFF.
+- `2a6e326`: previous HANDOFF rewrite. `784b317`: `unfinished_diag.py`, JEPA arm resumed. `80a3628`: JEPA same-recipe result.
+- `8ca58d0`, `483f1c3`: **`model.time_aware_value`** (default off; fingerprinted) and its launch.
+- `59bd83c`: `value_chain_diag.py` (latent has progress info; value ungrounded).
+- `52ac3fc`: **`model.value_nstep`** and the buffer's `greedy` flags (default off; fingerprinted).
 
 ## 9. Files touched since the last push (`9a9b726`)
 
@@ -332,10 +388,12 @@ A hand-written, deterministic policy on the exact belief. It is **not optimal** 
   - section 7: ε, decayed with the temperature;
   - section 8: `store_eval_episodes`;
   - also `Domain`, `DomainSetup`, `observation_horizon`, `multistep_predictor`.
-- `training/trainer.py`: section 2c, the multi-step term.
+- `training/trainer.py`: section 2c, the multi-step term; section 3b, finite-horizon targets; section 3c, n-step greedy-return mixing (`nstep_returns`, `_mix_nstep`).
+- `training/run.py`, sections 9 (`time_aware_value`) and 10 (`value_nstep`), each with its negative result; `training/episode_buffer.py`, section 4 (the `greedy` flag; `add(episodes, greedy)`).
+- `planning/search_model.py`, section 5 (finite-horizon state [z, k], `LearnedSearchModel.values`); `models/heads.py`, section 2b (`HorizonValueHead`).
 - `models/world_model.py` (`start`, `unroll(..., initial_observation)`, section 7, the hoisted `input_net`); `models/heads.py` (`MultiStepObservationPredictor`).
 - `training/episode_buffer.py`, `training/rollout.py`, `planning/search_model.py`, `planning/mcts.py` (section 6, pruning), `domain/pomdp.py`, `domain/__init__.py`, `experiments/runs.py`, `interpretability/*`, `telemetry/visualizers.py`, `main.py`, `analyze.py`.
-- `conf/config.yaml`: `model.observation_horizon`, `agent.epsilon`, `agent.epsilon_min`, `training.store_eval_episodes`.
+- `conf/config.yaml`: `model.observation_horizon`, `agent.epsilon`, `agent.epsilon_min`, `training.store_eval_episodes`, `model.time_aware_value`, `model.value_nstep`, `model.value_nstep_mix`.
 - Tests:
   - `test_world_model_acceptance.py`: 6000 updates and the seed table;
   - `test_planner_and_agent.py`: ε test and the stale-signature fix;
@@ -355,6 +413,8 @@ A hand-written, deterministic policy on the exact belief. It is **not optimal** 
 | `objective_ab.py`, `overfit_summary.py` | Offline objective and overfitting A/Bs (weight-decay and data-size arms, held-out NLL, `head_safe_miss`); learning-curve summary |
 | `head_coverage.py` | Coverage diagnostic |
 | `absorbing_value.py`, `greedy_deaths.py`, `start_danger.py`, `head_shift.py` | V̂ by game status; danger at the greedy planner's FORWARDs; first-step danger; **calibration in-sample vs fresh exploring vs fresh greedy** |
+| `unfinished_diag.py` | **Why games end unfinished:** action mix, idling, safe cells left, root Q gaps, the one-step Q(FORWARD) − Q(chosen) split into reward and γ·E[V̂ next] (section 5.6) |
+| `value_chain_diag.py` | **Why the value prefers idling:** Bellman residual and drift on idle chains, progress probes, a value refit to the heuristic's returns (section 5.6) |
 | `tiger_acceptance_seed.py` | Tiger acceptance at another seed and update count |
 | `hoist_forward_check.py`, `hoist_training_check.py`, `profile_train_step.py` | Hoist equivalence and runtime profile |
 
