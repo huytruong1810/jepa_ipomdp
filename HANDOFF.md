@@ -36,7 +36,7 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
     - k20 − k5: cell −3.8 ± 5.2 points (lower on 3 of 3 seeds), heading −13 ± 24 (lower on 3 of 3). k10 lies in between.
     - Heading accuracy is still rising at 6,400 updates for k = 5 (one seed reaches 84%), but more updates overfit the observation head (section 5.5).
     - Networks are saved as `obj_*.pt`.
-  - **Ablations** (`runs/wumpus/ablation_chain.sh`, about 8–9 h; launched 21:12 at `eb3c757`): `u64_store_eval_noeps_decoder_k5_seed{0,1,2}` (ε = 0) and `u64_eps_nostore_decoder_k5_seed{0,1,2}` (store_eval off), each with `analyze.py` and `unfinished_diag.py`. Compare paired with the current agent.
+  - **Ablations, finished** (section 5.3): storing the greedy games matters (−110 ± 97 without it, deaths 6–18%); ε does not (+8.8 ± 110).
 
 ## 1. Goals
 
@@ -235,7 +235,16 @@ A hand-written, deterministic policy on the exact belief. It is **not optimal** 
 
   - The paired return differences are −16 and +26: **no detectable difference** with 2 seeds.
   - On random histories JEPA's latent decodes heading about 9 points worse, in line with the offline A/B (section 5.5).
-- **Not ablated:** at 64 updates per collection, the separate effects of ε and of `store_eval_episodes` are unknown. The recipe changed only the update rate relative to the −84 run.
+- **Recipe ablations (2026-10-10, 3 seeds each, paired with seeds 0–2 of the current agent; `runs/wumpus/ablation_chain.sh`):**
+
+| Arm | Return per seed | Death | Unfinished | Paired Δ return |
+|---|---|---|---|---|
+| Current agent | 185.5 / 166.0 / 215.2 | 3.9 / 3.3 / 0.2% | 66.6 / 70.3 / 70.7% | |
+| ε off (`u64_store_eval_noeps_…`) | 228.9 / 190.0 / 174.2 | 0.4 / 0.8 / 3.1% | 69.7 / 74.2 / 70.3% | +8.8 ± 109.8 (no detectable effect) |
+| store_eval off (`u64_eps_nostore_…`) | 110.6 / 13.7 / 111.5 | 12.5 / 17.8 / 6.1% | 60.5 / 60.9 / 71.1% | **−110 ± 97** (significant) |
+
+  - **Storing the greedy evaluation games is what matters.** Without them, deaths return: the head is not trained on the greedy planner's own risky FORWARDs (section 5.5).
+  - **ε is not needed.** Neither arm changes the idling.
 
 ### 5.4 Interpretability findings (current agent, seed 0)
 
@@ -343,7 +352,7 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
    - **Planner-side idle check:** treat a child latent ≈ its parent (a no-op) as no-progress at search time. Engineering rather than learning; weigh it against the research goals.
    - **Accept the plateau** and move to steps 2 and 4. The latent (step 4) may be what makes idle states look valuable: they are percept-organised and lie close to progress states.
    - Diagnostics to rerun on any new agent: `unfinished_diag.py <run> 512` and `value_chain_diag.py <run> 512`.
-2. **Ablate the recipe at 64 updates per collection:** ε off and `store_eval_episodes` off, one at a time, 2–3 seeds each. It is cheap evidence of which parts matter.
+2. **Done (2026-10-10): recipe ablations** (section 5.3). Store the greedy games; ε is optional.
 4. **Push the latent towards position and heading.** It is organised by percept; probes are 55–60% against 100% supervised. Candidates: longer horizons for the multi-step term at the fixed update rate; an auxiliary objective that does not use privileged state. Use offline A/Bs on `pools.pt` first, and save the networks this time.
 5. **Seeds and tooling:** 5 seeds for the current agent; make `sweep.py` and `experiments/aggregate.py` work for Wumpus (they are Tiger-only).
 6. **Rerun the slow suite at HEAD once** (section 3, Tests).
