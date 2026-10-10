@@ -35,6 +35,15 @@
 #      mean exact danger at held-out states where the head predicts P(death | FORWARD) < 0.02 (the
 #      confident "safe" errors the greedy planner exploits; 0 for a perfect head).
 #
+# 2c. Horizon A/B and saved networks (user decision, 2026-10-09: latent work after every value-side
+#    remedy for the unfinished games failed):
+#    - Arms: --horizon 5 (the current agent's recipe) against 10 and 20, decoder, 3 seeds each, with
+#      the current agent's config (--config runs/wumpus/u64_store_eval_eps_decoder_k5_seed0/...).
+#      Over longer action sequences the future BUMPs and percepts depend on position and heading, so
+#      the multi-step term is the natural non-privileged pressure towards them.
+#    - --save writes every network's state (run.networks, online and acting copies) after training,
+#      so later diagnostics need no retraining (HANDOFF section 7).
+#
 # 3. Usage:
 #    uv run python reports/2026-10-02_wumpus_diagnostics/objective_ab.py --representation jepa \
 #        --horizon 5 --seed 1 --pool-cache runs/wumpus/supervised_filter/pools.pt
@@ -140,6 +149,7 @@ def main() -> None:
     parser.add_argument("--weight-decay", type=float, default=None, help="AdamW weight decay (default: the config's).")
     parser.add_argument("--train-games", type=int, default=None,
                         help="Train on the first n games of each half of the pool (2n games; default: all).")
+    parser.add_argument("--save", type=Path, default=None, help="Write run.networks' states here after training.")
     parser.add_argument("--score-at", type=int, nargs="*", default=[],
                         help="Also score at these update counts (lines 'RESULT@<updates> name value').")
     args = parser.parse_args()
@@ -181,6 +191,8 @@ def main() -> None:
             print(f"update {update}: " + " ".join(f"{k} {v:.4f}" for k, v in metrics.items() if k.startswith("loss")),
                   flush=True)
     print(f"training took {time.time() - t0:.0f}s", flush=True)
+    if args.save is not None:
+        torch.save({name: net.state_dict() for name, net in run.networks.items()}, args.save)
 
     for name, value in score(run, train, held, num_a, num_o, device).items():
         print(f"RESULT {name} {value:.4f}")

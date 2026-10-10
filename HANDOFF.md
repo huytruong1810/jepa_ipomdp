@@ -31,7 +31,9 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
   - Unfinished share: 66.8 / 62.5 / 67.0% against 66.6 / 70.3 / 70.7%. The paired mean change is −3.8 points, 95% interval ±9.9.
   - Win rate: 30.9 / 34.0 / 26.0% against 29.5 / 26.4 / 29.1%.
   - Idle V̂ halved (650 → 200–330), and FORWARD at safe cells in unfinished games rose on 2 of 3 seeds.
-- **Next (section 6, step 1): the user's decision.** Every value-side remedy has now failed.
+- **The user accepted the idling plateau (2026-10-09 night)** and chose latent work plus the recipe ablations. Both are running:
+  - **Horizon A/B** (`runs/wumpus/horizon_ab_chain.sh` → `runs/wumpus/horizon_ab/`): decoder k = 5 / 10 / 20, 3 seeds, offline on `pools.pt`. It runs one at a time, because three parallel A/Bs pushed device VRAM to 11.3 GB, near `main.py`'s 13.5 GB guardrail. Networks are saved (`--save`). `summary.txt` comes from `ab_summary.py`.
+  - **Ablations** (`runs/wumpus/ablation_chain.sh`, about 8–9 h; launched 21:12 at `eb3c757`): `u64_store_eval_noeps_decoder_k5_seed{0,1,2}` (ε = 0) and `u64_eps_nostore_decoder_k5_seed{0,1,2}` (store_eval off), each with `analyze.py` and `unfinished_diag.py`. Compare paired with the current agent.
 
 ## 1. Goals
 
