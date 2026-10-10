@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 import torch
+import torch.nn.functional as F
 
 from ipomdp.experiments import tiger_setup
 from ipomdp.models import ema_update
@@ -24,7 +25,8 @@ def _config(**overrides) -> RunConfig:
                                             value_target_momentum=0.99),
         num_simulations=4, observation_prune=0.0, c_puct=1.25, dirichlet_alpha=0.3, dirichlet_epsilon=0.25, temperature=1.0,
         temperature_min=0.1, temperature_decay=0.5, epsilon=0.0, epsilon_min=0.0, store_eval_episodes=False,
-        time_aware_value=False, value_nstep=0, value_nstep_mix=0.5)
+        time_aware_value=False, value_nstep=0, value_nstep_mix=0.5,
+        detached_planning_head=False)
     values.update(overrides)
     return RunConfig(**values)
 
@@ -114,6 +116,57 @@ class TestRepresentation:
         decoder = TrainingRun(tiger_setup(CPU), _config(representation=Representation.DECODER), CPU)
         assert jepa.jepa.belief_filter is jepa.belief_filter
         assert all(torch.equal(p, q) for p, q in zip(jepa.belief_filter.parameters(), decoder.belief_filter.parameters()))
+
+
+class TestDetachedPlanningHead:
+    """training/run.py, section 11; trainer.py, section 3d."""
+
+    @staticmethod
+    def _run(seed: int = 7, **overrides) -> TrainingRun:
+        return TrainingRun(tiger_setup(CPU), _config(seed=seed, representation=Representation.DECODER, **overrides), CPU)
+
+    def test_planners_and_value_targets_read_the_planning_head(self):
+        run = self._run(detached_planning_head=True)
+        assert run.eval_agent.model.observation_head is run.acting_planning_observation_head
+        assert run.train_agent.model.observation_head is run.acting_planning_observation_head
+        assert run.trainer.target_model.observation_head is run.planning_observation_head
+        assert {"planning_observation", "acting_planning_observation"} <= run.networks.keys()
+        assert "loss_planning_observation" in run.collect_and_train()
+
+    def test_off_by_default_and_jepa_raises(self):
+        run = self._run()
+        assert run.planning_observation_head is None and run.eval_agent.model.observation_head is run.acting_observation_head
+        with pytest.raises(ValueError):
+            TrainingRun(tiger_setup(CPU), _config(detached_planning_head=True), CPU)
+
+    def test_planning_loss_does_not_reach_the_filter(self):
+        # Only the planning term trains here (the other heads' losses are scaled to zero), so any
+        # filter gradient would have to come through it.
+        run = self._run(detached_planning_head=True)
+        run.collect_and_train()
+        trainer, batch = run.trainer, run.buffer.sample(4)
+        before = [p.detach().clone() for p in run.planning_observation_head.parameters()]
+        actions = F.one_hot(batch.actions, trainer.num_actions).float()
+        latents = trainer.belief_filter.unroll(actions, F.one_hot(batch.observations, trainer.num_observations).float(), None)
+        current = latents[:, :-1].reshape(-1, latents.shape[-1])
+        loss = F.cross_entropy(trainer.planning_observation_head(current.detach(), actions.reshape(-1, trainer.num_actions)),
+                               batch.observations.reshape(-1))
+        trainer.optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        assert all(p.grad is None for p in trainer.belief_filter.parameters())
+        assert all(p.grad is not None for p in run.planning_observation_head.parameters())
+        assert all(torch.equal(p, q) for p, q in zip(before, run.planning_observation_head.parameters()))
+
+    def test_resume_continues_bit_for_bit(self, tmp_path: Path):
+        reference = self._run(detached_planning_head=True)
+        expected = [reference.collect_and_train() for _ in range(3)] + [reference.evaluate()]
+        first = self._run(detached_planning_head=True)
+        first.collect_and_train()
+        save_checkpoint(tmp_path / "latest.pt", first.state_dict())
+        resumed = self._run(seed=123, detached_planning_head=True)
+        resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
+        assert [resumed.collect_and_train() for _ in range(2)] + [resumed.evaluate()] == expected[1:]
+        assert all(torch.equal(a, b) for a, b in zip(_parameters(resumed), _parameters(reference)))
 
 
 class TestCheckpointFiles:

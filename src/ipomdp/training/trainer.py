@@ -102,6 +102,22 @@
 #      runs, where V-bar(z_T, 0) = 0 ends the sum). Rows t = T keep the Bellman target.
 #    - nstep = 0 (the default and canonical Tiger) leaves the computation unchanged.
 #
+# 3d. Optional Detached Planning Head (planning_observation_head; model.detached_planning_head,
+#    user decision 2026-10-10):
+#    - In the decoder baseline the observation head is the representation term: its cross-entropy
+#      shapes the filter (section 2b). On Wumpus that joint pair overfits with more updates (held-out
+#      NLL rises, the head turns confidently "safe" where it is wrong), while the latent itself keeps
+#      improving (reports/2026-10-02_wumpus_diagnostics/objective_ab.py, sections 2b-2d).
+#    - With a planning head, the joint observation head keeps shaping the filter but is no longer
+#      the planning model: a second ObservationHead, trained on DETACHED latents with its own
+#      cross-entropy, gives P(o' | z, a) to the value targets (target_model) and to the planner
+#      (training/run.py, section 11). It cannot co-adapt with the filter.
+#    - Its gradients are clipped separately: inside the joint norm they would rescale the filter's
+#      update. The filter still feels the head indirectly: the value targets go through it, and the
+#      value head shares the joint clip norm with the filter (as it always has).
+#    - Decoder only: in JEPA mode the observation head is already detached (raises).
+#    - None (the default and canonical Tiger) leaves every computation and the parameter order unchanged.
+#
 # 4. No Imagination Losses:
 #    - An earlier version also trained V on latents imagined by a stochastic latent
 #      transition ("consistency"). Planning now imagines through the real filter
@@ -170,6 +186,7 @@ class WorldModelTrainer:
         horizon: int | None = None,
         nstep: int = 0,
         nstep_mix: float = 0.0,
+        planning_observation_head: ObservationHead | None = None,
     ):
         """
         Args:
@@ -179,17 +196,21 @@ class WorldModelTrainer:
             multistep_predictor: The optional multi-step observation term (section 2c), or None.
             horizon: Steps per window H for the finite-horizon value (section 3b), or None.
             nstep, nstep_mix: n and the mixing weight of the n-step greedy-return target (section 3c); n = 0 is off.
+            planning_observation_head: The detached planning head (section 3d), or None.
         """
         if nstep < 0 or not 0.0 <= nstep_mix <= 1.0 or (nstep > 0 and nstep_mix == 0.0):
             raise ValueError(f"need nstep >= 0 and nstep_mix in (0, 1] when nstep > 0; got {nstep}, {nstep_mix}.")
         if jepa is not None and jepa.belief_filter is not belief_filter:
             raise ValueError("jepa must wrap the trained belief_filter")
+        if jepa is not None and planning_observation_head is not None:
+            raise ValueError("a detached planning head needs the decoder representation (section 3d).")
         self.belief_filter = belief_filter
         self.jepa = jepa
         self.representation = Representation.DECODER if jepa is None else Representation.JEPA
         self.value_head = value_head
         self.reward_head = reward_head
         self.observation_head = observation_head
+        self.planning_observation_head = planning_observation_head
         self.multistep_predictor = multistep_predictor
         self.twohot = codec
         self.num_actions = num_actions
@@ -208,9 +229,14 @@ class WorldModelTrainer:
             *observation_head.parameters(),
             *(multistep_predictor.parameters() if multistep_predictor is not None else ()),
         ]
-        self.optimizer = torch.optim.AdamW(self.parameters, lr=config.learning_rate, weight_decay=config.weight_decay)
+        # The planning head is clipped on its own (section 3d): inside the joint clip its gradient norm
+        # would rescale the filter's update, a coupling a detached head must not have.
+        self.planning_parameters = list(planning_observation_head.parameters()) if planning_observation_head is not None else []
+        self.optimizer = torch.optim.AdamW(self.parameters + self.planning_parameters, lr=config.learning_rate,
+                                           weight_decay=config.weight_decay)
         self.target_value_head = frozen_copy(value_head)
-        self.target_model = LearnedSearchModel(belief_filter, reward_head, observation_head,
+        planner_observation = observation_head if planning_observation_head is None else planning_observation_head
+        self.target_model = LearnedSearchModel(belief_filter, reward_head, planner_observation,
                                                self.target_value_head, codec, num_actions, num_observations, discount,
                                                horizon)
 
@@ -303,6 +329,10 @@ class WorldModelTrainer:
             losses["observation"] = F.cross_entropy(self.observation_head(decoded, action_flat).float(),
                                                     episodes.observations.reshape(-1))
 
+            if self.planning_observation_head is not None:                               # section 3d
+                losses["planning_observation"] = F.cross_entropy(
+                    self.planning_observation_head(current.detach(), action_flat).float(), episodes.observations.reshape(-1))
+
             if self.multistep_predictor is not None:
                 horizons = self.multistep_predictor(latents[:, :-1], actions)
                 losses["multistep_observation"] = sum(
@@ -319,6 +349,8 @@ class WorldModelTrainer:
         self.optimizer.zero_grad(set_to_none=True)
         total.backward()
         torch.nn.utils.clip_grad_norm_(self.parameters, self.config.grad_clip_norm)
+        if self.planning_parameters:
+            torch.nn.utils.clip_grad_norm_(self.planning_parameters, self.config.grad_clip_norm)
         self.optimizer.step()
         if self.jepa is not None:
             self.jepa.update_target()

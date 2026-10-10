@@ -89,7 +89,7 @@ def build_run_config(cfg: DictConfig) -> RunConfig:
         temperature=a.temperature, temperature_min=a.temperature_min, temperature_decay=a.temperature_decay,
         epsilon=a.epsilon, epsilon_min=a.epsilon_min,
         store_eval_episodes=t.store_eval_episodes, time_aware_value=m.time_aware_value,
-        value_nstep=m.value_nstep, value_nstep_mix=m.value_nstep_mix)
+        value_nstep=m.value_nstep, value_nstep_mix=m.value_nstep_mix, detached_planning_head=m.detached_planning_head)
 
 
 def build_training_run(cfg: DictConfig, device: torch.device) -> tuple[DomainSetup, TrainingRun]:

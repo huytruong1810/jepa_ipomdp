@@ -117,6 +117,17 @@
 #      ranks a no-op above stepping into a safe cell (median gap -30 to -37, was -15): the greedy
 #      policy's own returns are uniformly poor and do not separate exploring from idling.
 #      Kept as an option, not used.
+#
+# 11. Detached Planning Head (user decision, 2026-10-10; trainer.py, section 3d):
+#    - cfg.detached_planning_head builds a second ObservationHead trained on detached latents. The
+#      planners and the value targets use it (through its Polyak copy for acting); the joint
+#      observation head only shapes the decoder's filter. Decoder representation only.
+#    - Motivation: reports/2026-10-02_wumpus_diagnostics/objective_ab.py, section 2d (the latent keeps
+#      improving with more updates while the joint head overfits). Offline, an NLL-early-stopped
+#      fresh head was not better on confident "safe" misses, but the offline pools hold no greedy
+#      games, which the agent stores (section 8) and which fixed most deaths; hence the agent test.
+#    - Built after every other network and only when enabled, so the default (canonical Tiger)
+#      draws and builds nothing new.
 # ==============================================================================
 
 from collections.abc import Callable
@@ -208,6 +219,7 @@ class RunConfig:
     time_aware_value: bool            # finite-horizon value V(z, steps left) (section 9)
     value_nstep: int                  # n-step greedy-return value grounding (section 10); 0 = off
     value_nstep_mix: float
+    detached_planning_head: bool      # planner reads a head on detached latents (section 11)
 
 
 class TrainingRun:
@@ -237,16 +249,23 @@ class TrainingRun:
         self.multistep_predictor = (MultiStepObservationPredictor(cfg.latent_dim, num_a, num_o, cfg.hidden_dim,
                                                                   cfg.num_blocks, cfg.observation_horizon).to(device)
                                     if cfg.observation_horizon > 0 else None)
+        self.planning_observation_head = (ObservationHead(cfg.latent_dim, num_a, num_o, cfg.hidden_dim, cfg.num_blocks).to(device)
+                                          if cfg.detached_planning_head else None)                 # section 11
         self.trainer = WorldModelTrainer(self.belief_filter, self.jepa, self.value_head, self.reward_head, self.observation_head,
                                          self.codec, num_a, num_o, domain.discount, cfg.trainer, device,
-                                         self.multistep_predictor, horizon, cfg.value_nstep, cfg.value_nstep_mix)
+                                         self.multistep_predictor, horizon, cfg.value_nstep, cfg.value_nstep_mix,
+                                         self.planning_observation_head)
 
         # Polyak-averaged copies the agent acts with (section 4).
         self.acting_filter = frozen_copy(self.belief_filter)
         self.acting_reward_head = frozen_copy(self.reward_head)
         self.acting_observation_head = frozen_copy(self.observation_head)
         self.acting_value_head = frozen_copy(self.value_head)
-        model = LearnedSearchModel(self.acting_filter, self.acting_reward_head, self.acting_observation_head,
+        self.acting_planning_observation_head = (frozen_copy(self.planning_observation_head)
+                                                 if self.planning_observation_head is not None else None)
+        planner_observation = (self.acting_observation_head if self.acting_planning_observation_head is None
+                               else self.acting_planning_observation_head)
+        model = LearnedSearchModel(self.acting_filter, self.acting_reward_head, planner_observation,
                                    self.acting_value_head, self.codec, num_a, num_o, domain.discount, horizon)
         self.train_agent = PlanningAgent(
             model, BeliefTreeSearch(model, cfg.num_simulations, cfg.c_puct, cfg.dirichlet_alpha, cfg.dirichlet_epsilon,
@@ -269,10 +288,13 @@ class TrainingRun:
     def networks(self) -> dict[str, torch.nn.Module]:
         representation = {"world_model": self.jepa} if self.jepa is not None else {"belief_filter": self.belief_filter}
         multistep = {"multistep_observation": self.multistep_predictor} if self.multistep_predictor is not None else {}
+        planning = ({"planning_observation": self.planning_observation_head,
+                     "acting_planning_observation": self.acting_planning_observation_head}
+                    if self.planning_observation_head is not None else {})
         return {**representation, **multistep, "value": self.value_head, "reward": self.reward_head,
                 "observation": self.observation_head, "target_value": self.trainer.target_value_head,
                 "acting_filter": self.acting_filter, "acting_reward": self.acting_reward_head,
-                "acting_observation": self.acting_observation_head, "acting_value": self.acting_value_head}
+                "acting_observation": self.acting_observation_head, "acting_value": self.acting_value_head, **planning}
 
     def _update_acting(self) -> None:
         """Polyak step of the acting copies towards the online weights (section 4)."""
@@ -282,6 +304,8 @@ class TrainingRun:
                                (self.acting_observation_head, self.observation_head),
                                (self.acting_value_head, self.value_head)):
             ema_update(acting, online, momentum)
+        if self.planning_observation_head is not None:                                  # section 11
+            ema_update(self.acting_planning_observation_head, self.planning_observation_head, momentum)
 
     @property
     def in_warmup(self) -> bool:
