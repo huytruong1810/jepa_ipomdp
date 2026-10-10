@@ -49,6 +49,16 @@
 #      (lower on 3/3); wumpus error +0.0008 +- 0.0004; head held-out NLL +0.014 +- 0.019. Heading is still
 #      rising at 6400 updates for k5 (seed 3: 55 -> 58 -> 69 -> 84% at 1600/3200/4800/6400).
 #
+# 2d. Decoupled planning head (user decision, 2026-10-10, after 2c: the latent's heading keeps
+#    improving with more updates, but the jointly trained observation head overfits, section 2b):
+#    - --planning-head: at every scoring point, a FRESH ObservationHead (the agent's architecture) is
+#      fitted on the frozen acting latents of the training games, i.e. a head on detached latents,
+#      and early-stopped on next-observation NLL over 10% of the training games (the held-out pool
+#      stays untouched for scoring). Its scores are printed as "RESULT plan_<name>" next to the
+#      joint head's, so one long run scores 6400 / 12800 / 25600 updates for both heads.
+#    - A post-hoc fit is the screen; in the agent, the decoupled head would train alongside on
+#      detached latents with its own stopping rule.
+#
 # 3. Usage:
 #    uv run python reports/2026-10-02_wumpus_diagnostics/objective_ab.py --representation jepa \
 #        --horizon 5 --seed 1 --pool-cache runs/wumpus/supervised_filter/pools.pt
@@ -66,6 +76,7 @@ from omegaconf import OmegaConf
 
 from ipomdp.domain.wumpus import GAME_OVER, NUM_CELLS
 from ipomdp.experiments.runs import build_training_run
+from ipomdp.models import ObservationHead
 from ipomdp.training import EpisodeBatch
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -90,6 +101,62 @@ def observation_nll(run, data, rows, num_a: int, num_o: int) -> torch.Tensor:
         logits = run.acting_observation_head(z, actions).float()
         nll = F.cross_entropy(logits.flatten(0, 1), data["observations"][rows].flatten(), reduction="none")
     return nll[data["alive"][rows][:, :-1].flatten()].mean()
+
+
+def transitions(belief_filter, data, rows, num_a: int, num_o: int):
+    """(z_t, one-hot a_t, o_{t+1}) at the alive steps of data[rows], frozen, in chunks of 1024 games."""
+    zs, acts, obs = [], [], []
+    for i in range(0, len(rows), 1024):
+        r = rows[i:i + 1024]
+        with torch.no_grad():
+            actions = F.one_hot(data["actions"][r], num_a).float()
+            z = belief_filter.unroll(actions, F.one_hot(data["observations"][r], num_o).float(),
+                                     F.one_hot(data["initial"][r], num_o).float())[:, :-1]
+        alive = data["alive"][r][:, :-1]
+        zs.append(z[alive].float()); acts.append(actions[alive]); obs.append(data["observations"][r][alive])
+    return torch.cat(zs), torch.cat(acts), torch.cat(obs)
+
+
+def fit_planning_head(run, train, fit_rows, num_a: int, num_o: int, cfg, device: torch.device) -> nn.Module:
+    """Section 2d: a fresh ObservationHead on frozen acting latents, early-stopped on 10% of the games."""
+    val_rows, head_rows = fit_rows[::10], fit_rows[torch.arange(len(fit_rows), device=device) % 10 != 0]
+    z, a, o = transitions(run.acting_filter, train, head_rows, num_a, num_o)
+    vz, va, vo = transitions(run.acting_filter, train, val_rows, num_a, num_o)
+    torch.manual_seed(0)
+    head = ObservationHead(cfg.model.latent_dim, num_a, num_o, cfg.model.hidden_dim, cfg.model.num_blocks).to(device)
+    optimizer = torch.optim.Adam(head.parameters(), 3e-4)
+    generator = torch.Generator(device=device).manual_seed(0)
+    best, best_state, patience = float("inf"), None, 0
+    for step in range(1, 40001):
+        rows = torch.randint(0, len(z), (4096,), device=device, generator=generator)
+        loss = F.cross_entropy(head(z[rows], a[rows]), o[rows])
+        optimizer.zero_grad(); loss.backward(); optimizer.step()
+        if step % 250 == 0:
+            with torch.no_grad():
+                val = sum(F.cross_entropy(head(vz[i:i + 65536], va[i:i + 65536]), vo[i:i + 65536], reduction="sum").item()
+                          for i in range(0, len(vz), 65536)) / len(vz)
+            if val < best - 1e-4:
+                best, best_state, patience = val, {k: v.clone() for k, v in head.state_dict().items()}, 0
+            else:
+                patience += 1
+                if patience == 6:
+                    break
+    head.load_state_dict(best_state)
+    print(f"planning head: stopped at step {step}, validation NLL {best:.4f}", flush=True)
+    return head
+
+
+def score_both(run, train, held, fit_rows, num_a, num_o, cfg, device, planning_head: bool, prefix: str) -> None:
+    """Prints the joint head's scores and, with planning_head, the decoupled head's (section 2d)."""
+    for name, value in score(run, train, held, num_a, num_o, device).items():
+        print(f"{prefix} {name} {value:.4f}", flush=True)
+    if planning_head:
+        joint = run.acting_observation_head
+        run.acting_observation_head = fit_planning_head(run, train, fit_rows, num_a, num_o, cfg, device)
+        for name, value in score(run, train, held, num_a, num_o, device).items():
+            if name.startswith("head_"):
+                print(f"{prefix} plan_{name} {value:.4f}", flush=True)
+        run.acting_observation_head = joint
 
 
 def score(run, train, held, num_a: int, num_o: int, device: torch.device) -> dict[str, float]:
@@ -154,6 +221,7 @@ def main() -> None:
     parser.add_argument("--weight-decay", type=float, default=None, help="AdamW weight decay (default: the config's).")
     parser.add_argument("--train-games", type=int, default=None,
                         help="Train on the first n games of each half of the pool (2n games; default: all).")
+    parser.add_argument("--planning-head", action="store_true", help="Also score a decoupled planning head (section 2d).")
     parser.add_argument("--save", type=Path, default=None, help="Write run.networks' states here after training.")
     parser.add_argument("--score-at", type=int, nargs="*", default=[],
                         help="Also score at these update counts (lines 'RESULT@<updates> name value').")
@@ -190,8 +258,7 @@ def main() -> None:
                                                       train["rewards"][rows], train["initial"][rows]))
         run._update_acting()
         if update in args.score_at:
-            for name, value in score(run, train, held, num_a, num_o, device).items():
-                print(f"RESULT@{update} {name} {value:.4f}", flush=True)
+            score_both(run, train, held, fit_rows, num_a, num_o, cfg, device, args.planning_head, f"RESULT@{update}")
         if update % 1600 == 0:
             print(f"update {update}: " + " ".join(f"{k} {v:.4f}" for k, v in metrics.items() if k.startswith("loss")),
                   flush=True)
@@ -199,8 +266,7 @@ def main() -> None:
     if args.save is not None:
         torch.save({name: net.state_dict() for name, net in run.networks.items()}, args.save)
 
-    for name, value in score(run, train, held, num_a, num_o, device).items():
-        print(f"RESULT {name} {value:.4f}")
+    score_both(run, train, held, fit_rows, num_a, num_o, cfg, device, args.planning_head, "RESULT")
 
 if __name__ == "__main__":
     main()
