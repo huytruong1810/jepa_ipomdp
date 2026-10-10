@@ -40,6 +40,9 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
     - **The latent improves with longer training:** cell +3 to +5 points and heading +5 to +8 by 12,800 updates; one seed reaches 86% / 91%.
     - **The joint head overfits** (held-out NLL 0.23 → 0.32–0.39).
     - **A fresh head early-stopped on NLL does not overfit, but is worse on confident "safe" misses** (3 of 3 seeds; paired +0.025 ± 0.062). It is no better on danger error. Decoupling alone is not a clear win.
+  - **Running (launched 2026-10-10 17:04, `8b3d621`): the agent with a detached planning head** (`model.detached_planning_head=true`, new; default off, Tiger bit-identical) **at 128 updates per collection**. Current recipe otherwise, 3 seeds, via `runs/wumpus/planning_head_agent_chain.sh` → `u128_store_eval_eps_decoder_k5_planhead_seed*`, with `analyze.py` and `unfinished_diag.py` chained.
+    - **Decision rule:** if it clearly beats the current agent (paired), run the 128-update joint-head control to attribute the gain; otherwise stop.
+    - ipomcp is running 4 heavy jobs, so expect slower collections.
   - **Ablations, finished** (section 5.3): storing the greedy games matters (−110 ± 97 without it, deaths 6–18%); ε does not (+8.8 ± 110).
 
 ## 1. Goals
@@ -81,6 +84,7 @@ Stages:
 
 **Workflow**
 - Commit on `main` (remote `github.com/huytruong1810/jepa_ipomdp`). **Ask before every push.**
+- **Since 2026-10-10 the user pre-authorises running the recommended experiments without asking** ("have a good taste for research; don't waste compute"). Still ask before pushes and before any change to canonical Tiger.
 - **Ask the user about every research or design decision that is theirs**, with a recommended option first. They usually pick it, but not always. On 2026-10-06/07 they pre-authorised the recommended options while away for the reviewer deadline. **That authorisation has expired: ask again.**
 - State results plainly, including unfavourable ones and your own mistakes.
 - **Reviewer pages:** minimal, figure-first, honest.
