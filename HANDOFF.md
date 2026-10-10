@@ -32,7 +32,10 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
   - Win rate: 30.9 / 34.0 / 26.0% against 29.5 / 26.4 / 29.1%.
   - Idle V̂ halved (650 → 200–330), and FORWARD at safe cells in unfinished games rose on 2 of 3 seeds.
 - **The user accepted the idling plateau (2026-10-09 night)** and chose latent work plus the recipe ablations. Both are running:
-  - **Horizon A/B** (`runs/wumpus/horizon_ab_chain.sh` → `runs/wumpus/horizon_ab/`): decoder k = 5 / 10 / 20, 3 seeds, offline on `pools.pt`. It runs one at a time, because three parallel A/Bs pushed device VRAM to 11.3 GB, near `main.py`'s 13.5 GB guardrail. Networks are saved (`--save`). `summary.txt` comes from `ab_summary.py`.
+  - **Horizon A/B, finished: longer horizons do not help, and k = 20 hurts** (`runs/wumpus/horizon_ab/summary.txt`, `objective_ab.py` section 2c).
+    - k20 − k5: cell −3.8 ± 5.2 points (lower on 3 of 3 seeds), heading −13 ± 24 (lower on 3 of 3). k10 lies in between.
+    - Heading accuracy is still rising at 6,400 updates for k = 5 (one seed reaches 84%), but more updates overfit the observation head (section 5.5).
+    - Networks are saved as `obj_*.pt`.
   - **Ablations** (`runs/wumpus/ablation_chain.sh`, about 8–9 h; launched 21:12 at `eb3c757`): `u64_store_eval_noeps_decoder_k5_seed{0,1,2}` (ε = 0) and `u64_eps_nostore_decoder_k5_seed{0,1,2}` (store_eval off), each with `analyze.py` and `unfinished_diag.py`. Compare paired with the current agent.
 
 ## 1. Goals
@@ -371,6 +374,7 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
 - **Wumpus, time-aware (finite-horizon) value** (`model.time_aware_value`): no gain; still ~69% unfinished (section 5.6).
 - **Wumpus, offline value-target screens** (`grounding_screen.py`, `teacher_robustness.py`): optimistic max(V̂, G) cannot lower an overestimated V̂ (fails 3/3); the agent's own MC returns are luck-dominated; heuristic returns rank FORWARD first only under some fit protocols (extrapolation). Do not build any of them as a training option without new evidence.
 - **Trusting one frozen-latent fit's ranking at imagined children** (M4): check fit protocols and initialisations first.
+- **Wumpus, longer multi-step horizons** (k = 10, 20, offline on `pools.pt`): no better than k = 5; k = 20 lowers cell and heading on 3 of 3 seeds.
 - **Wumpus, γ = 0.95** (`env.discount`): halves idle V̂ but leaves about 65% of games unfinished (paired −3.8 ± 9.9 points).
 - **Wumpus, n-step returns of the agent's own greedy games mixed into the value target** (`model.value_nstep=10`, mix 0.5): worse (88–126 against 166–215). The greedy policy's returns are uniformly poor and push all values down without separating exploring from idling.
 

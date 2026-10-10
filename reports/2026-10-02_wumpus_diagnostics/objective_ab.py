@@ -43,6 +43,11 @@
 #      the multi-step term is the natural non-privileged pressure towards them.
 #    - --save writes every network's state (run.networks, online and acting copies) after training,
 #      so later diagnostics need no retraining (HANDOFF section 7).
+#    - Result 2026-10-10 (runs/wumpus/horizon_ab/, summary.txt): LONGER HORIZONS DO NOT HELP, k = 20 HURTS.
+#      Held-out MLP probes, cell / heading per seed 1-3: k5 77/63, 81/69, 81/84%; k10 77/60, 80/70, 78/62%;
+#      k20 76/60, 76/56, 76/60%. k20 - k5: cell -3.8 +- 5.2 points (lower on 3/3 seeds), heading -13 +- 24
+#      (lower on 3/3); wumpus error +0.0008 +- 0.0004; head held-out NLL +0.014 +- 0.019. Heading is still
+#      rising at 6400 updates for k5 (seed 3: 55 -> 58 -> 69 -> 84% at 1600/3200/4800/6400).
 #
 # 3. Usage:
 #    uv run python reports/2026-10-02_wumpus_diagnostics/objective_ab.py --representation jepa \
