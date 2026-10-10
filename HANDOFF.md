@@ -1,4 +1,4 @@
-# HANDOFF: JEPA I-POMDP (as of 2026-10-09 evening, after the offline value-target screens)
+# HANDOFF: JEPA I-POMDP (as of 2026-10-09 night, after the offline screens and the γ = 0.95 runs)
 
 Read `CLAUDE.md` first: it covers the architecture, commands and conventions. This file covers goals, the user's rules, the current state, every result that matters, the next steps, the dead ends and the files touched. Each module starts with a `DESIGN DECISIONS & THEORETICAL FOUNDATIONS` header with the evidence behind its design; read it before changing that module. Every diagnostic script in `reports/` explains its question, usage and result in its header. The user's auto-memory (`~/.claude/projects/-home-andyj1810-projects-jepa-ipomdp/memory/`) repeats the standing rules of section 2.
 
@@ -27,7 +27,11 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
   - the agent's own Monte Carlo returns are inconsistent;
   - **the heuristic-return result (M4) is not robust**: the FORWARD preference depends on the fit protocol and initialisation, and early-stopped fits fail seed 2 even with 2,048 games. That is extrapolation to idle states the heuristic never visits.
   - No value-target remedy currently has offline support.
-- **Running now (launched 2026-10-09 15:06, commit `1c05c16`): lower γ.** The user chose `env.discount=0.95` (new key; default 0.99, Tiger bit-identical). It is the current recipe at 3 decoder seeds via `runs/wumpus/gamma95_chain.sh`, with `analyze.py` and both diagnostics chained; about 8–9 h in all. Compare paired with the current agent on **win, death and unfinished rates**, since returns at different γ are not comparable. The report's heuristic and random rows are re-scored at 0.95 automatically. γ also changes `value_bound` (20,020 instead of 100,100), so the two-hot support is 5× finer: a confound to state.
+- **Lower γ (0.95, `1c05c16`; 3 seeds, finished 2026-10-09 20:44) did not fix the idling** (section 5.6, remedy 3).
+  - Unfinished share: 66.8 / 62.5 / 67.0% against 66.6 / 70.3 / 70.7%. The paired mean change is −3.8 points, 95% interval ±9.9.
+  - Win rate: 30.9 / 34.0 / 26.0% against 29.5 / 26.4 / 29.1%.
+  - Idle V̂ halved (650 → 200–330), and FORWARD at safe cells in unfinished games rose on 2 of 3 seeds.
+- **Next (section 6, step 1): the user's decision.** Every value-side remedy has now failed.
 
 ## 1. Goals
 
@@ -115,7 +119,7 @@ Stages:
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_time_seed{0,1,2}` | Current recipe + `model.time_aware_value=true` (`8ca58d0`), analysed, plus both diagnostics (time seed 0 only for value-chain): **failed** (section 5.6) |
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_nstep10_seed{0,1,2}` | Current recipe + `model.value_nstep=10` (`52ac3fc`), analysed, plus both diagnostics: **failed** (section 5.6) |
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_seed*.{grounding_screen,teacher_robustness}.log`, `{screen,teacher}_chain.sh` | The offline value-target screens of 2026-10-09 (section 5.6) |
-| `runs/wumpus/u64_store_eval_eps_decoder_k5_gamma95_seed{0,1,2}`, `gamma95_chain.sh` (+ `.log`) | Current recipe + `env.discount=0.95` (`1c05c16`), **running** |
+| `runs/wumpus/u64_store_eval_eps_decoder_k5_gamma95_seed{0,1,2}`, `gamma95_chain.sh` (+ `.log`) | Current recipe + `env.discount=0.95` (`1c05c16`), analysed, plus both diagnostics: **no significant gain** (section 5.6) |
 | `runs/wumpus/smoke_gamma95` | 6-collection small check at γ = 0.95 (clean) |
 | `runs/wumpus/smoke_time_aware`, `smoke_nstep` | 6-collection small checks of the two options |
 | `runs/wumpus/{jepa_resume,time_aware,value_chain,nstep}_chain.sh` (+ `.log`) | The detached pipelines of 2026-10-07/08 |
@@ -291,6 +295,19 @@ The agent idles all the same, with GRAB instead of SHOOT. The window being treat
 - **But the agent steps into safe cells *less*:** 14–27% of the time. Its value's no-op preference widened to −30 to −37.
 - **Reading:** the greedy policy's own games end unfinished whether a state is "about to explore" or "idling", so their returns pull every value down without separating the two.
 
+**Remedy 3, lower γ** (`env.discount=0.95`, `1c05c16`; user choice). The current recipe otherwise unchanged. Returns are at γ = 0.95, so compare with the heuristic re-scored at 0.95: 362.4 (random −227.6).
+
+| Seed | Return (γ 0.95) | Win | Death | Unfinished (current agent) | FORWARD at safe cells, unfinished games (current) |
+|---|---|---|---|---|---|
+| 0 | 177.8 ± 15.7 | 30.9% | 2.3% | 66.8% (66.6%) | 55% (29%) |
+| 1 | 196.3 ± 16.2 | 34.0% | 3.5% | 62.5% (70.3%) | 52% (31%) |
+| 2 | 130.8 ± 16.1 | 26.0% | 7.0% | 67.0% (70.7%) | 32% (42%) |
+
+- **Paired with the current agent:** unfinished −3.8 points (95% interval ±9.9) and wins +2.0 (±13.3). Neither is significant.
+- **Normalised score** (agent − random) / (heuristic − random): 0.67 against 0.60 before.
+- **Idle V̂ fell** to 200–330 (from about 650), still +210 to +330 above the realised return. The learned one-step preference at the declined steps is still the no-op (median −17 / −61 / −35).
+- **Confound:** `value_bound` drops to 20,020, so the two-hot support is 5× finer. A finer support is therefore not the missing piece either.
+
 **Offline screens of value targets (2026-10-09; user choice "screen offline, then train").** On frozen latents, a fresh MLP value is scored with the M4 test: Q(FORWARD) − Q(chosen) at the agent's declined safe-cell steps.
 
 `grounding_screen.py` (the agent's own replay buffer from `latest.pt`, 8,960 games; early-stopped fits). FORWARD preferred, seeds 0 / 1 / 2:
@@ -313,11 +330,13 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
 
 ## 6. Next steps (in order; ask the user at each research decision, recommendation first)
 
-1. **The idling problem: the user's decision.** Every value-target remedy has failed in training (time-aware, n-step) or offline (optimistic, own MC, teacher returns; section 5.6). Candidates:
-   - **Lower γ** (e.g. 0.95): a wasted step then costs about 1 + 0.05·V̂ instead of about 7, which attacks the 500+ idle overestimation directly. It is a domain change, and the heuristic must be re-scored.
-   - **Planner-side:** count idle actions as no-progress at search time, e.g. a model-based check that a no-op child latent ≈ its parent. That is engineering, not learning; weigh it against the research goals.
-   - **Value-side support:** the two-hot resolution near 500–700 is about 49.
-   - **Accept the plateau** and move on to steps 2 and 4.
+1. **The idling problem: the user's decision.** Every value-side remedy has failed:
+   - in training: time-aware, n-step, γ = 0.95 (which also gave a 5× finer support);
+   - offline: optimistic, own Monte Carlo, teacher returns.
+
+   Candidates left:
+   - **Planner-side idle check:** treat a child latent ≈ its parent (a no-op) as no-progress at search time. Engineering rather than learning; weigh it against the research goals.
+   - **Accept the plateau** and move to steps 2 and 4. The latent (step 4) may be what makes idle states look valuable: they are percept-organised and lie close to progress states.
    - Diagnostics to rerun on any new agent: `unfinished_diag.py <run> 512` and `value_chain_diag.py <run> 512`.
 2. **Ablate the recipe at 64 updates per collection:** ε off and `store_eval_episodes` off, one at a time, 2–3 seeds each. It is cheap evidence of which parts matter.
 4. **Push the latent towards position and heading.** It is organised by percept; probes are 55–60% against 100% supervised. Candidates: longer horizons for the multi-step term at the fixed update rate; an auxiliary objective that does not use privileged state. Use offline A/Bs on `pools.pt` first, and save the networks this time.
@@ -350,6 +369,7 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
 - **Wumpus, time-aware (finite-horizon) value** (`model.time_aware_value`): no gain; still ~69% unfinished (section 5.6).
 - **Wumpus, offline value-target screens** (`grounding_screen.py`, `teacher_robustness.py`): optimistic max(V̂, G) cannot lower an overestimated V̂ (fails 3/3); the agent's own MC returns are luck-dominated; heuristic returns rank FORWARD first only under some fit protocols (extrapolation). Do not build any of them as a training option without new evidence.
 - **Trusting one frozen-latent fit's ranking at imagined children** (M4): check fit protocols and initialisations first.
+- **Wumpus, γ = 0.95** (`env.discount`): halves idle V̂ but leaves about 65% of games unfinished (paired −3.8 ± 9.9 points).
 - **Wumpus, n-step returns of the agent's own greedy games mixed into the value target** (`model.value_nstep=10`, mix 0.5): worse (88–126 against 166–215). The greedy policy's returns are uniformly poor and push all values down without separating exploring from idling.
 
 **Planning**
