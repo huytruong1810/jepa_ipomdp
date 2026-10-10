@@ -58,6 +58,19 @@
 #      joint head's, so one long run scores 6400 / 12800 / 25600 updates for both heads.
 #    - A post-hoc fit is the screen; in the agent, the decoupled head would train alongside on
 #      detached latents with its own stopping rule.
+#    - Result 2026-10-10 (runs/wumpus/planning_head_ab/, seeds 1-3, 25600 updates; per seed at
+#      6400 -> 12800 -> 25600 updates):
+#      * The LATENT keeps improving with more updates: cell 77/81/81 -> 80/84/86 -> 79/85/87%, heading
+#        63/69/84 -> 68/77/91 -> 69/77/92%, probe danger error 0.100/0.101/0.057 -> 0.091/0.090/0.030.
+#        Most of the gain is in by 12800.
+#      * The JOINT head overfits as before: held-out NLL 0.242/0.234/0.230 -> 0.386/0.364/0.319, and
+#        safe-miss 0.019/0.020/0.020 -> 0.080/0.036/0.029.
+#      * The DECOUPLED head (early-stopped at 2250-2750 steps) does not overfit: held-out NLL
+#        0.248/0.239/0.221 at 25600. But against the joint head at the agent's 6400 it is no better on
+#        danger error (12800: 0.115/0.111/0.090 vs 0.113/0.111/0.098) and WORSE on the confident "safe"
+#        misses the planner exploits, on 3/3 seeds: safe-miss 0.023/0.072/0.038 vs 0.019/0.020/0.020
+#        (paired +0.025 +- 0.062). Even on the same 6400 latent the fresh head misses more
+#        (0.021/0.065/0.050): NLL early stopping does not make the head conservative where it matters.
 #
 # 3. Usage:
 #    uv run python reports/2026-10-02_wumpus_diagnostics/objective_ab.py --representation jepa \

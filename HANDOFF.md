@@ -36,6 +36,10 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
     - k20 − k5: cell −3.8 ± 5.2 points (lower on 3 of 3 seeds), heading −13 ± 24 (lower on 3 of 3). k10 lies in between.
     - Heading accuracy is still rising at 6,400 updates for k = 5 (one seed reaches 84%), but more updates overfit the observation head (section 5.5).
     - Networks are saved as `obj_*.pt`.
+  - **Decoupled planning head A/B, finished** (`runs/wumpus/planning_head_ab/`, `objective_ab.py` section 2d; 3 seeds, 25,600 updates).
+    - **The latent improves with longer training:** cell +3 to +5 points and heading +5 to +8 by 12,800 updates; one seed reaches 86% / 91%.
+    - **The joint head overfits** (held-out NLL 0.23 → 0.32–0.39).
+    - **A fresh head early-stopped on NLL does not overfit, but is worse on confident "safe" misses** (3 of 3 seeds; paired +0.025 ± 0.062). It is no better on danger error. Decoupling alone is not a clear win.
   - **Ablations, finished** (section 5.3): storing the greedy games matters (−110 ± 97 without it, deaths 6–18%); ε does not (+8.8 ± 110).
 
 ## 1. Goals
