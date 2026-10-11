@@ -128,6 +128,11 @@
 #      games, which the agent stores (section 8) and which fixed most deaths; hence the agent test.
 #    - Built after every other network and only when enabled, so the default (canonical Tiger)
 #      draws and builds nothing new.
+#    - Result 2026-10-10 (Wumpus, current recipe + this flag at 128 updates per collection; seeds 0/1
+#      analysed, seed 2 stopped at collection 55 with the same picture): returns 67 / -45 against
+#      186 / 166, deaths 8.4 / 28.7% (in-training evaluations ~30% on all 3 seeds against 5-10%).
+#      The latent did NOT improve online either: MLP probes on random histories cell 52 / 53%,
+#      heading 50 / 49% (current agent 56 / 59%). Failed; kept as an option, not used.
 # ==============================================================================
 
 from collections.abc import Callable

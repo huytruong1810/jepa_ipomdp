@@ -40,9 +40,11 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
     - **The latent improves with longer training:** cell +3 to +5 points and heading +5 to +8 by 12,800 updates; one seed reaches 86% / 91%.
     - **The joint head overfits** (held-out NLL 0.23 → 0.32–0.39).
     - **A fresh head early-stopped on NLL does not overfit, but is worse on confident "safe" misses** (3 of 3 seeds; paired +0.025 ± 0.062). It is no better on danger error. Decoupling alone is not a clear win.
-  - **Running (launched 2026-10-10 17:04, `8b3d621`): the agent with a detached planning head** (`model.detached_planning_head=true`, new; default off, Tiger bit-identical) **at 128 updates per collection**. Current recipe otherwise, 3 seeds, via `runs/wumpus/planning_head_agent_chain.sh` → `u128_store_eval_eps_decoder_k5_planhead_seed*`, with `analyze.py` and `unfinished_diag.py` chained.
-    - **Decision rule:** if it clearly beats the current agent (paired), run the 128-update joint-head control to attribute the gain; otherwise stop.
-    - ipomcp is running 4 heavy jobs, so expect slower collections.
+  - **Detached planning head at 128 updates per collection (`8b3d621`): failed.**
+    - Seeds 0 and 1 returned 67 and −45, against 186 and 166 for the current agent. Deaths were 8.4% and 28.7%.
+    - In-training evaluations show about 30% deaths on all 3 seeds, so seed 2 was stopped by hand at collection 55.
+    - The online latent did not improve: random-history probes for cell are 52/53% and heading 50/49%, against 56/59%. The offline latent gain did not transfer.
+    - By the decision rule, the 128-update joint-head control was not run.
   - **Ablations, finished** (section 5.3): storing the greedy games matters (−110 ± 97 without it, deaths 6–18%); ε does not (+8.8 ± 110).
 
 ## 1. Goals
@@ -133,6 +135,7 @@ Stages:
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_nstep10_seed{0,1,2}` | Current recipe + `model.value_nstep=10` (`52ac3fc`), analysed, plus both diagnostics: **failed** (section 5.6) |
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_seed*.{grounding_screen,teacher_robustness}.log`, `{screen,teacher}_chain.sh` | The offline value-target screens of 2026-10-09 (section 5.6) |
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_gamma95_seed{0,1,2}`, `gamma95_chain.sh` (+ `.log`) | Current recipe + `env.discount=0.95` (`1c05c16`), analysed, plus both diagnostics: **no significant gain** (section 5.6) |
+| `runs/wumpus/u128_store_eval_eps_decoder_k5_planhead_seed{0,1,2}`, `planning_head_agent_chain.sh` | Detached planning head, 128 updates: **failed** (seed 2 stopped at collection 55) |
 | `runs/wumpus/smoke_gamma95` | 6-collection small check at γ = 0.95 (clean) |
 | `runs/wumpus/smoke_time_aware`, `smoke_nstep` | 6-collection small checks of the two options |
 | `runs/wumpus/{jepa_resume,time_aware,value_chain,nstep}_chain.sh` (+ `.log`) | The detached pipelines of 2026-10-07/08 |
@@ -392,6 +395,7 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
 - **Wumpus, offline value-target screens** (`grounding_screen.py`, `teacher_robustness.py`): optimistic max(V̂, G) cannot lower an overestimated V̂ (fails 3/3); the agent's own MC returns are luck-dominated; heuristic returns rank FORWARD first only under some fit protocols (extrapolation). Do not build any of them as a training option without new evidence.
 - **Trusting one frozen-latent fit's ranking at imagined children** (M4): check fit protocols and initialisations first.
 - **Wumpus, longer multi-step horizons** (k = 10, 20, offline on `pools.pt`): no better than k = 5; k = 20 lowers cell and heading on 3 of 3 seeds.
+- **Wumpus, detached planning head + 128 updates per collection** (`model.detached_planning_head`): deaths return (8–29%, returns 67 / −45). The online latent is no better, even though the offline A/B improved it with more updates. Offline latent gains on `pools.pt` do not predict the agent.
 - **Wumpus, γ = 0.95** (`env.discount`): halves idle V̂ but leaves about 65% of games unfinished (paired −3.8 ± 9.9 points).
 - **Wumpus, n-step returns of the agent's own greedy games mixed into the value target** (`model.value_nstep=10`, mix 0.5): worse (88–126 against 166–215). The greedy policy's returns are uniformly poor and push all values down without separating exploring from idling.
 
@@ -444,6 +448,7 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
 - `59bd83c`: `value_chain_diag.py` (latent has progress info; value ungrounded).
 - `52ac3fc`: **`model.value_nstep`** and the buffer's `greedy` flags (default off; fingerprinted).
 - `2eec2bb`: HANDOFF rewrite. `fb57b11`, `45bb861`: offline value-target screens (no remedy has support).
+- `8b3d621`: **`model.detached_planning_head`** (default off; fingerprinted); failed on Wumpus.
 - `1c05c16`: **`env.discount`**, a configurable Wumpus γ (default 0.99; fingerprinted).
 
 ## 9. Files touched since the last push (`9a9b726`)
