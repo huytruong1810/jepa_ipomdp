@@ -21,7 +21,7 @@ uv run pytest                                    # fast suite (slow tests exclud
 uv run pytest -m slow                            # certified V* solve, exact-model planner vs optimal, world-model acceptance (GPU)
 uv run pytest tests/test_domain.py::TestExactSolver::test_optimal_actions   # single test
 uv run analyze.py runs/tiger/<run>               # belief analysis of best.pt -> <run>/analysis/
-uv run sweep.py <name> --seeds 0,1,2,3,4 [hydra overrides]   # train + analyse each seed, Student-t 95% CIs -> runs/sweeps/<name>/
+uv run sweep.py <name> --seeds 0,1,2,3,4 [hydra overrides]   # train + analyse each seed (Tiger or env=wumpus), Student-t 95% CIs -> runs/sweeps/<name>/
 tensorboard --logdir runs
 ```
 

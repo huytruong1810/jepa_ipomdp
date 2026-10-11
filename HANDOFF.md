@@ -365,7 +365,9 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
    - Diagnostics to rerun on any new agent: `unfinished_diag.py <run> 512` and `value_chain_diag.py <run> 512`.
 2. **Done (2026-10-10): recipe ablations** (section 5.3). Store the greedy games; ε is optional.
 4. **Push the latent towards position and heading.** It is organised by percept; probes are 55–60% against 100% supervised. Candidates: longer horizons for the multi-step term at the fixed update rate; an auxiliary objective that does not use privileged state. Use offline A/Bs on `pools.pt` first, and save the networks this time.
-5. **Seeds and tooling:** 5 seeds for the current agent; make `sweep.py` and `experiments/aggregate.py` work for Wumpus (they are Tiger-only).
+5. **Seeds and tooling.**
+   - Done: `sweep.py` and `experiments/aggregate.py` handle Wumpus (2026-10-10). Existing runs join a sweep by symlink plus a `TRAINED` marker. `runs/sweeps/wumpus_current` links the current agent's seeds.
+   - Seeds 3 and 4 are training (`runs/wumpus/current_seeds34_chain.sh`). Once they are analysed, link them and rerun the same `sweep.py wumpus_current --seeds 0,1,2,3,4 <the recipe's overrides>`.
 6. **Rerun the slow suite at HEAD once** (section 3, Tests).
 7. **Ask before pushing** `61991c7` onward.
 8. **Deferred:** the hybrid JEPA + observation condition; a model-free recurrent Q-learner baseline; multi-agent Tiger (verify its tables against Gmytrasiewicz & Doshi first); I-POMDP levels via the S × M_j reduction. Cheap Tiger questions: an observation-head detach ablation in JEPA mode; Polyak momentum 0.98.

@@ -4,15 +4,19 @@ exact solver, Wumpus World without one), and aggregating analyses over training 
 shells around this package.
 """
 
-from .aggregate import PAIRED_GAPS, REPORT_METRICS, SeedStatistic, aggregate_reports, seed_statistic
+from .aggregate import (DOMAIN_METRICS, TIGER_GAPS, TIGER_METRICS, WUMPUS_GAPS, WUMPUS_METRICS, SeedStatistic,
+                        aggregate_reports, seed_statistic)
 from .runs import (DOMAIN_BUILDERS, AnalysisSettings, TrainedRun, analyze_run, build_run_config, build_training_run,
                    latent_figure, load_trained_run, tiger_setup, wumpus_setup)
 from .wumpus import WumpusAnalysisSettings, analyze_wumpus_run
 
 __all__ = [
     "DOMAIN_BUILDERS",
-    "PAIRED_GAPS",
-    "REPORT_METRICS",
+    "DOMAIN_METRICS",
+    "TIGER_GAPS",
+    "TIGER_METRICS",
+    "WUMPUS_GAPS",
+    "WUMPUS_METRICS",
     "AnalysisSettings",
     "SeedStatistic",
     "TrainedRun",

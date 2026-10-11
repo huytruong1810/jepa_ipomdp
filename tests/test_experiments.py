@@ -8,7 +8,7 @@ from omegaconf import OmegaConf
 import pytest
 import torch
 
-from ipomdp.experiments import (PAIRED_GAPS, REPORT_METRICS, aggregate_reports, build_run_config, build_training_run,
+from ipomdp.experiments import (TIGER_GAPS, TIGER_METRICS, WUMPUS_GAPS, WUMPUS_METRICS, aggregate_reports, build_run_config, build_training_run,
                                 load_trained_run, seed_statistic)
 from ipomdp.training import save_checkpoint
 
@@ -54,7 +54,7 @@ class TestRunConstruction:
 
 def _report(optimal: float, planner: float, decoded: float) -> dict:
     report: dict = {}
-    for path in REPORT_METRICS.values():
+    for path in TIGER_METRICS.values():
         node = report
         for key in path[:-1]:
             node = node.setdefault(key, {})
@@ -78,8 +78,24 @@ class TestSeedAggregation:
 
     def test_gaps_are_paired_within_seeds(self):
         # The returns vary a lot between seeds but the planner is always exactly 1 below the optimum.
-        statistics = aggregate_reports([_report(10.0, 9.0, 10.0), _report(20.0, 19.0, 20.0), _report(30.0, 29.0, 30.0)])
-        assert set(PAIRED_GAPS) <= statistics.keys()
+        statistics = aggregate_reports([_report(10.0, 9.0, 10.0), _report(20.0, 19.0, 20.0), _report(30.0, 29.0, 30.0)],
+                                       "tiger")
+        assert set(TIGER_GAPS) <= statistics.keys()
         gap = statistics["gap/learned_planner - optimal"]
         assert gap.mean == pytest.approx(-1.0) and gap.std == pytest.approx(0.0)
         assert statistics["return/learned_planner"].std == pytest.approx(10.0)
+
+    def test_wumpus_gaps_are_paired_against_the_reference(self):
+        def report(planner: float) -> dict:
+            out: dict = {}
+            for path in WUMPUS_METRICS.values():
+                node = out
+                for key in path[:-1]:
+                    node = node.setdefault(key, {})
+                node[path[-1]] = 0.0
+            out["returns"]["learned_planner"]["discounted_return"] = planner
+            out["returns"]["reference_risk0.4"]["discounted_return"] = 573.0
+            return out
+        statistics = aggregate_reports([report(100.0), report(200.0), report(300.0)], "wumpus")
+        assert set(WUMPUS_GAPS) <= statistics.keys()
+        assert statistics["gap/learned_planner - reference_risk0.4"].mean == pytest.approx(-373.0)

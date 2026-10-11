@@ -33,6 +33,14 @@
 #    - checkpoint_eval_return is the best greedy evaluation during training, i.e. the max over
 #      noisy estimates, and is biased upwards (runs.py, section 3). It is aggregated for
 #      reference only; the unbiased return of the same checkpoint is returns/learned_planner.
+#
+# 5. One Metric Table per Domain (2026-10-10):
+#    - Tiger reports come from experiments/runs.py (exact optimum, probes in KL, error bounds);
+#      Wumpus reports from experiments/wumpus.py (no optimum: the exact-belief reference agent at
+#      risk 0.4 and the random hunter; outcome rates; cell/heading probes and hazard errors).
+#    - DOMAIN_METRICS selects the table. The Wumpus gaps to cite are planner - reference and
+#      planner - random, paired within seed for the same reason as in section 3: every seed's
+#      analysis plays the same 512 layouts, so the reference's return is identical across seeds.
 # ==============================================================================
 
 from dataclasses import dataclass
@@ -40,8 +48,8 @@ import math
 
 from scipy import stats
 
-# Metric name -> path into report.json (runs.py, section 4).
-REPORT_METRICS: dict[str, tuple[str, ...]] = {
+# Metric name -> path into a Tiger report.json (runs.py, section 4).
+TIGER_METRICS: dict[str, tuple[str, ...]] = {
     "return/optimal": ("returns", "optimal", "mean"),
     "return/learned_planner": ("returns", "learned_planner", "mean"),
     "return/decoded_mlp": ("returns", "decoded_mlp", "mean"),
@@ -57,10 +65,37 @@ REPORT_METRICS: dict[str, tuple[str, ...]] = {
 }
 
 # Paired within-seed differences (section 3): name -> (minuend, subtrahend) metric names.
-PAIRED_GAPS: dict[str, tuple[str, str]] = {
+TIGER_GAPS: dict[str, tuple[str, str]] = {
     "gap/learned_planner - optimal": ("return/learned_planner", "return/optimal"),
     "gap/decoded_mlp - optimal": ("return/decoded_mlp", "return/optimal"),
     "gap/learned_planner - decoded_mlp": ("return/learned_planner", "return/decoded_mlp"),
+}
+
+# Metric name -> path into a Wumpus report.json (experiments/wumpus.py; section 5).
+WUMPUS_METRICS: dict[str, tuple[str, ...]] = {
+    "return/learned_planner": ("returns", "learned_planner", "discounted_return"),
+    "return/reference_risk0.4": ("returns", "reference_risk0.4", "discounted_return"),
+    "return/random": ("returns", "random", "discounted_return"),
+    "win_rate/learned_planner": ("returns", "learned_planner", "win_rate"),
+    "death_rate/learned_planner": ("returns", "learned_planner", "death_rate"),
+    "unfinished_rate/learned_planner": ("returns", "learned_planner", "unfinished_rate"),
+    "probe_cell_acc/mlp_random": ("probes", "mlp_random", "cell_accuracy"),
+    "probe_heading_acc/mlp_random": ("probes", "mlp_random", "heading_accuracy"),
+    "probe_cell_acc/mlp_agent": ("probes", "mlp_agent", "cell_accuracy"),
+    "probe_heading_acc/mlp_agent": ("probes", "mlp_agent", "heading_accuracy"),
+    "probe_pit_error/mlp_random": ("probes", "mlp_random", "hazard_error", "pit"),
+    "selection_score (biased)": ("checkpoint_eval_return",),
+}
+
+WUMPUS_GAPS: dict[str, tuple[str, str]] = {
+    "gap/learned_planner - reference_risk0.4": ("return/learned_planner", "return/reference_risk0.4"),
+    "gap/learned_planner - random": ("return/learned_planner", "return/random"),
+}
+
+# conf/env/<name>.yaml -> (metrics, paired gaps) (section 5).
+DOMAIN_METRICS: dict[str, tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, str]]]] = {
+    "tiger": (TIGER_METRICS, TIGER_GAPS),
+    "wumpus": (WUMPUS_METRICS, WUMPUS_GAPS),
 }
 
 
@@ -92,10 +127,11 @@ def _lookup(report: dict, path: tuple[str, ...]) -> float:
     return float(value)
 
 
-def aggregate_reports(reports: list[dict]) -> dict[str, SeedStatistic]:
-    """Per-metric statistics over one report.json per seed, including the paired gaps."""
-    per_seed = [{name: _lookup(report, path) for name, path in REPORT_METRICS.items()} for report in reports]
+def aggregate_reports(reports: list[dict], domain: str) -> dict[str, SeedStatistic]:
+    """Per-metric statistics over one report.json per seed of `domain`, including the paired gaps."""
+    metrics, gaps = DOMAIN_METRICS[domain]
+    per_seed = [{name: _lookup(report, path) for name, path in metrics.items()} for report in reports]
     for seed_metrics in per_seed:
-        for name, (minuend, subtrahend) in PAIRED_GAPS.items():
+        for name, (minuend, subtrahend) in gaps.items():
             seed_metrics[name] = seed_metrics[minuend] - seed_metrics[subtrahend]
     return {name: seed_statistic([m[name] for m in per_seed]) for name in per_seed[0]}
