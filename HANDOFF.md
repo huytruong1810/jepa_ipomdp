@@ -112,7 +112,7 @@ Stages:
 ## 3. Current state
 
 **Git**
-- **`origin/main` is at `9a9b726`.** Everything after it (`61991c7` … HEAD) is local and unpushed: **ask before pushing.** The previous HANDOFF wrongly said `61991c7` was pushed.
+- **`origin/main` is at `43a4dee`** (pushed with the user's approval on 2026-10-11). Later commits are local: **ask before pushing.**
 - The working tree is clean after the HANDOFF commit. Nothing is running.
 
 **Tests**
@@ -371,7 +371,7 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
    - Done: `sweep.py` and `experiments/aggregate.py` handle Wumpus (2026-10-10). Existing runs join a sweep by symlink plus a `TRAINED` marker. `runs/sweeps/wumpus_current` links the current agent's seeds.
    - Seeds 3 and 4 are training (`runs/wumpus/current_seeds34_chain.sh`). Once they are analysed, link them and rerun the same `sweep.py wumpus_current --seeds 0,1,2,3,4 <the recipe's overrides>`.
 6. **Done (2026-10-11):** the slow suite at HEAD (7/7).
-7. **Ask before pushing** `61991c7` onward.
+7. **Done (2026-10-11):** everything through `43a4dee` was pushed. Ask before each later push.
 8. **Deferred:** the hybrid JEPA + observation condition; a model-free recurrent Q-learner baseline; multi-agent Tiger (verify its tables against Gmytrasiewicz & Doshi first); I-POMDP levels via the S × M_j reduction. Cheap Tiger questions: an observation-head detach ablation in JEPA mode; Polyak momentum 0.98.
 
 ## 7. Failed paths and pitfalls: do not repeat
