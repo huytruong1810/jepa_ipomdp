@@ -81,7 +81,8 @@ def domain_of(overrides: list[str]) -> str:
 
 def record_condition(sweep_dir: Path, overrides: list[str], settings: AnalysisSettings | WumpusAnalysisSettings) -> None:
     """Section 3: one sweep directory is one experimental condition."""
-    condition = {"overrides": overrides, "analysis": asdict(settings)}
+    # Normalised through JSON: tuples in the settings (Wumpus reference thresholds) come back as lists.
+    condition = json.loads(json.dumps({"overrides": overrides, "analysis": asdict(settings)}))
     path = sweep_dir / "sweep.json"
     if path.exists():
         recorded = json.loads(path.read_text())

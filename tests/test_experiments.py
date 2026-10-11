@@ -99,3 +99,24 @@ class TestSeedAggregation:
         statistics = aggregate_reports([report(100.0), report(200.0), report(300.0)], "wumpus")
         assert set(WUMPUS_GAPS) <= statistics.keys()
         assert statistics["gap/learned_planner - reference_risk0.4"].mean == pytest.approx(-373.0)
+
+
+class TestSweepCondition:
+    """sweep.py, sections 3-4: a sweep directory is one condition; continuing must not raise."""
+
+    @staticmethod
+    def _sweep():
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("sweep", Path(__file__).resolve().parents[1] / "sweep.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_wumpus_condition_survives_the_json_round_trip(self, tmp_path):
+        from ipomdp.experiments import WumpusAnalysisSettings
+        sweep = self._sweep()
+        sweep.record_condition(tmp_path / "s", ["env=wumpus"], WumpusAnalysisSettings())
+        sweep.record_condition(tmp_path / "s", ["env=wumpus"], WumpusAnalysisSettings())     # continuing: no error
+        with pytest.raises(ValueError):
+            sweep.record_condition(tmp_path / "s", ["env=wumpus", "seed_x=1"], WumpusAnalysisSettings())
+        assert sweep.domain_of([]) == "tiger" and sweep.domain_of(["env=wumpus"]) == "wumpus"

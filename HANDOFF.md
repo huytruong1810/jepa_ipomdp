@@ -7,7 +7,7 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
 - **Canonical Tiger: done.** The learned planner matches the exact optimum over 5 seeds (gap −0.03 ± 0.06). A decoder baseline is indistinguishable from JEPA there.
 - **Single-hunter 4x4 Wumpus World: the current agent works but is far from the reference.**
   - The agent: decoder representation, 64 updates per collection, ε-uniform exploration, greedy evaluation games stored in the buffer.
-  - It earns **189 ± 62** per game over 3 seeds (185, 166 and 215) with 0.2–3.9% deaths.
+  - It earns **182 ± 62** per game over 5 seeds (185, 166, 215, 107 and 236; `runs/sweeps/wumpus_current`): wins 29.6 ± 2.7%, deaths 4.9 ± 7.8%, unfinished 65.5 ± 8.9%. The paired gap to the heuristic is −391 ± 62. Seed 3 is the death outlier (15.8%).
   - A hand-written agent on the exact belief earns 573. About 70% of the learned agent's games end unfinished after 50 steps, against 29% for the heuristic.
 - **What the latent encodes.** Its UMAP is organised first by the percept just received, and only weakly by position and heading. Probes recover cell and heading 55–60% of the time on random histories, against 99.9–100% for the same network trained on exact targets.
 - **The main diagnosis of the last week.** The jointly trained filter and observation head **overfit** when they train too many times per game. They were calibrated in-sample and overconfident on fresh games, and the greedy planner exploited exactly those confident "safe" errors. Going back to 64 updates per collection fixed most deaths.
@@ -117,7 +117,7 @@ Stages:
 
 **Tests**
 - The fast suite passes: 159 tests, about 2 min.
-- **The slow suite passed 7/7 on 2026-10-05**, at `cd9d116` plus the stale-test fix `d4911a8`. Later source changes (ε, `store_eval_episodes`, `time_aware_value`, `value_nstep`) are default-off, fingerprinted and covered by fast tests. Rerunning the slow suite once at HEAD is still advisable (about 50 min).
+- **The slow suite passed 7/7 at `f1e5bbf` on 2026-10-11** (42.5 min; log `runs/slow_suite_f1e5bbf.log`). It covers every option added since 2026-10-05.
 - **Checkpoints from before `52ac3fc` cannot be resumed:** their buffer state has no `greedy` flags (no back-compat, by rule). They still load for analysis (`load_trained_run` reads networks only).
 - **The Tiger acceptance test now trains 6000 updates.** At 3000 the value gate (mean |V − V*| < 8) failed at 3–5 of 9 seeds. The two worst seeds drop to 5.3 and 1.1 at 6000. The seed table is in the test header; the logs are in `runs/tiger_acceptance_seeds/`.
 - The input-network hoist (`6af8f8f`) stays: its paired effect on the value error is +4.2 ± 6.2, not significant.
@@ -228,7 +228,9 @@ A hand-written, deterministic policy on the exact belief. It is **not optimal** 
 | 0 | 185.5 ± 20.0 | 29.5% | 3.9% | 66.6% |
 | 1 | 166.0 ± 19.6 | 26.4% | 3.3% | 70.3% |
 | 2 | 215.2 ± 18.6 | 29.1% | 0.2% | 70.7% |
-| **Mean, 3 seeds** | **189 ± 62** (t-interval) | | | |
+| 3 | 107.0 | 31.1% | 15.8% | 53.1% |
+| 4 | 236.2 | 32.0% | 1.2% | 66.8% |
+| **Mean, 5 seeds** (`runs/sweeps/wumpus_current/aggregate.json`) | **182 ± 62** (t-interval; 3 seeds gave 189 ± 62) | 29.6 ± 2.7% | 4.9 ± 7.8% | 65.5 ± 8.9% |
 
 - **The death model generalises** (seed 0, `latest.pt`, 256 fresh games per policy). Steps predicted below 0.02 killed 0.2% of the time under the exploring policy and 0.1% under the greedy planner. Before the fix this was 4.1% and 9.6%.
 - **The remaining gap is unfinished games, not deaths.** Diagnosed on 2026-10-07 (`unfinished_diag.py`, 3 seeds × 512 games; continued in section 5.6):
@@ -368,7 +370,7 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
 5. **Seeds and tooling.**
    - Done: `sweep.py` and `experiments/aggregate.py` handle Wumpus (2026-10-10). Existing runs join a sweep by symlink plus a `TRAINED` marker. `runs/sweeps/wumpus_current` links the current agent's seeds.
    - Seeds 3 and 4 are training (`runs/wumpus/current_seeds34_chain.sh`). Once they are analysed, link them and rerun the same `sweep.py wumpus_current --seeds 0,1,2,3,4 <the recipe's overrides>`.
-6. **Rerun the slow suite at HEAD once** (section 3, Tests).
+6. **Done (2026-10-11):** the slow suite at HEAD (7/7).
 7. **Ask before pushing** `61991c7` onward.
 8. **Deferred:** the hybrid JEPA + observation condition; a model-free recurrent Q-learner baseline; multi-agent Tiger (verify its tables against Gmytrasiewicz & Doshi first); I-POMDP levels via the S × M_j reduction. Cheap Tiger questions: an observation-head detach ablation in JEPA mode; Polyak momentum 0.98.
 
