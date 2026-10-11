@@ -435,7 +435,7 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
 - `ccc985b` Phase 2 (`BeliefFilter`, reward grounding plus JEPA); `94c4b1e`, `2191999` Phase 3 (unbiased two-hot, observation-branching imagination); `d110ad9` Phase 4 (search model, expectimax tree search); `682060a`, `db625d9`, `80ee623` Phase 5 (`TrainingRun`, Bellman targets); `7a16fea` Phase 6 (probes, error bounds); `01bbe62` Phase 7 (experiments package); `fd4d628`, `e2620c4` Phase 8.
 - `5c79deb` … `065b1c1`: Polyak acting weights; `polyak` sweep (Tiger gate met). `18f7454`: Tiger reviewer-page sources. `d8871f1`: decoder baseline switch. `9a9b726`: decoder sweep launched.
 
-**Local, unpushed (`61991c7` onward)**
+**Pushed 2026-10-11 (`61991c7` … `43a4dee`)**
 - `61991c7`: Tiger decoder result.
 - `4d1ace5`, `90b489d`, `ae2d108`, `123fa81`: Wumpus domain, the domain-generic stack (Tiger bit-identical), the North start and 50-step window, the reference heuristic.
 - `feb65bd` … `674a865`: Wumpus diagnostics, supervised bound, Transformer A/B, multi-step term (`2bbebac`), objective A/Bs.
