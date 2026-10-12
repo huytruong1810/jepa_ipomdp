@@ -310,6 +310,27 @@ class TestLearningStack:
         continued = [resumed.collect_and_train() for _ in range(2)] + [resumed.evaluate()]
         assert repr(continued) == repr(expected[1:])
 
+    def test_privileged_cache_matches_fresh_targets_after_overwrites(self):
+        # privileged.py, section 2c: 10 collections of 4 episodes wrap the 32-slot buffer, so slots cached
+        # early are rewritten; every cached target must still equal the exact filter on the stored episode.
+        from ipomdp.experiments import wumpus_setup
+        from ipomdp.training import TrainingRun
+        from ipomdp.training.episode_buffer import EpisodeBatch
+        setup = wumpus_setup(CPU, DISCOUNT)
+        run = TrainingRun(setup, self._config(privileged_belief_loss=True, updates_per_collection=8), CPU)
+        for _ in range(10):
+            run.collect_and_train()
+        assert int(run.privileged._cached.sum()) > 0
+        b = run.buffer
+        stored = EpisodeBatch(b._actions, b._observations, b._rewards, b._initial_observations, b._greedy,
+                              torch.arange(b.capacity))
+        cached, fresh = run.privileged.targets(stored), setup.privileged.targets(stored)
+        for got, want in zip(cached.classes, fresh.classes):
+            assert torch.equal(got, want)
+        assert torch.equal(cached.soft, fresh.soft) and torch.equal(cached.live, fresh.live)
+        with pytest.raises(ValueError):
+            run.privileged.targets(EpisodeBatch(b._actions, b._observations, b._rewards, b._initial_observations))
+
     def test_multistep_observation_term_trains_and_resumes(self, tmp_path):
         from ipomdp.experiments import wumpus_setup
         from ipomdp.training import TrainingRun, load_checkpoint, save_checkpoint

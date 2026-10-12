@@ -141,6 +141,8 @@
 #      exact belief, the idling is a representation failure; if it still idles, it is value or planning.
 #    - Built after every other network and only when enabled, so the default (canonical Tiger)
 #      draws and builds nothing new.
+#    - Its targets are cached per buffer slot (privileged.py, section 2c). _store() forgets the slots
+#      every buffer write rewrites, and load_state_dict forgets them all.
 # ==============================================================================
 
 from collections.abc import Callable
@@ -270,7 +272,8 @@ class TrainingRun:
                                     if cfg.observation_horizon > 0 else None)
         self.planning_observation_head = (ObservationHead(cfg.latent_dim, num_a, num_o, cfg.hidden_dim, cfg.num_blocks).to(device)
                                           if cfg.detached_planning_head else None)                 # section 11
-        self.privileged = (PrivilegedBeliefLoss(setup.privileged, cfg.latent_dim, cfg.hidden_dim, cfg.num_blocks).to(device)
+        self.privileged = (PrivilegedBeliefLoss(setup.privileged, cfg.buffer_capacity, cfg.episode_length, cfg.latent_dim,
+                                                cfg.hidden_dim, cfg.num_blocks).to(device)
                            if cfg.privileged_belief_loss else None)                                   # section 12
         self.trainer = WorldModelTrainer(self.belief_filter, self.jepa, self.value_head, self.reward_head, self.observation_head,
                                          self.codec, num_a, num_o, domain.discount, cfg.trainer, device,
@@ -329,6 +332,12 @@ class TrainingRun:
         if self.planning_observation_head is not None:                                  # section 11
             ema_update(self.acting_planning_observation_head, self.planning_observation_head, momentum)
 
+    def _store(self, episodes: EpisodeBatch, greedy: bool) -> None:
+        """Adds episodes to the replay buffer; the privileged term forgets the rewritten slots (section 12)."""
+        slots = self.buffer.add(episodes, greedy)
+        if self.privileged is not None:
+            self.privileged.forget(slots)
+
     @property
     def in_warmup(self) -> bool:
         return self.collection * self.cfg.env_batch_size < self.cfg.warmup_episodes
@@ -337,7 +346,7 @@ class TrainingRun:
         """One collection of env_batch_size episodes followed by the gradient updates."""
         warmup = self.in_warmup
         episodes, _ = play_episodes(self.env, self.warmup_agent if warmup else self.train_agent)
-        self.buffer.add(episodes, greedy=False)
+        self._store(episodes, greedy=False)
         metrics: dict[str, float] = {}
         for _ in range(self.cfg.updates_per_collection):
             metrics = self.trainer.train_step(self.buffer.sample(self.cfg.batch_size))
@@ -361,7 +370,7 @@ class TrainingRun:
         """Greedy evaluation (section 2); updates best_eval_return."""
         episodes, _ = play_episodes(self.eval_env, self.eval_agent)
         if self.cfg.store_eval_episodes:
-            self.buffer.add(episodes, greedy=True)
+            self._store(episodes, greedy=True)
         returns = discounted_returns(episodes.rewards, self.domain.discount)
         mean, stderr = float(returns.mean()), float(returns.std()) / np.sqrt(len(returns))
         self.best_eval_return = max(self.best_eval_return, mean)
@@ -398,6 +407,8 @@ class TrainingRun:
             net.load_state_dict(state["networks"][name])
         self.trainer.optimizer.load_state_dict(state["optimizer"])
         self.buffer.load_state_dict(state["buffer"])
+        if self.privileged is not None:
+            self.privileged.forget()                                                      # section 12
         self.env.load_state_dict(state["env"])
         self.eval_env.load_state_dict(state["eval_env"])
         self.warmup_agent.load_state_dict(state["warmup_agent"])

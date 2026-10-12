@@ -33,6 +33,13 @@
 #      (training/run.py, section 8) or from collection. sample() returns the flag with the batch.
 #      The trainer's optional n-step greedy-return value target (trainer.py, section 3c) uses it;
 #      nothing else reads it, and storing it draws no random numbers.
+#
+# 5. Slot Indices (2026-10-11):
+#    - add() returns the slots it wrote and sample() returns the slots it drew (EpisodeBatch.index).
+#      The privileged exact-belief term (training/privileged.py, section 2c) caches its targets per
+#      slot with them: the targets are a fixed function of the stored episode, and recomputing the
+#      exact filter on every update cost 39 s per 64-update collection (0.6 s per update).
+#    - Returning indices draws no random numbers and changes no stored tensor.
 # ==============================================================================
 
 from dataclasses import dataclass
@@ -46,8 +53,8 @@ class EpisodeBatch:
     """
     A batch of complete episodes: (B, T) tensors and o_0 of shape (B,) or None (section 3).
 
-    greedy (B,) bool is set on batches sampled from an EpisodeBuffer (section 4); freshly played
-    episodes carry None.
+    greedy (B,) bool and index (B,) int64 (the buffer slots, section 5) are set on batches sampled
+    from an EpisodeBuffer (section 4); freshly played episodes carry None.
     """
 
     actions: Tensor
@@ -55,6 +62,7 @@ class EpisodeBatch:
     rewards: Tensor
     initial_observations: Tensor | None
     greedy: Tensor | None = None
+    index: Tensor | None = None
 
 
 class EpisodeBuffer:
@@ -85,8 +93,13 @@ class EpisodeBuffer:
         self._next = 0
         self.size = 0
 
-    def add(self, episodes: EpisodeBatch, greedy: bool) -> None:
-        """Stores a batch of complete episodes, overwriting the oldest when full; greedy: their source (section 4)."""
+    def add(self, episodes: EpisodeBatch, greedy: bool) -> Tensor:
+        """
+        Stores a batch of complete episodes, overwriting the oldest when full; greedy: their source (section 4).
+
+        Returns:
+            The slots written, (B,) int64 (section 5).
+        """
         count = episodes.actions.shape[0]
         if episodes.actions.shape != (count, self.episode_length):
             raise ValueError(f"episodes must have shape (B, {self.episode_length}), got {tuple(episodes.actions.shape)}.")
@@ -101,6 +114,7 @@ class EpisodeBuffer:
         self._greedy[slots] = greedy
         self._next = (self._next + count) % self.capacity
         self.size = min(self.size + count, self.capacity)
+        return slots
 
     def state_dict(self) -> dict:
         """Stored episodes, write position and sampling-generator state (checkpointing)."""
@@ -127,4 +141,4 @@ class EpisodeBuffer:
         index = torch.randint(0, self.size, (batch_size,), generator=self._generator, device=self.device)
         initial = None if self._initial_observations is None else self._initial_observations[index]
         return EpisodeBatch(self._actions[index], self._observations[index], self._rewards[index], initial,
-                            self._greedy[index])
+                            self._greedy[index], index)

@@ -26,6 +26,17 @@
 #      cross-entropy averaged over the soft targets (Wumpus: 48 hazard marginals and the danger ahead),
 #      on live steps only. This is supervised_filter.py's loss.
 #
+# 2c. Targets Cached per Buffer Slot (2026-10-11):
+#    - The targets are a fixed function of a stored episode, but recomputing them on every update
+#      (16 episodes x 50 steps x 16,380 layouts) cost 39 s per 64-update collection, 0.6 s per update
+#      alone and more with parallel runs. The module therefore caches them per replay-buffer slot
+#      (EpisodeBatch.index, episode_buffer.py section 5): a sampled slot is filtered the first time it
+#      is drawn and read from the cache afterwards.
+#    - The run forgets a slot whenever the buffer rewrites it (training/run.py, section 12) and forgets
+#      every slot on load_state_dict. The cache is not checkpointed (non-persistent buffers): it is
+#      rebuilt lazily from the restored episodes, which keeps resume bit-exact.
+#    - Batches without slot indices (not sampled from a buffer) raise: there is no uncached path.
+#
 # 2b. Pre-registered readout (3 seeds, paired with runs/sweeps/wumpus_current seeds 0-2, analyze.py on
 #    best.pt; recorded before the runs, 2026-10-11):
 #    - First check the premise: MLP probes on random histories must reach cell and heading >= 90%
@@ -73,17 +84,47 @@ class PrivilegedSpec:
 
 
 class PrivilegedBeliefLoss(nn.Module):
-    """The readout and its loss (section 2); its parameters train with the filter."""
+    """The readout and its loss (section 2), and the per-slot target cache (section 2c); its parameters train with the filter."""
 
-    def __init__(self, spec: PrivilegedSpec, latent_dim: int, hidden_dim: int, num_blocks: int):
+    def __init__(self, spec: PrivilegedSpec, capacity: int, episode_length: int, latent_dim: int, hidden_dim: int,
+                 num_blocks: int):
         super().__init__()
         self.spec = spec
         self.readout = build_residual_stack(latent_dim, hidden_dim, sum(spec.class_sizes) + spec.num_soft, num_blocks)
+        steps = (capacity, episode_length + 1)
+        self.register_buffer("_classes", torch.zeros(*steps, len(spec.class_sizes), dtype=torch.int64), persistent=False)
+        self.register_buffer("_soft", torch.zeros(*steps, spec.num_soft), persistent=False)
+        self.register_buffer("_live", torch.zeros(steps, dtype=torch.bool), persistent=False)
+        self.register_buffer("_cached", torch.zeros(capacity, dtype=torch.bool), persistent=False)
+
+    def forget(self, slots: Tensor | None = None) -> None:
+        """Drops the cached targets of `slots` (all slots if None): the buffer rewrote them (section 2c)."""
+        if slots is None:
+            self._cached.zero_()
+        else:
+            self._cached[slots] = False
+
+    def targets(self, episodes: EpisodeBatch) -> PrivilegedTargets:
+        """The exact targets of a buffer-sampled batch, filtering only slots not yet cached (section 2c)."""
+        if episodes.index is None:
+            raise ValueError("privileged targets need buffer slot indices (EpisodeBatch.index; section 2c).")
+        index = episodes.index
+        missing = ~self._cached[index]
+        if missing.any():
+            initial = None if episodes.initial_observations is None else episodes.initial_observations[missing]
+            fresh = self.spec.targets(EpisodeBatch(episodes.actions[missing], episodes.observations[missing],
+                                                   episodes.rewards[missing], initial))
+            slots = index[missing]
+            self._classes[slots] = torch.stack(fresh.classes, -1)
+            self._soft[slots] = fresh.soft
+            self._live[slots] = fresh.live
+            self._cached[slots] = True
+        return PrivilegedTargets(tuple(self._classes[index].unbind(-1)), self._soft[index], self._live[index])
 
     def forward(self, latents: Tensor, episodes: EpisodeBatch) -> Tensor:
         """Loss of latents (B, T + 1, D) against the exact targets of `episodes` (section 2)."""
         with torch.no_grad():
-            targets = self.spec.targets(episodes)
+            targets = self.targets(episodes)
         out = self.readout(latents[targets.live]).float()
         loss, start = out.new_zeros(()), 0
         for size, classes in zip(self.spec.class_sizes, targets.classes):
