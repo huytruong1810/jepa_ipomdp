@@ -1,4 +1,4 @@
-# HANDOFF: JEPA I-POMDP (as of 2026-10-11 night, for a fresh PLANNING session: the oracle-latent arm is training via `runs/wumpus/privileged_chain.sh`; everything is pushed)
+# HANDOFF: JEPA I-POMDP (as of 2026-10-11 night, for a fresh PLANNING session: nothing running; the oracle-latent arm is implemented and ready to launch; everything is pushed)
 
 **The next session's job (user, 2026-10-11): plan the coming experiments and implementations clearly before running them.** Start with section 0 (state), then section 6 (the planning agenda: what is running, the decision tree that depends on its result, and the open options with costs). Present a plan to the user before launching anything new.
 
@@ -23,7 +23,7 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
   - for the latent: longer multi-step horizons (k = 10, 20).
 - **The procrastination hypothesis, tested (section 5.8): only half right.** One forced FORWARD at a declined safe step has a real mean payoff in unfinished games (+90 ± 38; the model's estimate is negative and uncorrelated with it), but the median is 0: the planner declines again within 5 steps half the time.
 - **The size of the prize (section 5.8, exact-belief overrides, 5 seeds):** letting the heuristic's navigation rules (grab known gold, walk to the nearest provably safe unvisited cell) override the planner gives **482 ± 39 (+300 ± 42 paired)**, within 91 of the heuristic. Three quarters of that (+224 ± 75) comes from targets at most 3 actions away, i.e. turning towards an adjacent safe cell and stepping in. Forcing FORWARD only when already facing one gains nothing (+8 ± 24). **The missing skill is the turn that sets up a safe step.**
-- **Running: the oracle-latent arm** (user choice 2026-10-11; `model.privileged_belief_loss`; section 6.1). Does the agent still idle when its latent is trained on the exact belief? Its result decides most of the plan (section 6.2).
+- **Ready to launch, not running: the oracle-latent arm** (user choice 2026-10-11; `model.privileged_belief_loss`; section 6.1). Does the agent still idle when its latent is trained on the exact belief? Its result decides most of the plan (section 6.2). A first launch was cancelled by the user after 35 min so that the next session plans it together with everything else.
 - **Housekeeping state:**
   - Everything is committed and pushed to `origin/main` (section 3).
   - The fast suite passes (171). The slow suite passed 7/7 at `f1e5bbf`; it has not been run since `privileged_belief_loss` was added (default off, fingerprinted).
@@ -96,7 +96,7 @@ Stages:
 **Git**
 - **Everything is pushed** (2026-10-11 night): the diagnostics `counterfactual_diag.py` and `override_diag.py` (`c95e68b`), the option `model.privileged_belief_loss` (`25123d0`), its pre-registered readout (`ed7b564`) and the HANDOFF commits. Push after every implementation from now on (section 2).
 - The working tree is clean. `runs/` is untracked: keep it.
-- **Running:** the oracle-latent chain (section 6.1); check with `cat runs/wumpus/privileged_chain.log` and `ps -eo pid,args | grep "^ *[0-9]* [^ ]*python[^ ]* main.py"`.
+- **Nothing is running.** The cancelled oracle-latent launch (no evaluation or checkpoint reached) is parked in `runs/wumpus/aborted_privileged_2026-10-11/`; it holds nothing worth keeping.
 
 **Tests**
 - The fast suite passes: 171 tests, about 2 min.
@@ -116,7 +116,7 @@ Stages:
 | `runs/wumpus/u64_store_eval_noeps_decoder_k5_seed{0,1,2}`, `u64_eps_nostore_decoder_k5_seed{0,1,2}`, `ablation_chain.sh` | Recipe ablations (ε off; store_eval off), analysed (section 5.3) |
 | `runs/wumpus/horizon_ab/`, `planning_head_ab/` (+ `*_chain.sh`) | Offline A/Bs on `pools.pt` with saved networks (`obj_*.pt`): horizon k = 5/10/20, and the decoupled planning head over 25,600 updates (section 5.7) |
 | `runs/slow_suite_f1e5bbf.log` | Slow suite 7/7 |
-| `runs/wumpus/u64_store_eval_eps_decoder_k5_privileged_seed{0,1,2}`, `privileged_chain.sh` (+ `.log`), `smoke_privileged` | **The oracle-latent arm, running** (section 6.1); the 6-collection small check (clean) |
+| `runs/wumpus/privileged_chain.sh`, `smoke_privileged`, `aborted_privileged_2026-10-11/` | The oracle-latent launch script (ready; section 6.1), its 6-collection small check (clean), and the cancelled first launch |
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_seed*.{counterfactual_diag,override_diag,override_near_diag}.log`, `analysis/{counterfactual,override}.npz`, `runs/wumpus/{counterfactual,override,override_near}_chain.sh` | The counterfactual and override diagnostics of 2026-10-11 (section 5.8) |
 | `runs/wumpus/u64_store_eval_eps_jepa_k5_seed{0,1}` | **JEPA with the same recipe, finished and analysed** (`analysis/report.json`). Collections 1–40 were trained at `f5740e4`; collections 41–100 were resumed bit-exactly on 2026-10-07 at `2a6e326` (no source change) by `runs/wumpus/jepa_resume_chain.sh` |
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_seed*.{unfinished_diag,value_chain_diag}.log` | Unfinished-games and value-chain diagnoses of the current agent (section 5.6) |
@@ -390,12 +390,13 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
 
 The user asked for the next experiments and implementations to be planned out clearly in a fresh session. Do that first: read the running arm's result (6.1), take the matching branch of 6.2, write the plan (question, method, pre-registered readout, cost, order) and show it to the user, then execute. Experiments within the agreed direction need no permission (section 2); direction changes do.
 
-### 6.1 Running: the oracle-latent arm (user choice 2026-10-11)
+### 6.1 Ready to launch: the oracle-latent arm (user choice 2026-10-11)
 
 - **Question:** is the idling a representation failure (the latent decodes heading/cell only ~58%, so a turn towards a safe cell looks like a no-op) or a value/planning failure?
 - **What runs:** the current recipe plus `model.privileged_belief_loss=true` (`25123d0`; `training/privileged.py`; trainer section 2e; run section 12). A readout of every latent z_0..z_T is trained on the exact Bayes filter's targets (cell, heading, 48 hazard marginals, danger ahead; `WumpusBeliefTracker.supervision_targets`, `domain/wumpus.py` section 6), with gradients into the filter. A diagnostic arm, never a method (it uses the exact model).
 - **Checks done:** Tiger fingerprint bit-identical against `c95e68b` (both representations); fast suite 171; small check `runs/wumpus/smoke_privileged` (6 collections, clean, ~1.8 min per collection, privileged loss 3.3 → ~2).
-- **Runs:** `runs/wumpus/u64_store_eval_eps_decoder_k5_privileged_seed{0,1,2}`, launched 2026-10-11 21:30 at `ed7b564`, 3 in parallel (expect ~3–4 h of training). The chain then runs, per seed: `analyze.py`, `unfinished_diag.py` (512 games), and `override_diag.py <run> 512 planner,navigate`. Log: `runs/wumpus/privileged_chain.log` (`ALL DONE` at the end; each step logs its exit status). If the chain died, re-launch the missing steps by hand (training resumes bit-exactly from `checkpoints/latest.pt` with `resume=`).
+- **Launch:** `setsid nohup runs/wumpus/privileged_chain.sh > runs/wumpus/privileged_chain.log 2>&1 < /dev/null & disown` (check the machine load first, section 2). It trains `runs/wumpus/u64_store_eval_eps_decoder_k5_privileged_seed{0,1,2}` and then runs, per seed, `analyze.py`, `unfinished_diag.py` (512 games) and `override_diag.py <run> 512 planner,navigate`. Its log ends with `ALL DONE`; each step logs its exit status. Training resumes bit-exactly from `checkpoints/latest.pt` with `resume=` if a run dies.
+- **Cost (measure before committing compute):** the small check alone ran at ~1.8 min per collection, but the cancelled launch with **3 runs in parallel did not reach collection 5 in 35 min (> 7 min per collection, i.e. > 12 h for 100 collections)**. The per-batch exact filter (16 episodes × 50 steps × 16,380 layouts) plus three CPU-bound searches may be the cause. Before relaunching, time one collection with and without the option, and consider 2 in parallel, or caching the targets per stored episode (they are a fixed function of the episode; an `EpisodeBuffer` change, fingerprint needed). Fold this into the plan.
 - **Pre-registered readout (`training/privileged.py`, section 2b)**, paired with `runs/sweeps/wumpus_current` seeds 0–2 (185.5 / 166.0 / 215.2; unfinished 66.6 / 70.3 / 70.7%):
   1. **Premise:** MLP probes on random histories (`analysis/report.json`, `probes.mlp_random.cell_accuracy` and `heading_accuracy`) reach cell and heading ≥ 90% (current agent 56–58%). Otherwise the arm did not deliver the oracle latent: report that and see 6.2 (A).
   2. **Representation is the bottleneck:** unfinished falls by ≥ 15 points AND the return rises by ≥ +100 (paired).
@@ -518,7 +519,7 @@ The user asked for the next experiments and implementations to be planned out cl
 **Pushed 2026-10-11 night (after `43a4dee`)**
 - HANDOFF rewrites (`2d8df2e` and earlier).
 - `c95e68b`: `counterfactual_diag.py`, `override_diag.py` and the section 5.8 results.
-- `25123d0`: **`model.privileged_belief_loss`** (default off; fingerprinted); `ed7b564`: its pre-registered readout; `cad6836` and later: HANDOFF.
+- `25123d0`: **`model.privileged_belief_loss`** (default off; fingerprinted); `ed7b564`: its pre-registered readout; `cad6836` and later: HANDOFF (the first launch was cancelled by the user so the next session can plan it).
 
 ## 9. Files touched since `9a9b726` (all pushed)
 
