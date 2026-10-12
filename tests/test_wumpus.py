@@ -211,7 +211,7 @@ class TestLearningStack:
             num_simulations=4, observation_prune=1e-3, c_puct=1.25, dirichlet_alpha=0.3, dirichlet_epsilon=0.25,
             temperature=1.0, temperature_min=0.1, temperature_decay=0.5, epsilon=0.0, epsilon_min=0.0, store_eval_episodes=False,
             time_aware_value=False, value_nstep=0, value_nstep_mix=0.5,
-            detached_planning_head=False)
+            detached_planning_head=False, privileged_belief_loss=False)
         values.update(overrides)
         return RunConfig(**values)
 
@@ -271,6 +271,44 @@ class TestLearningStack:
         resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
         continued = [resumed.collect_and_train(), resumed.collect_and_train(), resumed.evaluate()]
         assert repr(continued) == repr(expected[2:])
+
+    def test_supervision_targets_match_the_tracker(self):
+        # domain/wumpus.py, section 6: start at cell 0 facing North; targets equal the marginals; live until the end.
+        from ipomdp.agents import UniformRandomAgent
+        from ipomdp.domain.wumpus import START_HEADING
+        from ipomdp.training import play_episodes
+        world = WumpusWorld(CPU, DISCOUNT)
+        episodes, _ = play_episodes(WumpusSimulator(world, 64, 20, 5, CPU), UniformRandomAgent(world.num_actions, 64, 6, CPU))
+        tracker = WumpusBeliefTracker(world)
+        cell, heading, soft, live = tracker.supervision_targets(episodes.initial_observations, episodes.actions,
+                                                                episodes.observations)
+        marginals = tracker.filter_episodes(episodes.initial_observations, episodes.actions, episodes.observations)
+        assert cell.shape == heading.shape == live.shape == (64, 21) and soft.shape == (64, 21, 49)
+        assert bool((cell[:, 0] == 0).all()) and bool((heading[:, 0] == START_HEADING).all()) and bool(live[:, 0].all())
+        for t, m in enumerate(marginals):
+            assert torch.equal(cell[:, t], m.cell) and torch.equal(live[:, t], ~m.done)
+            assert torch.allclose(soft[:, t, :48], torch.cat([m.pit, m.wumpus, m.gold], -1).float())
+        assert torch.allclose(soft[:, 0, 48], soft[:, 0, 4] + soft[:, 0, 16 + 4])   # cell 4 is ahead; the wumpus lives
+        assert bool((~live).any()) and bool(((soft >= 0) & (soft <= 1)).all())
+
+    def test_privileged_term_trains_and_resumes(self, tmp_path):
+        # training/run.py, section 12; trainer.py, section 2e.
+        from ipomdp.experiments import wumpus_setup
+        from ipomdp.training import TrainingRun, load_checkpoint, save_checkpoint
+        setup = wumpus_setup(CPU, DISCOUNT)
+        config = lambda **kw: self._config(privileged_belief_loss=True, **kw)  # noqa: E731
+        reference = TrainingRun(setup, config(), CPU)
+        assert "privileged_readout" in reference.networks
+        assert {id(p) for p in reference.privileged.parameters()} <= {id(p) for p in reference.trainer.parameters}
+        expected = [reference.collect_and_train() for _ in range(3)] + [reference.evaluate()]
+        assert expected[0]["loss_privileged_belief"] > 0
+        first = TrainingRun(setup, config(), CPU)
+        first.collect_and_train()
+        save_checkpoint(tmp_path / "latest.pt", first.state_dict())
+        resumed = TrainingRun(setup, config(seed=99), CPU)
+        resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
+        continued = [resumed.collect_and_train() for _ in range(2)] + [resumed.evaluate()]
+        assert repr(continued) == repr(expected[1:])
 
     def test_multistep_observation_term_trains_and_resumes(self, tmp_path):
         from ipomdp.experiments import wumpus_setup

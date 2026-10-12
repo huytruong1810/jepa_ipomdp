@@ -43,14 +43,15 @@ from omegaconf import DictConfig, OmegaConf
 import torch
 
 from ..agents import PlanningAgent, UniformRandomAgent
-from ..domain import (BatchedPOMDPEnv, FinitePOMDP, WumpusSimulator, WumpusWorld, action_value_functions,
-                      build_tiger_pomdp, game_outcomes, solve_infinite_horizon)
+from ..domain import (BatchedPOMDPEnv, FinitePOMDP, WumpusBeliefTracker, WumpusSimulator, WumpusWorld,
+                      action_value_functions, build_tiger_pomdp, game_outcomes, solve_infinite_horizon)
+from ..domain.wumpus import NUM_CELLS
 from ..interpretability import BeliefAnalysis, analyze_beliefs, build_probe_dataset, build_wumpus_dataset, plot_latent_pca
 from ..models import BeliefFilter
 from ..planning import BeliefTreeSearch
 from ..telemetry import BeliefGeometryVisualizer
-from ..training import (Domain, DomainSetup, EpisodeBatch, Representation, RunConfig, TrainerConfig, TrainingRun,
-                        load_checkpoint, play_episodes, stream_seed)
+from ..training import (Domain, DomainSetup, EpisodeBatch, PrivilegedSpec, PrivilegedTargets, Representation, RunConfig,
+                        TrainerConfig, TrainingRun, load_checkpoint, play_episodes, stream_seed)
 
 
 def tiger_setup(device: torch.device) -> DomainSetup:
@@ -61,10 +62,21 @@ def tiger_setup(device: torch.device) -> DomainSetup:
 
 
 def wumpus_setup(device: torch.device, discount: float) -> DomainSetup:
-    """4x4 Wumpus World with discount gamma: generative simulator (tables on `device`), win/death rates per window."""
+    """
+    4x4 Wumpus World with discount gamma: generative simulator (tables on `device`), win/death rates per window,
+    and the exact-belief targets of the privileged diagnostic term (training/privileged.py; domain/wumpus.py, 6).
+    """
     world = WumpusWorld(device, discount)
+    tracker = WumpusBeliefTracker(world)
+
+    def privileged_targets(episodes: EpisodeBatch) -> PrivilegedTargets:
+        cell, heading, soft, live = tracker.supervision_targets(episodes.initial_observations, episodes.actions,
+                                                                episodes.observations)
+        return PrivilegedTargets((cell, heading), soft, live)
+
     return DomainSetup(world, lambda batch, steps, seed, dev: WumpusSimulator(world, batch, steps, seed, dev),
-                       lambda episodes: game_outcomes(episodes.rewards))
+                       lambda episodes: game_outcomes(episodes.rewards),
+                       PrivilegedSpec((NUM_CELLS, 4), 3 * NUM_CELLS + 1, privileged_targets))
 
 
 # Domains selectable through conf/env/<name>.yaml (section 2).
@@ -89,7 +101,8 @@ def build_run_config(cfg: DictConfig) -> RunConfig:
         temperature=a.temperature, temperature_min=a.temperature_min, temperature_decay=a.temperature_decay,
         epsilon=a.epsilon, epsilon_min=a.epsilon_min,
         store_eval_episodes=t.store_eval_episodes, time_aware_value=m.time_aware_value,
-        value_nstep=m.value_nstep, value_nstep_mix=m.value_nstep_mix, detached_planning_head=m.detached_planning_head)
+        value_nstep=m.value_nstep, value_nstep_mix=m.value_nstep_mix, detached_planning_head=m.detached_planning_head,
+        privileged_belief_loss=m.privileged_belief_loss)
 
 
 def build_training_run(cfg: DictConfig, device: torch.device) -> tuple[DomainSetup, TrainingRun]:

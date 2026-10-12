@@ -118,6 +118,13 @@
 #    - Decoder only: in JEPA mode the observation head is already detached (raises).
 #    - None (the default and canonical Tiger) leaves every computation and the parameter order unchanged.
 #
+# 2e. Optional Privileged Exact-Belief Term (privileged; model.privileged_belief_loss, user decision 2026-10-11):
+#      Privileged   CE(cell) + CE(heading) + BCE(hazards, danger ahead) of a readout of z_0..z_T,
+#                   live steps only; gradients INTO the filter (training/privileged.py)
+#    - The "oracle-latent" diagnostic arm: does the Wumpus agent still idle when its latent knows
+#      the exact belief? Either representation; nothing else changes.
+#    - None (the default and canonical Tiger) builds nothing and leaves the parameter order unchanged.
+#
 # 4. No Imagination Losses:
 #    - An earlier version also trained V on latents imagined by a stochastic latent
 #      transition ("consistency"). Planning now imagines through the real filter
@@ -147,6 +154,7 @@ from ..models.heads import HorizonValueHead, MultiStepObservationPredictor, Obse
 from ..models.world_model import BeliefFilter, RecurrentJEPA
 from ..planning.search_model import LearnedSearchModel
 from .episode_buffer import EpisodeBatch
+from .privileged import PrivilegedBeliefLoss
 
 
 class Representation(StrEnum):
@@ -187,6 +195,7 @@ class WorldModelTrainer:
         nstep: int = 0,
         nstep_mix: float = 0.0,
         planning_observation_head: ObservationHead | None = None,
+        privileged: PrivilegedBeliefLoss | None = None,
     ):
         """
         Args:
@@ -197,6 +206,7 @@ class WorldModelTrainer:
             horizon: Steps per window H for the finite-horizon value (section 3b), or None.
             nstep, nstep_mix: n and the mixing weight of the n-step greedy-return target (section 3c); n = 0 is off.
             planning_observation_head: The detached planning head (section 3d), or None.
+            privileged: The privileged exact-belief term (section 2e), or None.
         """
         if nstep < 0 or not 0.0 <= nstep_mix <= 1.0 or (nstep > 0 and nstep_mix == 0.0):
             raise ValueError(f"need nstep >= 0 and nstep_mix in (0, 1] when nstep > 0; got {nstep}, {nstep_mix}.")
@@ -212,6 +222,7 @@ class WorldModelTrainer:
         self.observation_head = observation_head
         self.planning_observation_head = planning_observation_head
         self.multistep_predictor = multistep_predictor
+        self.privileged = privileged
         self.twohot = codec
         self.num_actions = num_actions
         self.num_observations = num_observations
@@ -228,6 +239,7 @@ class WorldModelTrainer:
             *reward_head.parameters(),
             *observation_head.parameters(),
             *(multistep_predictor.parameters() if multistep_predictor is not None else ()),
+            *(privileged.parameters() if privileged is not None else ()),
         ]
         # The planning head is clipped on its own (section 3d): inside the joint clip its gradient norm
         # would rescale the filter's update, a coupling a detached head must not have.
@@ -339,6 +351,9 @@ class WorldModelTrainer:
                     F.cross_entropy(logits.float().reshape(-1, self.num_observations),
                                     episodes.observations[:, j:].reshape(-1))
                     for j, logits in enumerate(horizons)) / len(horizons)
+
+            if self.privileged is not None:                                              # section 2e
+                losses["privileged_belief"] = self.privileged(latents, episodes)
 
             total = sum(losses.values())
 

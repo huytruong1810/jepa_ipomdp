@@ -70,6 +70,16 @@
 #      tracked hunter state is exact. Marginals P(pit at c), P(wumpus at c), P(gold at c) are
 #      the probe targets (interpretability/wumpus_latents.py).
 #    - Cost: (B, L) = (512, 16380) booleans per step on the GPU; a few ms per step.
+#
+# 6. Exact Supervision Targets (WumpusBeliefTracker.supervision_targets; diagnostic, 2026-10-11):
+#    - Per step of whole episodes: the hunter's cell and heading (class indices), and 49 soft binary
+#      targets: P(pit / wumpus / gold at c) for the 16 cells each, then the danger ahead,
+#      P(pit ahead) + P(live wumpus ahead) (0 facing a wall), what FORWARD risks. These are the targets of
+#      reports/2026-10-02_wumpus_diagnostics/supervised_filter.py, where the agent's filter learned them
+#      to 99.9-100%. Steps after the end of the game are masked out (not live).
+#    - They are a function of the observed history only (the exact Bayes filter), never of the hidden
+#      layout, but they use the known model, so a learner trained on them is privileged
+#      (training/privileged.py).
 # ==============================================================================
 
 from dataclasses import dataclass
@@ -451,6 +461,28 @@ class WumpusBeliefTracker:
             consistent, own = self.update(consistent, own, actions[:, t], observations[:, t])
             out.append(self.marginals(consistent, own))
         return out
+
+    def supervision_targets(self, initial_observations: Tensor, actions: Tensor,
+                            observations: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        """
+        Section 6's targets for whole episodes ((B,), (B, T), (B, T)).
+
+        Returns:
+            (cell (B, T + 1) int64, heading (B, T + 1) int64, soft (B, T + 1, 49) float32 in [0, 1],
+             live (B, T + 1) bool: the game is still running).
+        """
+        steps = self.filter_episodes(initial_observations, actions, observations)
+        stack = lambda field: torch.stack([getattr(m, field) for m in steps], 1)  # noqa: E731
+        pit, wumpus, gold = stack("pit"), stack("wumpus"), stack("gold")
+        cell, heading = stack("cell"), stack("heading")
+        x = cell % GRID + self.world._delta[heading, 0]
+        y = cell // GRID + self.world._delta[heading, 1]
+        inside = (x >= 0) & (x < GRID) & (y >= 0) & (y < GRID)
+        ahead = (x + GRID * y).clamp(0, NUM_CELLS - 1).unsqueeze(-1)
+        danger = torch.where(inside, pit.gather(2, ahead).squeeze(-1)
+                             + stack("wumpus_alive").double() * wumpus.gather(2, ahead).squeeze(-1), 0.0)
+        soft = torch.cat([pit, wumpus, gold, danger.unsqueeze(-1)], -1).float()
+        return cell, heading, soft, ~stack("done")
 
 
 __all__ = ["GAME_OVER", "NUM_CELLS", "Heading", "Percept", "WumpusAction", "WumpusBeliefTracker", "WumpusMarginals",

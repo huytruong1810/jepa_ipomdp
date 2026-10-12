@@ -133,6 +133,14 @@
 #      186 / 166, deaths 8.4 / 28.7% (in-training evaluations ~30% on all 3 seeds against 5-10%).
 #      The latent did NOT improve online either: MLP probes on random histories cell 52 / 53%,
 #      heading 50 / 49% (current agent 56 / 59%). Failed; kept as an option, not used.
+#
+# 12. Privileged Exact-Belief Term (user decision, 2026-10-11; training/privileged.py, trainer.py 2e):
+#    - cfg.privileged_belief_loss trains the filter, through a readout, on the exact Bayes filter's
+#      targets that the domain provides (DomainSetup.privileged; Wumpus only, raises elsewhere).
+#    - The "oracle-latent" diagnostic arm: if the Wumpus agent stops idling with a latent that knows the
+#      exact belief, the idling is a representation failure; if it still idles, it is value or planning.
+#    - Built after every other network and only when enabled, so the default (canonical Tiger)
+#      draws and builds nothing new.
 # ==============================================================================
 
 from collections.abc import Callable
@@ -147,6 +155,7 @@ from ..models import (BeliefFilter, HorizonValueHead, LatentPredictor, MultiStep
                       ema_update, frozen_copy)
 from ..planning import BeliefTreeSearch, LearnedSearchModel
 from .episode_buffer import EpisodeBatch, EpisodeBuffer
+from .privileged import PrivilegedBeliefLoss, PrivilegedSpec
 from .rollout import Simulator, discounted_returns, play_episodes
 from .seeding import RunStream, stream_seed
 from .trainer import Representation, TrainerConfig, WorldModelTrainer
@@ -182,11 +191,13 @@ class DomainSetup:
         domain: Sizes, names, discount, value bound and o_0 flag.
         make_simulator: (batch_size, max_steps, seed, device) -> a seeded Simulator.
         episode_metrics: Domain-specific summary of played episodes (e.g. win rate); may be empty.
+        privileged: Exact-belief targets for the privileged term (section 12), or None if the domain has none.
     """
 
     domain: Domain
     make_simulator: Callable[[int, int, int, torch.device], Simulator]
     episode_metrics: Callable[[EpisodeBatch], dict[str, float]]
+    privileged: PrivilegedSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -225,6 +236,7 @@ class RunConfig:
     value_nstep: int                  # n-step greedy-return value grounding (section 10); 0 = off
     value_nstep_mix: float
     detached_planning_head: bool      # planner reads a head on detached latents (section 11)
+    privileged_belief_loss: bool      # privileged exact-belief term into the filter (section 12)
 
 
 class TrainingRun:
@@ -234,6 +246,8 @@ class TrainingRun:
         self.setup, self.cfg, self.device = setup, cfg, device
         if cfg.value_nstep > 0 and not cfg.store_eval_episodes:
             raise ValueError("value_nstep > 0 needs store_eval_episodes: greedy games are its only data (section 10).")
+        if cfg.privileged_belief_loss and setup.privileged is None:
+            raise ValueError("privileged_belief_loss needs a domain with exact-belief targets (section 12).")
         domain = self.domain = setup.domain
         seed = lambda stream: stream_seed(cfg.seed, stream)  # noqa: E731
         torch.manual_seed(seed(RunStream.NETWORK_INIT))
@@ -256,10 +270,12 @@ class TrainingRun:
                                     if cfg.observation_horizon > 0 else None)
         self.planning_observation_head = (ObservationHead(cfg.latent_dim, num_a, num_o, cfg.hidden_dim, cfg.num_blocks).to(device)
                                           if cfg.detached_planning_head else None)                 # section 11
+        self.privileged = (PrivilegedBeliefLoss(setup.privileged, cfg.latent_dim, cfg.hidden_dim, cfg.num_blocks).to(device)
+                           if cfg.privileged_belief_loss else None)                                   # section 12
         self.trainer = WorldModelTrainer(self.belief_filter, self.jepa, self.value_head, self.reward_head, self.observation_head,
                                          self.codec, num_a, num_o, domain.discount, cfg.trainer, device,
                                          self.multistep_predictor, horizon, cfg.value_nstep, cfg.value_nstep_mix,
-                                         self.planning_observation_head)
+                                         self.planning_observation_head, self.privileged)
 
         # Polyak-averaged copies the agent acts with (section 4).
         self.acting_filter = frozen_copy(self.belief_filter)
@@ -296,7 +312,8 @@ class TrainingRun:
         planning = ({"planning_observation": self.planning_observation_head,
                      "acting_planning_observation": self.acting_planning_observation_head}
                     if self.planning_observation_head is not None else {})
-        return {**representation, **multistep, "value": self.value_head, "reward": self.reward_head,
+        privileged = {"privileged_readout": self.privileged} if self.privileged is not None else {}
+        return {**representation, **multistep, **privileged, "value": self.value_head, "reward": self.reward_head,
                 "observation": self.observation_head, "target_value": self.trainer.target_value_head,
                 "acting_filter": self.acting_filter, "acting_reward": self.acting_reward_head,
                 "acting_observation": self.acting_observation_head, "acting_value": self.acting_value_head, **planning}

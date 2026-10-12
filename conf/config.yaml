@@ -104,6 +104,7 @@ model:
   value_nstep: 0              # n > 0: mix n-step returns of stored greedy games into the value target (run.py, section 10)
   value_nstep_mix: 0.5        # weight of the n-step return in that mix
   detached_planning_head: false  # decoder only: planner reads a head on detached latents (run.py, section 11)
+  privileged_belief_loss: false  # diagnostic: exact-belief targets train the filter (Wumpus only; run.py, section 12)
 
 mcts:
   num_simulations: 50         # Search simulations per decision (per parallel episode)

@@ -26,7 +26,7 @@ def _config(**overrides) -> RunConfig:
         num_simulations=4, observation_prune=0.0, c_puct=1.25, dirichlet_alpha=0.3, dirichlet_epsilon=0.25, temperature=1.0,
         temperature_min=0.1, temperature_decay=0.5, epsilon=0.0, epsilon_min=0.0, store_eval_episodes=False,
         time_aware_value=False, value_nstep=0, value_nstep_mix=0.5,
-        detached_planning_head=False)
+        detached_planning_head=False, privileged_belief_loss=False)
     values.update(overrides)
     return RunConfig(**values)
 
@@ -167,6 +167,16 @@ class TestDetachedPlanningHead:
         resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
         assert [resumed.collect_and_train() for _ in range(2)] + [resumed.evaluate()] == expected[1:]
         assert all(torch.equal(a, b) for a, b in zip(_parameters(resumed), _parameters(reference)))
+
+
+class TestPrivilegedBeliefTerm:
+    """training/run.py, section 12: Tiger has no exact-belief targets, so the option raises; off builds nothing."""
+
+    def test_tiger_raises_and_off_builds_nothing(self):
+        with pytest.raises(ValueError):
+            TrainingRun(tiger_setup(CPU), _config(privileged_belief_loss=True), CPU)
+        run = TrainingRun(tiger_setup(CPU), _config(), CPU)
+        assert run.privileged is None and "privileged_readout" not in run.networks
 
 
 class TestCheckpointFiles:
