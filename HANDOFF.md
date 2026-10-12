@@ -1,4 +1,6 @@
-# HANDOFF: JEPA I-POMDP (as of 2026-10-11 21:30: the oracle-latent arm is training, `runs/wumpus/privileged_chain.sh`; commits after `43a4dee` are local)
+# HANDOFF: JEPA I-POMDP (as of 2026-10-11 night, for a fresh PLANNING session: the oracle-latent arm is training via `runs/wumpus/privileged_chain.sh`; everything is pushed)
+
+**The next session's job (user, 2026-10-11): plan the coming experiments and implementations clearly before running them.** Start with section 0 (state), then section 6 (the planning agenda: what is running, the decision tree that depends on its result, and the open options with costs). Present a plan to the user before launching anything new.
 
 Read `CLAUDE.md` first: it covers the architecture, commands and conventions. This file covers goals, the user's rules, the current state, every result that matters, the next steps, the dead ends and the files touched. Each module starts with a `DESIGN DECISIONS & THEORETICAL FOUNDATIONS` header with the evidence behind its design; read it before changing that module. Every diagnostic script in `reports/` explains its question, usage and result in its header. The user's auto-memory (`~/.claude/projects/-home-andyj1810-projects-jepa-ipomdp/memory/`) repeats the standing rules of section 2.
 
@@ -21,12 +23,11 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
   - for the latent: longer multi-step horizons (k = 10, 20).
 - **The procrastination hypothesis, tested (section 5.8): only half right.** One forced FORWARD at a declined safe step has a real mean payoff in unfinished games (+90 ± 38; the model's estimate is negative and uncorrelated with it), but the median is 0: the planner declines again within 5 steps half the time.
 - **The size of the prize (section 5.8, exact-belief overrides, 5 seeds):** letting the heuristic's navigation rules (grab known gold, walk to the nearest provably safe unvisited cell) override the planner gives **482 ± 39 (+300 ± 42 paired)**, within 91 of the heuristic. Three quarters of that (+224 ± 75) comes from targets at most 3 actions away, i.e. turning towards an adjacent safe cell and stepping in. Forcing FORWARD only when already facing one gains nothing (+8 ± 24). **The missing skill is the turn that sets up a safe step.**
-- **Running: the oracle-latent arm** (user choice 2026-10-11; `model.privileged_belief_loss`, section 6 step 1). Does the agent still idle when its latent is trained on the exact belief?
+- **Running: the oracle-latent arm** (user choice 2026-10-11; `model.privileged_belief_loss`; section 6.1). Does the agent still idle when its latent is trained on the exact belief? Its result decides most of the plan (section 6.2).
 - **Housekeeping state:**
-  - `origin/main` is at `43a4dee` (pushed 2026-10-11). The HANDOFF commits and the two new diagnostics after it are local.
-  - The fast suite passes (168), and the slow suite passed 7/7 at `f1e5bbf`.
-  - Nothing is running.
-  - The user has pre-authorised running recommended experiments without asking (section 2).
+  - Everything is committed and pushed to `origin/main` (section 3).
+  - The fast suite passes (171). The slow suite passed 7/7 at `f1e5bbf`; it has not been run since `privileged_belief_loss` was added (default off, fingerprinted).
+  - **New standing rule (user, 2026-10-11): after every implementation, commit AND push without asking** (section 2).
 
 ## 1. Goals
 
@@ -66,9 +67,9 @@ Stages:
 - **Always use the most memory- and runtime-efficient practice that leaves results unchanged.** A bit-identical speed-up can go in once a fingerprint confirms it. A summation-order change needs the user's approval. Never change code under runs in flight; record which commit a run used.
 
 **Workflow**
-- Commit on `main` (remote `github.com/huytruong1810/jepa_ipomdp`). **Ask before every push.**
-- **Since 2026-10-10 the user pre-authorises running the recommended experiments without asking** ("have a good taste for research; don't waste compute"). Still ask before pushes and before any change to canonical Tiger.
-- **Still ask the user** about changes of research direction or project stage (e.g. moving to multi-agent or I-POMDP), domain changes, pushes, and anything touching canonical Tiger. Offer a recommended option first. Within the agreed direction, pick and run the experiment with the best expected information per GPU-hour. Use cheap screens first, pre-register a pass criterion, stop arms that can no longer change a decision, and record each stop.
+- Commit on `main` (remote `github.com/huytruong1810/jepa_ipomdp`). **Since 2026-10-11: after every implementation, commit and push right away, without asking** (user: "After every implementation, please go ahead and commit and push to git. No need to ask me for permissions on those."). Never force-push or rewrite history.
+- **Since 2026-10-10 the user pre-authorises running the recommended experiments without asking** ("have a good taste for research; don't waste compute"). Still ask before any change to canonical Tiger.
+- **Still ask the user** about changes of research direction or project stage (e.g. moving to multi-agent or I-POMDP), domain changes, and anything touching canonical Tiger. Offer a recommended option first. Within the agreed direction, pick and run the experiment with the best expected information per GPU-hour. Use cheap screens first, pre-register a pass criterion, stop arms that can no longer change a decision, and record each stop.
 - State results plainly, including unfavourable ones and your own mistakes.
 - **Reviewer pages:** minimal, figure-first, honest.
   - The user cut the 2026-10-07 page to: domain, returns, curves, latent UMAP, a synced game player and probes.
@@ -93,11 +94,12 @@ Stages:
 ## 3. Current state
 
 **Git**
-- **`origin/main` is at `43a4dee`** (pushed with the user's approval on 2026-10-11). Later commits (HANDOFF rewrites, `counterfactual_diag.py`, `override_diag.py`) are local: **ask before pushing.**
-- The working tree is clean after the last commit. Nothing is running. `runs/` is untracked: keep it.
+- **Everything is pushed** (2026-10-11 night): the diagnostics `counterfactual_diag.py` and `override_diag.py` (`c95e68b`), the option `model.privileged_belief_loss` (`25123d0`), its pre-registered readout (`ed7b564`) and the HANDOFF commits. Push after every implementation from now on (section 2).
+- The working tree is clean. `runs/` is untracked: keep it.
+- **Running:** the oracle-latent chain (section 6.1); check with `cat runs/wumpus/privileged_chain.log` and `ps -eo pid,args | grep "^ *[0-9]* [^ ]*python[^ ]* main.py"`.
 
 **Tests**
-- The fast suite passes: 168 tests, about 2 min.
+- The fast suite passes: 171 tests, about 2 min.
 - **The slow suite passed 7/7 at `f1e5bbf` on 2026-10-11** (42.5 min; log `runs/slow_suite_f1e5bbf.log`). It covers every option added since 2026-10-05.
 - **Checkpoints from before `52ac3fc` cannot be resumed:** their buffer state has no `greedy` flags (no back-compat, by rule). They still load for analysis (`load_trained_run` reads networks only).
 - **The Tiger acceptance test now trains 6000 updates.** At 3000 the value gate (mean |V − V*| < 8) failed at 3–5 of 9 seeds. The two worst seeds drop to 5.3 and 1.1 at 6000. The seed table is in the test header; the logs are in `runs/tiger_acceptance_seeds/`.
@@ -114,6 +116,7 @@ Stages:
 | `runs/wumpus/u64_store_eval_noeps_decoder_k5_seed{0,1,2}`, `u64_eps_nostore_decoder_k5_seed{0,1,2}`, `ablation_chain.sh` | Recipe ablations (ε off; store_eval off), analysed (section 5.3) |
 | `runs/wumpus/horizon_ab/`, `planning_head_ab/` (+ `*_chain.sh`) | Offline A/Bs on `pools.pt` with saved networks (`obj_*.pt`): horizon k = 5/10/20, and the decoupled planning head over 25,600 updates (section 5.7) |
 | `runs/slow_suite_f1e5bbf.log` | Slow suite 7/7 |
+| `runs/wumpus/u64_store_eval_eps_decoder_k5_privileged_seed{0,1,2}`, `privileged_chain.sh` (+ `.log`), `smoke_privileged` | **The oracle-latent arm, running** (section 6.1); the 6-collection small check (clean) |
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_seed*.{counterfactual_diag,override_diag,override_near_diag}.log`, `analysis/{counterfactual,override}.npz`, `runs/wumpus/{counterfactual,override,override_near}_chain.sh` | The counterfactual and override diagnostics of 2026-10-11 (section 5.8) |
 | `runs/wumpus/u64_store_eval_eps_jepa_k5_seed{0,1}` | **JEPA with the same recipe, finished and analysed** (`analysis/report.json`). Collections 1–40 were trained at `f5740e4`; collections 41–100 were resumed bit-exactly on 2026-10-07 at `2a6e326` (no source change) by `runs/wumpus/jepa_resume_chain.sh` |
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_seed*.{unfinished_diag,value_chain_diag}.log` | Unfinished-games and value-chain diagnoses of the current agent (section 5.6) |
@@ -383,26 +386,50 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
 - **Idling and navigation explain about 77% of the 391-point gap to the heuristic.** The rest is risk decisions: seed 3 keeps 13.5% deaths under `navigate`.
 - **Three quarters of the prize is short-range:** turn towards an adjacent safe cell, then step in (navigate − near = +76 ± 55). FORWARD alone gains nothing, so the failure is the setting-up turn, a 2–3-step credit problem. The latent decodes heading only 58% of the time on random histories (section 5.4), which may be why turns look like no-ops to the value; this is untested.
 
-## 6. Next steps (in order)
+## 6. Planning agenda for the next session
 
-1. **The oracle-latent arm is running (user choice 2026-10-11, the recommended option below).** `model.privileged_belief_loss=true` (`25123d0`; `training/privileged.py`, trainer section 2e, run section 12; Tiger fingerprint bit-identical; small check `runs/wumpus/smoke_privileged`, clean). 3 seeds (`runs/wumpus/u64_store_eval_eps_decoder_k5_privileged_seed{0,1,2}`) launched 21:30 by `runs/wumpus/privileged_chain.sh` at `ed7b564`; the chain then runs `analyze.py`, `unfinished_diag.py` and `override_diag.py ... planner,navigate` per seed, and logs to `runs/wumpus/privileged_chain.log` ("ALL DONE" at the end). **The pre-registered readout is in `training/privileged.py`, section 2b**: check the premise (probes ≥ 90%) first, then compare unfinished rate and return paired with `wumpus_current` seeds 0–2. The options that were offered:
-   - **(chosen) Oracle-latent agent:** the current recipe plus a privileged auxiliary loss that makes the filter predict the exact own state and hazard marginals (default off, Tiger fingerprint, small check, 3 seeds paired with `wumpus_current`). It decides whether the idling is representation (heading/position, 58%) or value learning and planning: if this agent stops idling, improve the latent without privileged targets; if it still idles, the fix is on the value/planner side. A diagnostic arm, not a result.
-   - **A learned policy prior for PUCT** (AlphaZero-style head trained on the search's own policy); the search currently uses a uniform prior. Standard, but it will not fix value errors by itself.
-   - **Accept the plateau:** write it up with the section 5.8 decomposition and move to the reviewer page or the direction calls in step 3.
-2. **Reviewer page refresh (only if the user wants a meeting).** The 2026-10-07 page shows 3 seeds (189). The 5-seed numbers are in `runs/sweeps/wumpus_current`. Merge with `scripts/export.py add`, read the live page with the Artifact tool first, then republish to the same URL.
-3. **The user's direction calls (ask; do not start unilaterally):**
-   - the hybrid JEPA + observation condition;
-   - a model-free recurrent Q-learner baseline;
-   - multi-agent Tiger (verify its tables against Gmytrasiewicz & Doshi first);
-   - I-POMDP levels via the S × M_j reduction.
+The user asked for the next experiments and implementations to be planned out clearly in a fresh session. Do that first: read the running arm's result (6.1), take the matching branch of 6.2, write the plan (question, method, pre-registered readout, cost, order) and show it to the user, then execute. Experiments within the agreed direction need no permission (section 2); direction changes do.
 
-   Cheap Tiger questions: an observation-head detach ablation in JEPA mode; Polyak momentum 0.98.
-4. **Done (kept for the record):**
-   - recipe ablations (section 5.3);
-   - the latent A/Bs and the detached planning head (section 5.7);
-   - 5 seeds and Wumpus support in `sweep.py`/`aggregate.py`;
-   - the slow suite at HEAD;
-   - the push of everything through `43a4dee`.
+### 6.1 Running: the oracle-latent arm (user choice 2026-10-11)
+
+- **Question:** is the idling a representation failure (the latent decodes heading/cell only ~58%, so a turn towards a safe cell looks like a no-op) or a value/planning failure?
+- **What runs:** the current recipe plus `model.privileged_belief_loss=true` (`25123d0`; `training/privileged.py`; trainer section 2e; run section 12). A readout of every latent z_0..z_T is trained on the exact Bayes filter's targets (cell, heading, 48 hazard marginals, danger ahead; `WumpusBeliefTracker.supervision_targets`, `domain/wumpus.py` section 6), with gradients into the filter. A diagnostic arm, never a method (it uses the exact model).
+- **Checks done:** Tiger fingerprint bit-identical against `c95e68b` (both representations); fast suite 171; small check `runs/wumpus/smoke_privileged` (6 collections, clean, ~1.8 min per collection, privileged loss 3.3 → ~2).
+- **Runs:** `runs/wumpus/u64_store_eval_eps_decoder_k5_privileged_seed{0,1,2}`, launched 2026-10-11 21:30 at `ed7b564`, 3 in parallel (expect ~3–4 h of training). The chain then runs, per seed: `analyze.py`, `unfinished_diag.py` (512 games), and `override_diag.py <run> 512 planner,navigate`. Log: `runs/wumpus/privileged_chain.log` (`ALL DONE` at the end; each step logs its exit status). If the chain died, re-launch the missing steps by hand (training resumes bit-exactly from `checkpoints/latest.pt` with `resume=`).
+- **Pre-registered readout (`training/privileged.py`, section 2b)**, paired with `runs/sweeps/wumpus_current` seeds 0–2 (185.5 / 166.0 / 215.2; unfinished 66.6 / 70.3 / 70.7%):
+  1. **Premise:** MLP probes on random histories (`analysis/report.json`, `probes.mlp_random.cell_accuracy` and `heading_accuracy`) reach cell and heading ≥ 90% (current agent 56–58%). Otherwise the arm did not deliver the oracle latent: report that and see 6.2 (A).
+  2. **Representation is the bottleneck:** unfinished falls by ≥ 15 points AND the return rises by ≥ +100 (paired).
+  3. **Value/planning is the bottleneck:** probes ≥ 90% but unfinished within ±10 points. Then `override.npz` (navigate − planner on these runs) says how much navigation is still lost with a perfect latent.
+  - Anything in between: report it as inconclusive with the paired intervals, and consider 2 more seeds before branching.
+
+### 6.2 Decision tree (plan the branch that the result selects)
+
+**(A) Premise fails (probes < 90%).** The readout's weight (1, as in `supervised_filter.py`) may be swamped by the other terms, or the acting (Polyak) copy may lag. Check the online filter's probe and the training curve of `loss_privileged_belief`. A weight option (e.g. ×10) is a small change; small check first.
+
+**(B) Representation is the bottleneck.** Goal: get the same latent WITHOUT privileged targets. Candidates, cheapest first:
+- Offline screens on `runs/wumpus/supervised_filter/pools.pt` with `objective_ab.py`: which self-supervised objective raises heading/cell decoding toward the oracle? The horizon A/B already ruled out k = 10/20 multi-step prediction (section 5.7), so look elsewhere: action-effect / inverse-dynamics terms (predict a_t from z_t, z_{t+1}), BUMP-after-k-FORWARDs targets, a hybrid JEPA + decoder.
+- The architecture rule (section 2): A/B a causal Transformer over history tokens with good statistics; the untuned one was no better (section 5.5).
+- Caveat: offline latent gains on `pools.pt` did NOT transfer to the agent before (section 5.7). Any candidate needs an agent test (3 seeds, paired).
+
+**(C) Value/planning is the bottleneck.** The latent knows the belief, yet the planner idles. Candidates:
+- An AlphaZero-style **learned policy prior** for PUCT (trained on the search's own root policy); the search now uses a uniform prior.
+- **Teacher-value screens again on the oracle latents:** the offline screens of section 5.6 failed partly because the latent was poor; re-run `grounding_screen.py`/`teacher_robustness.py` on the privileged runs (cheap; no training).
+- An **action-gap-increasing operator** (advantage learning, Bellemare et al. 2016) on the value targets. The counterfactual test showed the one-step estimates carry no information about the true advantage (Spearman ≈ 0), so this is weaker than it looked before section 5.8.
+- **Option/macro-level planning** (e.g. turn-then-forward macros in the search). 200 simulations did not help (section 5.5), so search depth alone is not the limit; macros only help if the value at the macro's end is right.
+
+**(D) Whatever the branch:**
+- The remaining ~23% of the gap is risk decisions (seed 3 keeps 13.5% deaths even with the navigation override; section 5.8). Not yet diagnosed.
+- If an arm is significant at 3 seeds, extend it to 5 with `sweep.py` (it supports Wumpus; `runs/sweeps/<name>`).
+- Run the slow suite once the code settles (`uv run pytest -m slow`, ~45 min; last 7/7 at `f1e5bbf`).
+
+### 6.3 Other open items (ask the user before starting)
+- **Reviewer page refresh**, only if the user wants a meeting. The 2026-10-07 page shows 3 seeds (189); the 5-seed numbers are in `runs/sweeps/wumpus_current`, and section 5.8 is the new story. Merge with `scripts/export.py add`, read the live page with the Artifact tool first, then republish to the same URL.
+- **Direction calls:** the hybrid JEPA + observation condition; a model-free recurrent Q-learner baseline; multi-agent Tiger (verify its tables against Gmytrasiewicz & Doshi first); I-POMDP levels via the S × M_j reduction. Cheap Tiger questions: an observation-head detach ablation in JEPA mode; Polyak momentum 0.98.
+
+### 6.4 Done (kept for the record)
+- The counterfactual test and the override decomposition (section 5.8).
+- Recipe ablations (section 5.3); the latent A/Bs and the detached planning head (section 5.7).
+- 5 seeds and Wumpus support in `sweep.py`/`aggregate.py`; the slow suite at `f1e5bbf`.
 
 ## 7. Failed paths and pitfalls: do not repeat
 
@@ -488,9 +515,19 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
 - `8b3d621`, `f1e5bbf`: **`model.detached_planning_head`** (default off; fingerprinted) and its failure on Wumpus.
 - `ae75473`, `43a4dee`: Wumpus support in `sweep.py`/aggregation; 5-seed headline; slow suite 7/7.
 
-**Local (push with the user's approval):** the HANDOFF commits after `43a4dee`, and `counterfactual_diag.py` plus `override_diag.py` with the section 5.8 results.
+**Pushed 2026-10-11 night (after `43a4dee`)**
+- HANDOFF rewrites (`2d8df2e` and earlier).
+- `c95e68b`: `counterfactual_diag.py`, `override_diag.py` and the section 5.8 results.
+- `25123d0`: **`model.privileged_belief_loss`** (default off; fingerprinted); `ed7b564`: its pre-registered readout; `cad6836` and later: HANDOFF.
 
-## 9. Files touched since `9a9b726` (all pushed at `43a4dee` on 2026-10-11)
+## 9. Files touched since `9a9b726` (all pushed)
+
+**Added 2026-10-11 night**
+- `src/ipomdp/training/privileged.py` (new): `PrivilegedTargets`, `PrivilegedSpec`, `PrivilegedBeliefLoss`.
+- `domain/wumpus.py`, section 6: `WumpusBeliefTracker.supervision_targets`.
+- `training/trainer.py`, section 2e; `training/run.py`, section 12 (`DomainSetup.privileged`, `RunConfig.privileged_belief_loss`); `experiments/runs.py` (`wumpus_setup` supplies the spec); `conf/config.yaml` (`model.privileged_belief_loss: false`, also back-filled into all 56 saved run configs).
+- Tests: `test_wumpus.py` (targets vs tracker; train and resume), `test_training_run.py` (Tiger raises; off builds nothing).
+- `reports/2026-10-02_wumpus_diagnostics/counterfactual_diag.py`, `override_diag.py`.
 
 **New source**
 - `src/ipomdp/domain/wumpus.py`: rules, `WumpusSimulator`, `WumpusBeliefTracker`, `game_outcomes`, `START_HEADING`.
