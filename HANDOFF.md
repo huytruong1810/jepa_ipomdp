@@ -1,4 +1,4 @@
-# HANDOFF: JEPA I-POMDP (as of 2026-10-11, end of session: everything pushed except the HANDOFF commits; nothing running)
+# HANDOFF: JEPA I-POMDP (as of 2026-10-11 evening: counterfactual and override diagnostics done; commits after `43a4dee` are local; nothing running)
 
 Read `CLAUDE.md` first: it covers the architecture, commands and conventions. This file covers goals, the user's rules, the current state, every result that matters, the next steps, the dead ends and the files touched. Each module starts with a `DESIGN DECISIONS & THEORETICAL FOUNDATIONS` header with the evidence behind its design; read it before changing that module. Every diagnostic script in `reports/` explains its question, usage and result in its header. The user's auto-memory (`~/.claude/projects/-home-andyj1810-projects-jepa-ipomdp/memory/`) repeats the standing rules of section 2.
 
@@ -19,10 +19,11 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
   - in training: the time-aware value, n-step greedy returns, γ = 0.95, and a detached planning head at 128 updates per collection;
   - offline on frozen latents: optimistic max(V̂, G) targets, the agent's own Monte Carlo returns, and teacher (heuristic) returns, which are not robust to the fit protocol;
   - for the latent: longer multi-step horizons (k = 10, 20).
-- **Working hypothesis, untested: procrastination under a small action gap.** At γ = 0.99 idling once costs about 7. The value's errors at the planner's imagined next states are about 15 (the learned one-step preference for the no-op is −9 to −19 at declined safe steps). So noise, not a real preference, decides, and the self-consistent backup lets the planner postpone forever.
-- **Next (section 6, step 1, agreed with the user on 2026-10-11): test that hypothesis with exact counterfactual rollouts.** Wumpus dynamics are deterministic given the layout.
+- **The procrastination hypothesis, tested (section 5.8): only half right.** One forced FORWARD at a declined safe step has a real mean payoff in unfinished games (+90 ± 38; the model's estimate is negative and uncorrelated with it), but the median is 0: the planner declines again within 5 steps half the time.
+- **The size of the prize (section 5.8, exact-belief overrides, 5 seeds):** letting the heuristic's navigation rules (grab known gold, walk to the nearest provably safe unvisited cell) override the planner gives **482 ± 39 (+300 ± 42 paired)**, within 91 of the heuristic. Three quarters of that (+224 ± 75) comes from targets at most 3 actions away, i.e. turning towards an adjacent safe cell and stepping in. Forcing FORWARD only when already facing one gains nothing (+8 ± 24). **The missing skill is the turn that sets up a safe step.**
+- **Next: a direction call for the user (section 6, step 1).**
 - **Housekeeping state:**
-  - `origin/main` is at `43a4dee` (pushed 2026-10-11). Only the final HANDOFF commits are local.
+  - `origin/main` is at `43a4dee` (pushed 2026-10-11). The HANDOFF commits and the two new diagnostics after it are local.
   - The fast suite passes (168), and the slow suite passed 7/7 at `f1e5bbf`.
   - Nothing is running.
   - The user has pre-authorised running recommended experiments without asking (section 2).
@@ -92,8 +93,8 @@ Stages:
 ## 3. Current state
 
 **Git**
-- **`origin/main` is at `43a4dee`** (pushed with the user's approval on 2026-10-11). Later commits are local: **ask before pushing.**
-- The working tree is clean after the HANDOFF commit. Nothing is running. `runs/` is untracked: keep it.
+- **`origin/main` is at `43a4dee`** (pushed with the user's approval on 2026-10-11). Later commits (HANDOFF rewrites, `counterfactual_diag.py`, `override_diag.py`) are local: **ask before pushing.**
+- The working tree is clean after the last commit. Nothing is running. `runs/` is untracked: keep it.
 
 **Tests**
 - The fast suite passes: 168 tests, about 2 min.
@@ -113,6 +114,7 @@ Stages:
 | `runs/wumpus/u64_store_eval_noeps_decoder_k5_seed{0,1,2}`, `u64_eps_nostore_decoder_k5_seed{0,1,2}`, `ablation_chain.sh` | Recipe ablations (ε off; store_eval off), analysed (section 5.3) |
 | `runs/wumpus/horizon_ab/`, `planning_head_ab/` (+ `*_chain.sh`) | Offline A/Bs on `pools.pt` with saved networks (`obj_*.pt`): horizon k = 5/10/20, and the decoupled planning head over 25,600 updates (section 5.7) |
 | `runs/slow_suite_f1e5bbf.log` | Slow suite 7/7 |
+| `runs/wumpus/u64_store_eval_eps_decoder_k5_seed*.{counterfactual_diag,override_diag,override_near_diag}.log`, `analysis/{counterfactual,override}.npz`, `runs/wumpus/{counterfactual,override,override_near}_chain.sh` | The counterfactual and override diagnostics of 2026-10-11 (section 5.8) |
 | `runs/wumpus/u64_store_eval_eps_jepa_k5_seed{0,1}` | **JEPA with the same recipe, finished and analysed** (`analysis/report.json`). Collections 1–40 were trained at `f5740e4`; collections 41–100 were resumed bit-exactly on 2026-10-07 at `2a6e326` (no source change) by `runs/wumpus/jepa_resume_chain.sh` |
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_seed*.{unfinished_diag,value_chain_diag}.log` | Unfinished-games and value-chain diagnoses of the current agent (section 5.6) |
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_time_seed{0,1,2}` | Current recipe + `model.time_aware_value=true` (`8ca58d0`), analysed, plus both diagnostics (time seed 0 only for value-chain): **failed** (section 5.6) |
@@ -355,27 +357,38 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
   - The online latent did not improve: random-history probes for cell are 52/53% and heading 50/49%, against 56/59%. The offline latent gain did not transfer.
   - By the decision rule, the 128-update joint-head control was not run.
 
+### 5.8 Counterfactual and override diagnostics (2026-10-11)
+
+**Counterfactual rollouts** (`counterfactual_diag.py`; current agent, 5 seeds, 300 sampled declined safe steps per seed). Each step is branched three ways from its exact history: the agent's action (A), a replicate (A2) and a forced FORWARD (F), each continued by the greedy planner. Means over seeds with t-intervals:
+
+| Declined steps in… | Δ_true = G_F − G_A, mean | Median | Δ win | Model's one-step estimate (median) | Spearman(model, Δ) |
+|---|---|---|---|---|---|
+| unfinished games | **+90 ± 38** (5/5 seeds > 0) | 0 | +10.9 ± 4.9 pts | −18 ± 10 | −0.07 ± 0.20 |
+| won games | −178 ± 122 | −14 | −17 pts | −9 | +0.15 |
+
+- **Against the pre-registered readout:** (i) fails, since the median is 0, not > +15. It is mostly (ii): the planner declines a later safe step within 5 steps 49 ± 9% of the time and keeps declining 59–72% of later safe steps. Not (iii): forced steps rarely kill.
+- The model's sign is wrong in unfinished games and it carries no information about the true advantage.
+- In won games declining was usually right: the planner was heading for the gold. "Safe unvisited cell ahead" is not always the best target.
+- Noise floor: A2 − A has median 0. Branch A repeats the original game exactly at 69–89% of steps.
+
+**Persistent exact-belief overrides** (`override_diag.py`; the same 512 analysis games; privileged diagnostics, not agents):
+
+| Arm | Return (5 seeds) | Paired with the planner |
+|---|---|---|
+| planner | 182 ± 62 | |
+| forward (FORWARD whenever a provably safe unvisited cell is ahead) | 190 ± 74 | +8 ± 24 (n.s.) |
+| near (the heuristic's rule a/b action when its target is ≤ 3 actions away) | 406 ± 89 | **+224 ± 75** |
+| navigate (the heuristic's rule a/b action whenever it applies) | **482 ± 39** | **+300 ± 42** |
+
+- **Idling and navigation explain about 77% of the 391-point gap to the heuristic.** The rest is risk decisions: seed 3 keeps 13.5% deaths under `navigate`.
+- **Three quarters of the prize is short-range:** turn towards an adjacent safe cell, then step in (navigate − near = +76 ± 55). FORWARD alone gains nothing, so the failure is the setting-up turn, a 2–3-step credit problem. The latent decodes heading only 58% of the time on random histories (section 5.4), which may be why turns look like no-ops to the value; this is untested.
+
 ## 6. Next steps (in order)
 
-1. **Counterfactual test of the procrastination hypothesis (agreed 2026-10-11; do this first).** A new `reports/2026-10-02_wumpus_diagnostics/counterfactual_diag.py` in the house format: a header with question, method, usage, pre-registered readout, and later the result.
-   - **Question.** At the steps where the greedy agent faces a provably safe unvisited cell and does not step in, is FORWARD actually better under the agent's own continuation policy, and by how much? Compare that true advantage with the model's one-step estimate.
-   - **Why it is exact.** Wumpus is deterministic given the layout (`WumpusWorld.step_rules`). After `reset()`, `simulator.state.layout` (privileged) gives each game's layout, so a game can be replayed and branched exactly.
-   - **Method.** Use current-agent seeds 0–2, or all 5, with `best.pt`.
-     - Play the 512 analysis games exactly as `unfinished_diag.py` does (same streams; outcomes must equal `report.json`). Collect the declined safe-cell steps with the same `safe_ahead` logic, sampling up to about 300 per seed.
-     - For each such step t, run two branches from the same history, with the planner's RNG state copied (`PlanningAgent`/`BeliefTreeSearch` `state_dict`), so both share common random numbers:
-       - (a) the agent's own action at t;
-       - (b) FORWARD at t.
-     - Both then continue with the greedy planner to the window end. Rebuild the planner state by replaying the prefix through `reset`/`update`, and step a single-game simulator (or `step_rules` on that layout).
-     - **Measure:**
-       - Δ_true = G_b − G_a, the discounted (γ = 0.99) return-to-go;
-       - the model's one-step estimate Q1(FORWARD) − Q1(chosen) (as in `value_chain_diag.py`, `one_step`);
-       - in branch (b), how many steps pass before the agent idles again;
-       - the share of branch-(b) games that end in death, i.e. whether declining was justified.
-   - **Pre-registered readout.**
-     - **Δ_true clearly positive** (median > +15 and > 0 on most steps) while the model's estimate is negative: the hypothesis holds. The fix belongs at the action-gap level. Candidates: an action-gap-increasing (advantage-learning / consistent) Bellman operator (Bellemare et al. 2016) on the value targets, or search deeper along FORWARD. Pick one, add an option (default off, Tiger fingerprint), small check, then 3 seeds paired with `wumpus_current`.
-     - **Δ_true ≈ 0 because the agent re-idles right after the forced step:** idling is persistent, and one-step fixes cannot help. Consider commitment or option-level planning, or accept the plateau and write it up.
-     - **Δ_true ≤ 0 (forced steps lead to deaths or worse):** declining is justified by risk the exact `safe_ahead` misses downstream. Revisit the "idling" diagnosis itself.
-   - **Cost.** About 1 h of code; minutes to tens of minutes per seed, since the search is CPU-bound (check ipomcp load first).
+1. **Direction call for the user (ask; recommended option first).** Section 5.8 shows the prize, +300 per game, mostly from a short turn-then-step skill. Candidates:
+   - **(recommended) Oracle-latent agent:** the current recipe plus a privileged auxiliary loss that makes the filter predict the exact own state and hazard marginals (default off, Tiger fingerprint, small check, 3 seeds paired with `wumpus_current`). It decides whether the idling is representation (heading/position, 58%) or value learning and planning: if this agent stops idling, improve the latent without privileged targets; if it still idles, the fix is on the value/planner side. A diagnostic arm, not a result.
+   - **A learned policy prior for PUCT** (AlphaZero-style head trained on the search's own policy); the search currently uses a uniform prior. Standard, but it will not fix value errors by itself.
+   - **Accept the plateau:** write it up with the section 5.8 decomposition and move to the reviewer page or the direction calls in step 3.
 2. **Reviewer page refresh (only if the user wants a meeting).** The 2026-10-07 page shows 3 seeds (189). The 5-seed numbers are in `runs/sweeps/wumpus_current`. Merge with `scripts/export.py add`, read the live page with the Artifact tool first, then republish to the same URL.
 3. **The user's direction calls (ask; do not start unilaterally):**
    - the hybrid JEPA + observation condition;
@@ -418,6 +431,7 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
 - **Wumpus, longer multi-step horizons** (k = 10, 20, offline on `pools.pt`): no better than k = 5; k = 20 lowers cell and heading on 3 of 3 seeds.
 - **Wumpus, detached planning head + 128 updates per collection** (`model.detached_planning_head`): deaths return (8–29%, returns 67 / −45). The online latent is no better, even though the offline A/B improved it with more updates. Offline latent gains on `pools.pt` do not predict the agent.
 - **Wumpus, γ = 0.95** (`env.discount`): halves idle V̂ but leaves about 65% of games unfinished (paired −3.8 ± 9.9 points).
+- **Wumpus, "always step into a provably safe cell ahead"** (exact-belief override, `override_diag.py`): +8 ± 24, nothing. Do not build a one-step FORWARD remedy; the missing skill is turning towards the safe cell (section 5.8).
 - **Wumpus, n-step returns of the agent's own greedy games mixed into the value target** (`model.value_nstep=10`, mix 0.5): worse (88–126 against 166–215). The greedy policy's returns are uniformly poor and push all values down without separating exploring from idling.
 
 **Planning**
@@ -474,7 +488,7 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
 - `8b3d621`, `f1e5bbf`: **`model.detached_planning_head`** (default off; fingerprinted) and its failure on Wumpus.
 - `ae75473`, `43a4dee`: Wumpus support in `sweep.py`/aggregation; 5-seed headline; slow suite 7/7.
 
-**Local (HANDOFF only; push with the user's approval):** the commits after `43a4dee`.
+**Local (push with the user's approval):** the HANDOFF commits after `43a4dee`, and `counterfactual_diag.py` plus `override_diag.py` with the section 5.8 results.
 
 ## 9. Files touched since `9a9b726` (all pushed at `43a4dee` on 2026-10-11)
 
@@ -525,6 +539,7 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
 | `unfinished_diag.py` | **Why games end unfinished:** action mix, idling, safe cells left, root Q gaps, the one-step Q(FORWARD) − Q(chosen) split into reward and γ·E[V̂ next] (section 5.6) |
 | `grounding_screen.py`, `teacher_robustness.py` | **Offline screens of value targets** on frozen latents (section 5.6): optimistic, own MC, heuristic returns; robustness of the heuristic result to protocol, data and initialisation |
 | `value_chain_diag.py` | **Why the value prefers idling:** Bellman residual and drift on idle chains, progress probes, a value refit to the heuristic's returns (section 5.6) |
+| `counterfactual_diag.py`, `override_diag.py` | **Exact counterfactual branches at declined safe steps; persistent exact-belief overrides** (section 5.8) |
 | `tiger_acceptance_seed.py` | Tiger acceptance at another seed and update count |
 | `hoist_forward_check.py`, `hoist_training_check.py`, `profile_train_step.py` | Hoist equivalence and runtime profile |
 
