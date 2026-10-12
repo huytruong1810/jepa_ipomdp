@@ -1,4 +1,4 @@
-# HANDOFF: JEPA I-POMDP (as of 2026-10-11 late night: the oracle-latent arm is RUNNING, 3 seeds at `5416237`; everything is pushed)
+# HANDOFF: JEPA I-POMDP (as of 2026-10-12 morning: the oracle-latent arm is DONE, and the value/planner is the bottleneck (branch C); the value-target screens on the oracle latents are running)
 
 **The next session's job (user, 2026-10-11): plan the coming experiments and implementations clearly before running them.** Start with section 0 (state), then section 6 (the planning agenda: what is running, the decision tree that depends on its result, and the open options with costs). Present a plan to the user before launching anything new.
 
@@ -23,7 +23,7 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
   - for the latent: longer multi-step horizons (k = 10, 20).
 - **The procrastination hypothesis, tested (section 5.8): only half right.** One forced FORWARD at a declined safe step has a real mean payoff in unfinished games (+90 ± 38; the model's estimate is negative and uncorrelated with it), but the median is 0: the planner declines again within 5 steps half the time.
 - **The size of the prize (section 5.8, exact-belief overrides, 5 seeds):** letting the heuristic's navigation rules (grab known gold, walk to the nearest provably safe unvisited cell) override the planner gives **482 ± 39 (+300 ± 42 paired)**, within 91 of the heuristic. Three quarters of that (+224 ± 75) comes from targets at most 3 actions away, i.e. turning towards an adjacent safe cell and stepping in. Forcing FORWARD only when already facing one gains nothing (+8 ± 24). **The missing skill is the turn that sets up a safe step.**
-- **Running: the oracle-latent arm** (user choice 2026-10-11; `model.privileged_belief_loss`; section 6.1), launched 2026-10-11 21:54 at `5416237` by `runs/wumpus/privileged_chain.sh` (log `runs/wumpus/privileged_chain.log`, ends with `ALL DONE`). Does the agent still idle when its latent is trained on the exact belief? Its result decides most of the plan (section 6.2). The session plan of 2026-10-11 (approved by the user) is: measure the cost, launch, read out by section 6.1, then the first experiment of the selected branch of 6.2.
+- **The oracle-latent arm is done: the value/planner is the bottleneck, not the representation** (section 5.9). On the final networks the latent decodes cell 96–98% and heading 100% of the time (current agent 55–58%), and the hazards better than the current agent. Yet the agent idles as much or more: unfinished 98.8 / 70.5 / 98.4% (current 67 / 70 / 71%), returns −47 / 140 / −54. The navigation override is still worth +326 to +461 per game. **Branch C of section 6.2 is selected.** Its free first step (the value-target screens on the oracle latents, `runs/wumpus/privileged_screen_chain.sh`) is running.
 - **Housekeeping state:**
   - Everything is committed and pushed to `origin/main` (section 3).
   - The fast suite passes (171). The slow suite passed 7/7 at `f1e5bbf`; it has not been run since `privileged_belief_loss` was added (default off, fingerprinted).
@@ -96,7 +96,7 @@ Stages:
 **Git**
 - **Everything is pushed** (2026-10-11 night): the diagnostics `counterfactual_diag.py` and `override_diag.py` (`c95e68b`), the option `model.privileged_belief_loss` (`25123d0`), its pre-registered readout (`ed7b564`) and the HANDOFF commits. Push after every implementation from now on (section 2).
 - The working tree is clean. `runs/` is untracked: keep it.
-- **Running:** the oracle-latent arm (section 6.1). The cancelled first launch (no evaluation or checkpoint reached) is parked in `runs/wumpus/aborted_privileged_2026-10-11/`; it holds nothing worth keeping.
+- **Running:** the value-target screens on the oracle latents (`runs/wumpus/privileged_screen_chain.sh`, log `.log`, ends with `ALL DONE`; section 6.2 C). The oracle-latent arm finished on 2026-10-12 (section 5.9). The cancelled first launch (no evaluation or checkpoint reached) is parked in `runs/wumpus/aborted_privileged_2026-10-11/`; it holds nothing worth keeping.
 
 **Tests**
 - The fast suite passes: 171 tests, about 2 min.
@@ -386,11 +386,31 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
 - **Idling and navigation explain about 77% of the 391-point gap to the heuristic.** The rest is risk decisions: seed 3 keeps 13.5% deaths under `navigate`.
 - **Three quarters of the prize is short-range:** turn towards an adjacent safe cell, then step in (navigate − near = +76 ± 55). FORWARD alone gains nothing, so the failure is the setting-up turn, a 2–3-step credit problem. The latent decodes heading only 58% of the time on random histories (section 5.4), which may be why turns look like no-ops to the value; this is untested.
 
+### 5.9 The oracle-latent arm (2026-10-12): a near-exact latent does not stop the idling
+
+Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `5416237` (`runs/wumpus/u64_store_eval_eps_decoder_k5_privileged_seed{0,1,2}`; `privileged_chain.sh`). Paired with `wumpus_current` seeds 0–2, same 512 analysis games, Student-t 95% intervals over 3 seeds:
+
+| | Final networks (collection 100) | Current agent | Paired |
+|---|---|---|---|
+| Return | −47 / 140 / −54 | 186 / 166 / 215 | −176 ± 326 |
+| Win | 0.4 / 24.2 / 0.4% | 29.5 / 26.4 / 29.1% | −20 ± 38 pts |
+| Death | 0.8 / 5.3 / 1.2% | 3.9 / 3.3 / 0.2% | −0.1 ± 6.7 pts |
+| Unfinished | 98.8 / 70.5 / 98.4% | 66.6 / 70.3 / 70.7% | +20 ± 43 pts |
+| MLP probe, cell / heading (random histories) | 98/100, 96/100, 97/100% | 56/59, 58/60, 55/55% | +40 ± 5 / +42 ± 6 pts |
+| MLP probe, pit / wumpus error (constant 0.085 / 0.058) | 0.047 / 0.031 (all seeds within 0.003) | 0.070 / 0.046 | −0.024 ± 0.003 / −0.014 ± 0.004 |
+
+- **Premise met** on the final networks. `loss_privileged_belief` fell from about 3.3 to 0.25 on every seed.
+- **Readout: value/planner (pre-registered criterion 3, more than met).** Seed 1 is within ±10 points of the current agent's unfinished rate. Seeds 0 and 2 idle almost every game (step of the last new cell 5.0 and 8.2, against 11–14). FORWARD at a provably safe unvisited cell ahead: 21 / 25 / 21% (current 29–42%). The learned Q prefers the no-op there by a median of 48 / 19 / 49 (current 9–27).
+- **The navigation override** (`override_diag.py`, on `best.pt`) is worth +399 / +326 / +461 per game, more than on the current agent (+300).
+- **Protocol deviation, stated:** the pre-registered readout used `best.pt`. For seeds 0 and 2, `best.pt` came from collections 10 and 20, the winner's curse on noisy in-training evaluations: a barely trained latent (cell 64 / 70%), so the premise could not be judged there. The final networks were therefore analysed as well, through `<run>_final/` (`.hydra` and `latest.pt` linked; `best.pt` is a best.pt-format copy of `latest.pt`'s networks; `privileged_final_chain.sh`). On `best.pt`: returns 56 / 168 / −6, unfinished 79 / 76 / 96%, probes 64/54, 96/100, 70/62%. The conclusion does not depend on the choice: seed 1, the one seed whose `best.pt` is late (collection 90), already met the premise there and idled as much as the current agent.
+- **In-training evaluations:** seeds 0 and 2 sat at about −40 (almost all idling) from collection 25 to 100. Seed 1 recovered only at collection 90.
+- **Reading:** representation errors don't explain the idling. With the hunter's cell, heading and hazards known almost exactly, the jointly trained value still ranks no-ops above the turn-then-step moves, and more confidently than with the poorer latent. The sharper latent may let the self-consistent Bellman fixed point (section 5.6, H1) separate idle states more cleanly, making the idling worse rather than better. That is a hypothesis, not tested.
+
 ## 6. Planning agenda for the next session
 
 The user asked for the next experiments and implementations to be planned out clearly in a fresh session. Do that first: read the running arm's result (6.1), take the matching branch of 6.2, write the plan (question, method, pre-registered readout, cost, order) and show it to the user, then execute. Experiments within the agreed direction need no permission (section 2); direction changes do.
 
-### 6.1 Ready to launch: the oracle-latent arm (user choice 2026-10-11)
+### 6.1 Done: the oracle-latent arm (user choice 2026-10-11; result in section 5.9: value/planner)
 
 - **Question:** is the idling a representation failure (the latent decodes heading/cell only ~58%, so a turn towards a safe cell looks like a no-op) or a value/planning failure?
 - **What runs:** the current recipe plus `model.privileged_belief_loss=true` (`25123d0`; `training/privileged.py`; trainer section 2e; run section 12). A readout of every latent z_0..z_T is trained on the exact Bayes filter's targets (cell, heading, 48 hazard marginals, danger ahead; `WumpusBeliefTracker.supervision_targets`, `domain/wumpus.py` section 6), with gradients into the filter. A diagnostic arm, never a method (it uses the exact model).
@@ -412,7 +432,7 @@ The user asked for the next experiments and implementations to be planned out cl
 - The architecture rule (section 2): A/B a causal Transformer over history tokens with good statistics; the untuned one was no better (section 5.5).
 - Caveat: offline latent gains on `pools.pt` did NOT transfer to the agent before (section 5.7). Any candidate needs an agent test (3 seeds, paired).
 
-**(C) Value/planning is the bottleneck.** The latent knows the belief, yet the planner idles. Candidates:
+**(C) Value/planning is the bottleneck: SELECTED by the oracle-latent result (section 5.9).** The latent knows the belief, yet the planner idles. Candidates (in this order):
 - An AlphaZero-style **learned policy prior** for PUCT (trained on the search's own root policy); the search now uses a uniform prior.
 - **Teacher-value screens again on the oracle latents:** the offline screens of section 5.6 failed partly because the latent was poor; re-run `grounding_screen.py`/`teacher_robustness.py` on the privileged runs (cheap; no training).
 - An **action-gap-increasing operator** (advantage learning, Bellemare et al. 2016) on the value targets. The counterfactual test showed the one-step estimates carry no information about the true advantage (Spearman ≈ 0), so this is weaker than it looked before section 5.8.
@@ -471,6 +491,7 @@ The user asked for the next experiments and implementations to be planned out cl
 - **`cfg.seed + offset` seeds** couple runs. Use `stream_seed`.
 - **R² as a probe metric:** an untrained GRU already reaches 0.93. Use KL/L1 on Tiger, and the error against the constant (and majority) baseline on Wumpus.
 - **Reading in-training evaluation dips, or citing the `best.pt` score:** noise and a winner's curse. Re-estimate on fresh seeds with `analyze.py`.
+- **Reading a pre-registered readout off `best.pt` alone:** the winner's curse can pick a collection-10 network (oracle-latent seeds 0 and 2), which says nothing about the trained agent. Check `checkpoint_collection`, and analyse `latest.pt` as well when it is early (section 5.9).
 - **Judging a gate or an A/B from one seed:** the Tiger value gate ranged from 0.7 to 24 across seeds.
 - **Choosing the reference threshold and reporting it on the same games** inflates it a little. Say so when citing 573.
 - **Forgetting `training.total_episodes=6400`** on a Wumpus run gives only 40 collections.
