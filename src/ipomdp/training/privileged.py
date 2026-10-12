@@ -26,6 +26,15 @@
 #      cross-entropy averaged over the soft targets (Wumpus: 48 hazard marginals and the danger ahead),
 #      on live steps only. This is supervised_filter.py's loss.
 #
+# 2b. Pre-registered readout (3 seeds, paired with runs/sweeps/wumpus_current seeds 0-2, analyze.py on
+#    best.pt; recorded before the runs, 2026-10-11):
+#    - First check the premise: MLP probes on random histories must reach cell and heading >= 90%
+#      (current agent 56-58%). If they do not, the arm failed to give the oracle latent; say so.
+#    - Representation is the bottleneck: unfinished rate falls by >= 15 points paired and the return
+#      rises by >= +100 paired (the navigation override's prize is +300).
+#    - Value / planning is the bottleneck: probes >= 90% but unfinished within +-10 points of the
+#      current agent. Then override_diag.py's navigate arm on these runs shows how much is still lost.
+#
 # 3. Scope:
 #    - A diagnostic arm, never an agent to report as a method: it uses the exact model.
 #    - Domains opt in by giving DomainSetup a PrivilegedSpec (experiments/runs.py); Tiger has none and
