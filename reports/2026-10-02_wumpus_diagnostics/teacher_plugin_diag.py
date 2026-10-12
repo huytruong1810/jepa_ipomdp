@@ -38,6 +38,27 @@
 #    - "The model/search also blocks": on 2+ seeds the gain is < +50. Then: diagnose the learned model
 #      under the teacher value (which imagined outcomes keep it idling) before any value work.
 #    - Otherwise: partial; report with the per-seed numbers and the big (long-fit) arm.
+#
+# 2c. Simulation sweep (optional 4th argument, a comma list of simulation counts; 2026-10-12):
+#    - With the teacher value the one-step ranking prefers FORWARD (value_chain_diag.py M4 / grounded V_g),
+#      yet the 50-simulation search idles, and on idle steps the search picks the one-step argmax only
+#      27-35% of the time (value_chain_diag.py M1). Do the deeper max backups over imagined subtrees add
+#      the optimism? Every arm (learned value included) is played at each listed count; 1 simulation is
+#      the closest to one-step greedy (the roots are expanded before the first simulation).
+#    - Readout: if the teacher value plays clearly better at 1-10 simulations than at 50 (median big-ES
+#      gain >= +100 on 2+ seeds), the search's deep backups are a blocker; if the count does not matter,
+#      the teacher value's one-step preference is too weak to drive play.
+#
+# 3. Result 2026-10-12 (oracle-latent final networks, 512 games, 2048 teacher games, 50 simulations; logs
+#    runs/wumpus/u64_store_eval_eps_decoder_k5_privileged_seed*_final.teacher_plugin_diag.log; learned-value
+#    returns reproduce report.json exactly: -46.9 / 139.9 / -54.3):
+#              big-ES gain per init (median)        big gain per init         unfinished (learned -> big-ES)
+#      seed 0  +13 / +124 / +40  (+40)              -33 / +2 / -38            98.8% -> 88-99%
+#      seed 1  -86 / -56 / -69   (-69)              -186 / -186 / -188        70.5% -> 87-88%
+#      seed 2  +15 / +15 / +15   (+15)              +10 / +18 / +11           98.4% -> 100% (every game identical)
+#    - Pre-registered readout: "the model/search also blocks" (gain < +50 on all 3 seeds). A value that
+#      ranks FORWARD first at the declined steps offline does not make the unchanged search play better;
+#      on seed 1 it plays worse, and the long fits worse still. Held-out MSE explained 0.89 everywhere.
 # ==============================================================================
 
 import sys
@@ -61,6 +82,7 @@ settings = WumpusAnalysisSettings()
 trained = load_trained_run(run_dir, dev)
 world, run, cfg = trained.setup.domain, trained.run, trained.cfg
 model = run.eval_agent.model
+simulations = [int(c) for c in sys.argv[4].split(",")] if len(sys.argv) > 4 else [cfg.mcts.num_simulations]  # 2c
 
 
 class Recorder:
@@ -120,10 +142,10 @@ def _outcomes(episodes) -> dict:
     return {k: round(float(v), 4) for k, v in game_outcomes(episodes.rewards).items()}
 
 
-def play_planner() -> tuple[torch.Tensor, dict]:
-    """The analysis games with the acting model as it currently is (report.json's greedy planner)."""
+def play_planner(sims: int) -> tuple[torch.Tensor, dict]:
+    """The analysis games with the acting model as it currently is (report.json's greedy planner at `sims`)."""
     planner = PlanningAgent(
-        model, BeliefTreeSearch(model, cfg.mcts.num_simulations, cfg.mcts.c_puct, cfg.mcts.dirichlet_alpha,
+        model, BeliefTreeSearch(model, sims, cfg.mcts.c_puct, cfg.mcts.dirichlet_alpha,
                                 dirichlet_epsilon=0.0, seed=stream_seed(settings.seed, 2),
                                 observation_prune=cfg.mcts.observation_prune),
         n, temperature=0.0, seed=stream_seed(settings.seed, 3), device=dev)
@@ -132,16 +154,18 @@ def play_planner() -> tuple[torch.Tensor, dict]:
 
 
 def report(name: str, returns: torch.Tensor, outcomes: dict, base: torch.Tensor | None) -> None:
-    line = f"  {name:16s}: return {returns.mean():7.1f} +- {returns.std() / np.sqrt(n):5.1f}  {outcomes}"
+    line = f"  {name:20s}: return {returns.mean():7.1f} +- {returns.std() / np.sqrt(n):5.1f}  {outcomes}"
     if base is not None:
         d = returns - base
         line += f"  paired gain {d.mean():+7.1f} +- {1.96 * d.std() / np.sqrt(n):5.1f}"
     print(line, flush=True)
 
 
-print(f"== {run_dir.name} best.pt (collection {trained.checkpoint_collection}), {n} games")
-base, base_outcomes = play_planner()
-report("learned value", base, base_outcomes, None)
+print(f"== {run_dir.name} best.pt (collection {trained.checkpoint_collection}), {n} games, simulations {simulations}")
+base = {}
+for sims in simulations:
+    base[sims], base_outcomes = play_planner(sims)
+    report(f"learned value s{sims}", base[sims], base_outcomes, None)
 
 states, to_go = teacher_pool()
 game = torch.arange(n_teacher, device=dev) % 4
@@ -156,8 +180,9 @@ for name, fit in arms.items():
             explained = 1 - F.mse_loss(value(hx), hy).item() / mse0
         model.values = value                         # instance attribute: expand() now uses the teacher value
         try:
-            returns, outcomes = play_planner()
+            for sims in simulations:
+                returns, outcomes = play_planner(sims)
+                report(f"{name} init {seed} s{sims}", returns, outcomes, base[sims])
         finally:
             del model.values
-        report(f"{name} init {seed}", returns, outcomes, base)
         print(f"    fit: steps {stopped}, held-out MSE explained {explained:.3f}", flush=True)
