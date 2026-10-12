@@ -406,6 +406,14 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 - **In-training evaluations:** seeds 0 and 2 sat at about −40 (almost all idling) from collection 25 to 100. Seed 1 recovered only at collection 90.
 - **Reading:** representation errors don't explain the idling. With the hunter's cell, heading and hazards known almost exactly, the jointly trained value still ranks no-ops above the turn-then-step moves, and more confidently than with the poorer latent. The sharper latent may let the self-consistent Bellman fixed point (section 5.6, H1) separate idle states more cleanly, making the idling worse rather than better. That is a hypothesis, not tested.
 
+**The value-target screens re-run on the oracle latents** (`privileged_screen_chain.sh`; `grounding_screen.py` and `teacher_robustness.py` on `<run>_final`, same protocol as section 5.6; logs `<run>_final.{grounding_screen,teacher_robustness}.log`):
+- **The agent's own value is worse on the better latent.** V̂ − realised return on idle steps is 982 / 891 / 983 (current agent 637 / 675 / 683). FORWARD is preferred at declined safe steps 8 / 22 / 5% of the time (current 23 / 13 / 34%).
+- **The agent's own returns still don't help.** max(V̂, G) gives 12 / 29 / 6%; its Monte Carlo returns give 41 / 35 / 17% (exploring games) and 33 / 43 / 13% (all buffer games). These returns explain 6–8% of the variance.
+- **Teacher (heuristic) returns now rank FORWARD first under every early-stopped fit:** ES and big-ES, 18 of 18 fits over seeds × initialisations, FORWARD preferred 51–87%, medians +2 to +95. On the current agent's latents, seed 2 failed all 6 of its early-stopped fits.
+  - Long (3000-step) fits got slightly less robust: 13 of 18 pass, against 18 of 18 before. Seed 2 big gives 41 / 32%, and seed 0 M4 gives 49 / 41%.
+  - Held-out fit quality is about the same (MSE explained 0.83–0.86).
+- **Reading:** with a near-exact latent, a value that steps into safe cells is learnable from the right returns, at least under early stopping. The agent's own Bellman fixed point moves the other way: more optimistic on idle states, and more sure of the no-op. The failure is in the value target that the agent's own data and backup produce, not in what the latent can represent.
+
 ## 6. Planning agenda for the next session
 
 The user asked for the next experiments and implementations to be planned out clearly in a fresh session. Do that first: read the running arm's result (6.1), take the matching branch of 6.2, write the plan (question, method, pre-registered readout, cost, order) and show it to the user, then execute. Experiments within the agreed direction need no permission (section 2); direction changes do.
@@ -432,7 +440,7 @@ The user asked for the next experiments and implementations to be planned out cl
 - The architecture rule (section 2): A/B a causal Transformer over history tokens with good statistics; the untuned one was no better (section 5.5).
 - Caveat: offline latent gains on `pools.pt` did NOT transfer to the agent before (section 5.7). Any candidate needs an agent test (3 seeds, paired).
 
-**(C) Value/planning is the bottleneck: SELECTED by the oracle-latent result (section 5.9).** The latent knows the belief, yet the planner idles. Candidates (in this order):
+**(C) Value/planning is the bottleneck: SELECTED by the oracle-latent result (section 5.9).** The latent knows the belief, yet the planner idles. Step 1 (the teacher-value screens on the oracle latents) is DONE (section 5.9). **Re-assessment of step 2 (2026-10-12):** the greedy agent acts by argmax Q, and the root visits follow the same Q. So a policy prior distilled from the search's own visits would inherit the idling, and changing the visit allocation does not change argmax Q. It can only help if acting also follows the visits, or if the prior comes from outside the search. Ask the user before building it. Original candidates:
 - An AlphaZero-style **learned policy prior** for PUCT (trained on the search's own root policy); the search now uses a uniform prior.
 - **Teacher-value screens again on the oracle latents:** the offline screens of section 5.6 failed partly because the latent was poor; re-run `grounding_screen.py`/`teacher_robustness.py` on the privileged runs (cheap; no training).
 - An **action-gap-increasing operator** (advantage learning, Bellemare et al. 2016) on the value targets. The counterfactual test showed the one-step estimates carry no information about the true advantage (Spearman ≈ 0), so this is weaker than it looked before section 5.8.
