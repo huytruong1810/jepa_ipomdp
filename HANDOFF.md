@@ -414,6 +414,21 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
   - Held-out fit quality is about the same (MSE explained 0.83–0.86).
 - **Reading:** with a near-exact latent, a value that steps into safe cells is learnable from the right returns, at least under early stopping. The agent's own Bellman fixed point moves the other way: more optimistic on idle states, and more sure of the no-op. The failure is in the value target that the agent's own data and backup produce, not in what the latent can represent.
 
+**The teacher-value plug-in test (2026-10-12; user choice; `teacher_plugin_diag.py`, `teacher_plugin_chain.sh`).** A value fitted to 2,048 fresh heuristic games on the oracle latents replaces the learned value inside the unchanged 50-simulation search, on the same 512 analysis games. The learned-value replays reproduce `report.json` exactly.
+
+| Seed | big-ES gain per init (median) | big (long fit) gain | Unfinished, learned → big-ES |
+|---|---|---|---|
+| 0 | +13 / +124 / +40 (**+40**) | −33 / +2 / −38 | 98.8% → 88–99% |
+| 1 | −86 / −56 / −69 (**−69**) | −186 / −186 / −188 | 70.5% → 87–88% |
+| 2 | +15 / +15 / +15 (**+15**) | +10 / +18 / +11 | 98.4% → 100% (all games identical) |
+
+- **Pre-registered readout: the model/search also blocks progress** (gain < +50 on all 3 seeds). A value that ranks FORWARD first offline does not make the search play better.
+- **`value_chain_diag.py` on the same networks:**
+  - On idle steps V̂ is about 962 and nearly flat. The latent barely moves (step size 0.03–0.08, against 5.2–5.8 on progress steps), and the Bellman residual is about 5.
+  - **The search picks the one-step argmax on idle steps only 27 / 35 / 27% of the time** (51–62% on progress steps).
+  - With the grounded V_g the one-step ranking prefers FORWARD only weakly: 53 / 53 / 55% (medians +6, +6, +41).
+- **Running:** the simulation sweep (script section 2c, `teacher_plugin_sims_chain.sh`). It plays every arm at 1 and 10 simulations, to separate "the deep max backups add the optimism" from "the teacher value's one-step preference is too weak to drive play".
+
 ## 6. Planning agenda for the next session
 
 The user asked for the next experiments and implementations to be planned out clearly in a fresh session. Do that first: read the running arm's result (6.1), take the matching branch of 6.2, write the plan (question, method, pre-registered readout, cost, order) and show it to the user, then execute. Experiments within the agreed direction need no permission (section 2); direction changes do.
