@@ -59,6 +59,23 @@
 #    - Pre-registered readout: "the model/search also blocks" (gain < +50 on all 3 seeds). A value that
 #      ranks FORWARD first at the declined steps offline does not make the unchanged search play better;
 #      on seed 1 it plays worse, and the long fits worse still. Held-out MSE explained 0.89 everywhere.
+#    - Simulation sweep (2c; logs <run>_final.teacher_plugin_sims.log; the fits reproduce the 50-simulation
+#      run's stopping steps). big-ES, median over the 3 initialisations, return (paired gain over the
+#      learned value at the same count):
+#                 1 simulation        10 simulations      50 simulations     learned value 1 / 10 / 50
+#      seed 0     +37 (+79)           +4 (+54)            -7 (+40)           -42 / -50 / -47
+#      seed 1     +28 (-108)          +30 (-146)          +71 (-69)          136 / 176 / 140
+#      seed 2     -36 (+4)            -40 (+12)           -40 (+15)          -40 / -52 / -54
+#      Unfinished with big-ES at 1 simulation: 89-96% / 93% / 99-100%.
+#    - Readout: the count does not matter (no seed reaches a median gain of +100 at 1 or 10 simulations;
+#      seed 1 plays best with the teacher value at 50). The deep max backups are not what blocks the
+#      teacher value: its one-step preference is too weak to drive play.
+#    - Reading: the action gap at a safe step is tiny against the value's scale. Under the heuristic, an
+#      idle step costs about 1 + (1 - gamma) * V ~ 1 + 0.01 * 573 ~ 7, while a fit that leaves 11% of the
+#      variance of returns (per-game sd ~ 460) unexplained has residuals of order 100. Comparing V on the
+#      children of one state resolves the gap only if the errors of sibling latents cancel, and nothing in
+#      a state-value fit makes them cancel. Next: q_head_screen.py (an action-value head on the parent
+#      latent, trained on common-layout branch returns).
 # ==============================================================================
 
 import sys

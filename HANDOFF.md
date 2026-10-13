@@ -427,7 +427,16 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
   - On idle steps V̂ is about 962 and nearly flat. The latent barely moves (step size 0.03–0.08, against 5.2–5.8 on progress steps), and the Bellman residual is about 5.
   - **The search picks the one-step argmax on idle steps only 27 / 35 / 27% of the time** (51–62% on progress steps).
   - With the grounded V_g the one-step ranking prefers FORWARD only weakly: 53 / 53 / 55% (medians +6, +6, +41).
-- **Running:** the simulation sweep (script section 2c, `teacher_plugin_sims_chain.sh`). It plays every arm at 1 and 10 simulations, to separate "the deep max backups add the optimism" from "the teacher value's one-step preference is too weak to drive play".
+- **Simulation sweep (script section 2c, `teacher_plugin_sims_chain.sh`; logs `<run>_final.teacher_plugin_sims.log`): the count does not matter.** big-ES, median over 3 initialisations, return (paired gain over the learned value at the same count):
+
+  | Seed | 1 simulation | 10 | 50 | Learned value 1 / 10 / 50 |
+  |---|---|---|---|---|
+  | 0 | +37 (+79) | +4 (+54) | −7 (+40) | −42 / −50 / −47 |
+  | 1 | +28 (−108) | +30 (−146) | +71 (−69) | 136 / 176 / 140 |
+  | 2 | −36 (+4) | −40 (+12) | −40 (+15) | −40 / −52 / −54 |
+
+  No seed reaches the pre-registered +100 at 1 or 10 simulations, and unfinished stays at 89–100% at 1 simulation. **Readout: the deep max backups are not the blocker; the teacher value's one-step preference is too weak to drive play.**
+- **Reading (the action-gap problem):** under the heuristic an idle step costs about 1 + (1−γ)·V ≈ 7, while a fit that leaves 11% of the variance of returns unexplained (per-game sd ≈ 460) has errors of order 100. Comparing V on the children of one state resolves a gap of 7 only if sibling errors cancel, and nothing in a state-value fit makes them cancel. This is the procrastination-under-a-small-action-gap hypothesis of section 5.8, now shown to hold even for a value fitted to the right returns on a near-exact latent. Next: `q_head_screen.py` (section 6.2 C).
 
 ## 6. Planning agenda for the next session
 
