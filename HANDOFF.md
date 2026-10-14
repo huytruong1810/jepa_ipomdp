@@ -18,7 +18,11 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
   - in training: the time-aware value, n-step greedy returns, γ = 0.95, a detached planning head at 128 updates;
   - offline value targets on frozen latents: optimistic max(V̂, G), the agent's own Monte Carlo returns, heuristic returns (robust only on the oracle latent);
   - **teacher values in play, on the oracle latent (2026-10-12/13):** a state value fitted to the heuristic's returns plugged into the search (1, 10 or 50 simulations), and action-value / common-layout advantage heads acting greedily. All rank actions about as well as the heuristic **on the heuristic's own states** (−5 to −11), and all fail in play: V idles, the Q/A heads leave the idle states but die 2–30% of the time. Compounding error off the teacher's state distribution. **The teacher line is closed.**
-- **Running (detached, started 2026-10-14 09:00 at `3924a9d`): `self_loop_diag.py`,** the exact self-loop identity applied at planning time (section 6.1).
+- **2026-10-14 findings:**
+  - **Self-loop test v1 was void.** It changed only the loop children's *leaf* values, and the search overwrites those once it expands a child. Oracle gains +26/+6/+27 at τ=0.05 and +25/−19/+69 at τ=0.1, and GRAB *rose*. **v2 freezes loop children** (`FrozenLoopSearch`); its 32-game smoke check removes the loops (GRAB 34% → 2%), and the idling moves into turning.
+  - **No phantom reward** (`phantom_reward_diag.py`): the reward and observation heads are exact on no-op GRAB and SHOOT.
+  - **The oracle values exceed what any game can pay** (V̂ > 999 on 36–58% of live steps). On oracle seeds 0 and 2 **every game that reached the gold stood on it, perceiving GLITTER, and never grabbed** (idling valued ~1290). The current agent grabs, but its idle V̂ ≈ 626–663 is just as flat. A value that no policy can earn must come from the backup itself: this is direct evidence for C2.
+- **Running (detached, 2026-10-14 11:23 at `690a737`): `runs/wumpus/c2_chain.sh`** (section 6.1).
 - **Housekeeping:** everything is committed and pushed. Fast suite 172 passed (2026-10-14). The slow suite last passed 7/7 at `f1e5bbf`; not run since `privileged_belief_loss` (default off, fingerprinted). Run it when the machine is free (~45 min).
 
 ## 1. Goals
@@ -42,9 +46,9 @@ Stages:
 
 The user trusts the agent's research judgement (2026-10-10: "run the experiments you think will not waste meaningless compute and post-analysis"; 2026-10-12: "decide on the best direction forward without asking me to pick an option"). These are the beliefs that currently steer the work, strongest evidence first. Each is a conjecture with a stated test, not a result.
 
-**C1. The idle states prop up their own value through no-op self-loops (being tested).** A no-op child is its own parent, so the backup scores it r + γ·V̂(z), the parent's own value. In the value target that branch feeds V̂(z) back to itself, so an overestimate decays by only 1 − γ = 1% per backup. Evidence: idle actions are mostly exact no-ops; V̂ − realised return ≈ 950 on idle states, nearly flat; Bellman residual ≈ 5; at the root all 5 actions sit within 5–20 of V̂ ≈ 744; the oracle latent, whose filter is nearly idempotent on no-ops (GRAB's child moves 0.026·|z|), idles more. Exact identity: for a deterministic self-loop with reward r, V(z) = max(M, r/(1−γ)), M the best non-loop action, so valuing a loop child at r/(1−γ) changes no fixed point and is not a bias towards moving. Test: `self_loop_diag.py` (section 6.1).
+**C1. The idle states prop up their own value through no-op self-loops (being tested; v1 of the test was void, v2 running, section 6.1).** A no-op child is its own parent, so the backup scores it r + γ·V̂(z), the parent's own value. In the value target that branch feeds V̂(z) back to itself, so an overestimate decays by only 1 − γ = 1% per backup. Evidence: idle actions are mostly exact no-ops; V̂ − realised return ≈ 950 on idle states, nearly flat; Bellman residual ≈ 5; at the root all 5 actions sit within 5–20 of V̂ ≈ 744; the oracle latent, whose filter is nearly idempotent on no-ops (GRAB's child moves 0.026·|z|), idles more. Exact identity: for a deterministic self-loop with reward r, V(z) = max(M, r/(1−γ)), M the best non-loop action, so valuing a loop child at r/(1−γ) changes no fixed point and is not a bias towards moving. Test: `self_loop_diag.py` (section 6.1).
 
-**C2. Behind the loops, the value is flat, sustained by the max over noisy children.** If loops are removed and the agent then idles by turning back and forth, the deeper cause is that V̂ has no gradient towards progress, and taking the max over 5 actions × observation branches of noisy values supplies the ~(1−γ)V + 1 ≈ 8 per step that a flat optimistic V needs to be self-consistent (maximisation bias). On the current agent the filter drifts on no-ops (0.46·|z|), so each no-op child is a fresh noise draw, which feeds the max. Test (planned, section 6.2): fitted value iteration on frozen latents with the agent's own model, standard max vs a double / clipped-double estimator, measuring the idle V̂, the root Q spread and the one-step play.
+**C2. Behind the loops, the value is flat, sustained by the max over noisy children (strongest candidate since 2026-10-14: the oracle networks hold values above the 999 ceiling, which no policy can earn; `fvi_screen.py` running).** If loops are removed and the agent then idles by turning back and forth, the deeper cause is that V̂ has no gradient towards progress, and taking the max over 5 actions × observation branches of noisy values supplies the ~(1−γ)V + 1 ≈ 8 per step that a flat optimistic V needs to be self-consistent (maximisation bias). On the current agent the filter drifts on no-ops (0.46·|z|), so each no-op child is a fresh noise draw, which feeds the max. Test (planned, section 6.2): fitted value iteration on frozen latents with the agent's own model, standard max vs a double / clipped-double estimator, measuring the idle V̂, the root Q spread and the one-step play.
 
 **C3. Values learned from another policy's states fail by compounding error.** Shown twice now (teacher plug-in, Q/A heads): offline ranking on the teacher's states says nothing about play. Any value fix must be judged on the agent's own state distribution, in play.
 
@@ -111,7 +115,15 @@ The user trusts the agent's research judgement (2026-10-10: "run the experiments
 **Git**
 - **Everything is pushed** through `3924a9d` (2026-10-14). The working tree is clean. `runs/` is untracked: keep it.
 - **Running:** `runs/wumpus/self_loop_chain.sh` (log `runs/wumpus/self_loop_chain.log`, ends with `ALL DONE`, each step logs its exit status). It runs `self_loop_diag.py <run> 512 0.05,0.1` on the 3 oracle-latent final networks in parallel, then on `runs/sweeps/wumpus_current/seed{0,1,2}`. Outputs: `<run>.self_loop_diag.log` (a `decision N` progress line every 10 decisions). At 3 in parallel a 512-game play takes about 15 min (20 decisions in 6 min at launch), so the whole chain should end around 10:30–11:30 on 2026-10-14.
-  - **Relaunched 2026-10-14 09:13 at `3018ea1`** (same source as `3924a9d`): the machine rebooted at about 09:11 and killed the first run at decision 30 of the oracle plays. New ETA about 11:00–12:00; the log appends.
+  - **Relaunched 2026-10-14 09:13 at `3018ea1`** (same source as `3924a9d`): a clean WSL shutdown at 09:07 killed the first run. The oracle batch finished; the current-agent v1 runs were stopped at 11:12 because v1 is void (section 6.1). Their baselines reproduce `report.json`.
+- **Running now: `runs/wumpus/c2_chain.sh`** (log `runs/wumpus/c2_chain.log`, ends with `ALL DONE`), started 2026-10-14 11:23 at `690a737`, 3 GPU jobs at a time:
+  1. self-loop v2 on the oracle networks (`<run>.self_loop_frozen.log`);
+  2. `fvi_screen.py` on the oracle networks (`<run>.fvi_screen.log`);
+  3. `fvi_screen.py` on the current agent's seeds 0–2;
+  4. self-loop v2 on the current agent.
+
+  ETA: roughly 1 h + 3 h + 3 h + 1 h while ipomcp runs 16 workers.
+  - **Memory lesson (2026-10-14):** an unchunked CPU `expand` of 16,000 latents (≈ 2.6M children, ~10+ GB) got the session's shell reaped under memory pressure. Chunk every `expand` to ≤ a few hundred latents on the CPU.
   - It needs no Claude session (`setsid nohup`). To pause: `kill -STOP <pids>` / `kill -CONT <pids>` (the GPU memory stays held). It cannot resume mid-play: if it is killed, relaunch the chain (the baselines repeat).
   - **Do not run more than 3 of these planner diagnostics at once.** Six filled the 16 GB GPU, WSL spilled into shared memory, and the plays slowed more than 10× (13 h lost on 2026-10-13/14).
   - Find its PIDs with `pgrep -f "python reports/2026-10-02_wumpus_diagnostics/self_loop_diag.py"`; never `pkill -f` a pattern that appears in your own command (it killed the calling shell again on 2026-10-14).
@@ -480,7 +492,13 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 
 Experiments within the agreed direction (fixing the Wumpus idling on the value/planner side) need no permission (section 2). Domain changes, project-stage changes and anything touching canonical Tiger do.
 
-### 6.1 Running: the self-loop test (`self_loop_diag.py`; conjecture C1)
+### 6.1 Running: self-loop test v2 and the FVI screen (`c2_chain.sh`)
+
+- **Self-loop v2** (`self_loop_diag.py` header 2c): loop children are frozen leaves worth r̂/(1−γ), never expanded. The readout of header 2b is unchanged. v1 (below) is void: `mcts.py` replaces a child's leaf value with max_a Q(child, a) once the child is expanded, and the root's GRAB child is nearly always expanded.
+- **FVI screen** (`fvi_screen.py`, readout in header 2b): fitted value iteration on the agent's frozen buffer latents through its own `expand`, comparing a standard max target, a double target and a clipped-double target. Each fitted value is then played in the planner at 1 and 50 simulations, paired with the learned value. Also measured: V > 999 and the idle bias. Pass criterion: ≥ +100 on 2 of 3 seeds in a population. A 16-game smoke check runs end to end.
+- **Next:** read both as pre-registered. If double or clipped double passes, build it as a default-off trainer option (Tiger fingerprint, small check, 3 seeds paired). If self-loop v2 passes on the oracle networks, follow branch (A) of 6.2.
+
+### 6.1-old The self-loop test v1 (void; kept for the record)
 
 - **Question:** do the no-op self-loops sustain the idling? Applied at planning time only, no retraining.
 - **Method:** `LearnedSearchModel.expand` is wrapped on the acting model's instance. A child (a, o′) whose latent satisfies ‖z′ − z‖ ≤ τ·‖z‖ gets the loop value r̂(z, a)/(1 − γ) instead of V̂(z′). Every backup, at the root and deeper, goes through `expand`. τ = 0.05 and 0.1, chosen from the smoke check's quantiles before the runs (header section 2): on the oracle latent GRAB's children move 0.003 / 0.026 / 0.11·‖z‖ (10/50/90%), turns 0.6–0.96, FORWARD 0.3–0.87. The baseline play must reproduce `report.json` (it did for all 6 networks in the stalled first launch: −46.9 / 139.9 / −54.3 and 185.5 / 166.0 / 215.2).
