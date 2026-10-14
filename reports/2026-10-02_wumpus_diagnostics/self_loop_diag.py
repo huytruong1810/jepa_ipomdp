@@ -116,6 +116,8 @@ class Recorder:
             e = unwrapped(z)
             rel = relative_steps(z, e)
         action = self.planner.act()
+        if len(self.loop_mass) % 10 == 9:
+            print(f"    decision {len(self.loop_mass) + 1}", flush=True)
         mass = (e.observation_probs * (rel <= (self.tau if self.tau is not None else 0.0))).sum(-1)   # (B, A)
         self.loop_mass.append(mass.gather(1, action[:, None]).squeeze(1).cpu())
         if self.tau is None:
