@@ -64,12 +64,15 @@
 #      V_hat > 999 on 36-58% of live steps and seeds 0 and 2 refuse the gold. If (i) also exceeds 999 and
 #      (ii)/(iii) do not, the overshoot is the backup's maximisation bias; report it per arm either way.
 #
-# 3. Result: pending.
+# 3. Smoke check (16 games, 3 refreshes, oracle seed 0; orientation only): runs end to end.
+#
+# 4. Result: pending.
 # ==============================================================================
 
 import copy
 import json
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -133,6 +136,7 @@ def fit(states: torch.Tensor, nets: list[nn.Module], halves: list[torch.Tensor],
     """Refresh frozen copies, compute targets for every net from them, then STEPS_PER_REFRESH Adam steps each."""
     opts = [torch.optim.Adam(net.parameters(), lr=1e-3) for net in nets]
     gen = torch.Generator(device=dev).manual_seed(0)
+    started = time.time()
     for r in range(refreshes):
         frozen = [as_value(_copy(net)) for net in nets]
         targets = targets_fn(states, frozen)                       # one (N,) target per net
@@ -141,12 +145,12 @@ def fit(states: torch.Tensor, nets: list[nn.Module], halves: list[torch.Tensor],
                 idx = rows[torch.randint(len(rows), (MINIBATCH,), generator=gen, device=dev)]
                 loss = F.mse_loss(net(states[idx]).squeeze(-1), y[idx] / SCALE)
                 opt.zero_grad(); loss.backward(); opt.step()
-        if r % 50 == 49 or r == refreshes - 1:
+        if r % 25 == 24 or r == refreshes - 1:
             with torch.no_grad():
                 residual = [(as_value(net)(states[rows]) - y[rows]).abs().mean().item()
                             for net, rows, y in zip(nets, halves, targets)]
             print(f"    {name} refresh {r + 1}: mean target {[round(y.mean().item(), 1) for y in targets]}, "
-                  f"|V - target| {[round(x, 1) for x in residual]}", flush=True)
+                  f"|V - target| {[round(x, 1) for x in residual]}; {time.time() - started:.0f} s", flush=True)
     for net in nets:
         net.eval()
 

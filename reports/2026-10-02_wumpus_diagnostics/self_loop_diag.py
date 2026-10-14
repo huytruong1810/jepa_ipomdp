@@ -52,6 +52,30 @@
 #      at both tolerances.
 #    - Otherwise partial: report, and look at deaths (the planner may now gamble where the loop's
 #      true value, -100, is the best option, which is correct play) and at the action mix.
+#
+# 2c. Version 2, frozen loop leaves (2026-10-14; this file's method since then; version 1 is at 3924a9d):
+#    - Version 1 wrapped LearnedSearchModel.expand, so a loop child got r_hat / (1 - gamma) only as its
+#      LEAF value. BeliefTreeSearch expands every child it selects, and an expanded node's value is
+#      max_a Q(child, a) over its own children with the learned V_hat (mcts.py, DecisionNode.value). At 50
+#      simulations with a uniform prior nearly every root action is selected, so the root's GRAB child was
+#      expanded and the identity erased exactly where it should act. Worse, the expanded loop child is a
+#      near-copy of the root explored one level deeper, and the max over more noisy estimates lifts it:
+#      GRAB rose from 39% to 63% of live steps on oracle seed 0. Version 1 therefore did not test C1.
+#      (Checked before this change: the loop value itself was right, r_hat(GRAB) = -1 on 99.9% of the
+#      flagged children at the real states and at imagined depths 1 and 2.)
+#    - Version 2: FrozenLoopSearch (below) subclasses BeliefTreeSearch. After each expansion, every child
+#      with ||z' - z|| <= tau ||z|| is frozen: it is never expanded and keeps the value r_hat(z, a) / (1 - gamma).
+#      By the identity of section 1 this changes no decision: if the best non-loop value M exceeds
+#      r / (1 - gamma) the loop is never chosen with either value, and otherwise looping forever is optimal.
+#      The model, the heads and src/ are untouched.
+#    - The readout of section 2b applies unchanged. Logs: <run>.self_loop_frozen.log.
+#
+# 3. Results.
+#    - Version 1 (leaf values only; logs <run>.self_loop_diag.log; baselines reproduce report.json):
+#      oracle-latent final networks, paired gain at tau 0.05 / 0.1: seed 0 +26 / +25, seed 1 +6 / -19,
+#      seed 2 +27 / +69; GRAB rose on seeds 0 and 2 (e.g. 39% -> 63%). Read by 2b as "a symptom", but void
+#      as a test of C1 (section 2c).
+#    - Version 2: pending.
 # ==============================================================================
 
 import json
@@ -88,13 +112,30 @@ def relative_steps(states: torch.Tensor, e: Expansion) -> torch.Tensor:
     return (e.next_states - states[:, None, None, :]).norm(dim=-1) / states.norm(dim=-1)[:, None, None]
 
 
-def wrap(tau: float):
-    def expand(states: torch.Tensor) -> Expansion:
-        e = unwrapped(states)
-        loop = relative_steps(states, e) <= tau
-        loop_value = (e.rewards / (1.0 - GAMMA)).unsqueeze(-1).expand_as(e.next_values)
-        return Expansion(e.rewards, e.observation_probs, e.next_states, torch.where(loop, loop_value, e.next_values))
-    return expand
+class FrozenLoopSearch(BeliefTreeSearch):
+    """BeliefTreeSearch whose self-loop children are frozen leaves worth r_hat / (1 - gamma) (section 2c)."""
+
+    def __init__(self, *args, tau: float, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.tau = tau
+
+    def _expand(self, nodes, stats) -> None:
+        live = [(node, st) for node, st in zip(nodes, stats) if not getattr(node, "frozen", False)]
+        if not live:
+            return
+        super()._expand([n for n, _ in live], [st for _, st in live])
+        for node, node_stats in live:
+            changed = False
+            for edge in node.edges:
+                kids = torch.stack([child.state for child in edge.children])
+                rel = ((kids - node.state).norm(dim=-1) / node.state.norm()).tolist()
+                for child, step in zip(edge.children, rel):
+                    if step <= self.tau:
+                        child.frozen, child.leaf_value, changed = True, edge.reward / (1.0 - GAMMA), True
+            if changed:
+                for edge in node.edges:
+                    node_stats.update(edge.refresh(self.model.discount))
+                node.refresh()
 
 
 class Recorder:
@@ -126,19 +167,12 @@ class Recorder:
 
 
 def play(tau: float | None):
-    planner = PlanningAgent(
-        model, BeliefTreeSearch(model, cfg.mcts.num_simulations, cfg.mcts.c_puct, cfg.mcts.dirichlet_alpha,
-                                dirichlet_epsilon=0.0, seed=stream_seed(settings.seed, 2),
-                                observation_prune=cfg.mcts.observation_prune),
-        n, temperature=0.0, seed=stream_seed(settings.seed, 3), device=dev)
+    args = (model, cfg.mcts.num_simulations, cfg.mcts.c_puct, cfg.mcts.dirichlet_alpha)
+    kwargs = dict(dirichlet_epsilon=0.0, seed=stream_seed(settings.seed, 2), observation_prune=cfg.mcts.observation_prune)
+    search = BeliefTreeSearch(*args, **kwargs) if tau is None else FrozenLoopSearch(*args, tau=tau, **kwargs)
+    planner = PlanningAgent(model, search, n, temperature=0.0, seed=stream_seed(settings.seed, 3), device=dev)
     rec = Recorder(planner, tau)
-    if tau is not None:
-        model.expand = wrap(tau)                  # instance attribute: the search and its backups use it
-    try:
-        episodes, _ = play_episodes(WumpusSimulator(world, n, cfg.env.max_steps, stream_seed(settings.seed, 1), dev), rec)
-    finally:
-        if tau is not None:
-            del model.expand
+    episodes, _ = play_episodes(WumpusSimulator(world, n, cfg.env.max_steps, stream_seed(settings.seed, 1), dev), rec)
     return episodes, rec
 
 
