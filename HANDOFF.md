@@ -1,33 +1,25 @@
-# HANDOFF: JEPA I-POMDP (as of 2026-10-12 evening: the oracle-latent arm says value/planner (branch C); a teacher value plugged into the search does not stop the idling at any simulation count (the action-gap problem); the action-value head screen `q_head_screen.py` is running)
+# HANDOFF: JEPA I-POMDP (as of 2026-10-14 morning: the Wumpus idling is a value/planner failure; every value-target and teacher remedy has failed; the self-loop test `self_loop_diag.py` is running detached)
 
-**The next session's job (user, 2026-10-11): plan the coming experiments and implementations clearly before running them.** Start with section 0 (state), then section 6 (the planning agenda: what is running, the decision tree that depends on its result, and the open options with costs). Present a plan to the user before launching anything new.
+**The next session's job:** read the self-loop result (section 6.1), take the matching branch of section 6.2, and keep going in the agreed direction. Section 1b holds the working conjectures and the research principles that picked the experiments so far. Section 7 lists what failed: do not repeat it.
 
-Read `CLAUDE.md` first: it covers the architecture, commands and conventions. This file covers goals, the user's rules, the current state, every result that matters, the next steps, the dead ends and the files touched. Each module starts with a `DESIGN DECISIONS & THEORETICAL FOUNDATIONS` header with the evidence behind its design; read it before changing that module. Every diagnostic script in `reports/` explains its question, usage and result in its header. The user's auto-memory (`~/.claude/projects/-home-andyj1810-projects-jepa-ipomdp/memory/`) repeats the standing rules of section 2.
+Read `CLAUDE.md` first: it covers the architecture, commands and conventions. This file covers goals, the user's rules, the current state, every result that matters, the next steps, the dead ends and the files touched. Each module starts with a `DESIGN DECISIONS & THEORETICAL FOUNDATIONS` header with the evidence behind its design; read it before changing that module. Every diagnostic script in `reports/` explains its question, usage, pre-registered readout and result in its header. The user's auto-memory (`~/.claude/projects/-home-andyj1810-projects-jepa-ipomdp/memory/`) repeats the standing rules of section 2.
 
 ## 0. Where we are
 
 - **Canonical Tiger: done.** The learned planner matches the exact optimum over 5 seeds (gap −0.03 ± 0.06). A decoder baseline is indistinguishable from JEPA there.
 - **Single-hunter 4x4 Wumpus World: the current agent works but is far from the reference.**
   - The agent: decoder representation, 64 updates per collection, ε-uniform exploration, greedy evaluation games stored in the buffer (section 5.3 has the recipe).
-  - **182 ± 62 per game over 5 seeds** (185, 166, 215, 107, 236; `runs/sweeps/wumpus_current/aggregate.json`).
-    - Wins 29.6 ± 2.7%, deaths 4.9 ± 7.8% (seed 3 is the outlier at 15.8%), unfinished 65.5 ± 8.9%.
-    - Paired gap to the exact-belief heuristic (573): −391 ± 62.
-  - **The recipe ablations (section 5.3):** storing the greedy games is what keeps deaths down (−110 ± 97 without it); ε does not matter (+9 ± 110).
-- **What the latent encodes.** It is organised first by the percept just received. Probes recover cell and heading 57% / 58% of the time on random histories (5 seeds), against 99.9–100% for the same network trained on exact targets. JEPA with the same recipe plays no differently from the decoder (2 seeds).
-- **The open problem is idling (section 5.6).** About 65% of games end unfinished: the greedy planner stops entering provably safe unvisited cells around step 11–14 and spends the rest of the window on no-ops.
-  - The latent does encode progress (probes 93–97%).
-  - The value is self-consistent but far too high on idle chains (V̂ ≈ 650 against a realised −22). One idle step costs only about 1 + (1−γ)·V̂ ≈ 7 under the backup.
-- **Everything tried against the idling has failed** (sections 5.6–5.7; each option is in the code, default off, Tiger bit-identical):
-  - in training: the time-aware value, n-step greedy returns, γ = 0.95, and a detached planning head at 128 updates per collection;
-  - offline on frozen latents: optimistic max(V̂, G) targets, the agent's own Monte Carlo returns, and teacher (heuristic) returns, which are not robust to the fit protocol;
-  - for the latent: longer multi-step horizons (k = 10, 20).
-- **The procrastination hypothesis, tested (section 5.8): only half right.** One forced FORWARD at a declined safe step has a real mean payoff in unfinished games (+90 ± 38; the model's estimate is negative and uncorrelated with it), but the median is 0: the planner declines again within 5 steps half the time.
-- **The size of the prize (section 5.8, exact-belief overrides, 5 seeds):** letting the heuristic's navigation rules (grab known gold, walk to the nearest provably safe unvisited cell) override the planner gives **482 ± 39 (+300 ± 42 paired)**, within 91 of the heuristic. Three quarters of that (+224 ± 75) comes from targets at most 3 actions away, i.e. turning towards an adjacent safe cell and stepping in. Forcing FORWARD only when already facing one gains nothing (+8 ± 24). **The missing skill is the turn that sets up a safe step.**
-- **The oracle-latent arm is done: the value/planner is the bottleneck, not the representation** (section 5.9). On the final networks the latent decodes cell 96–98% and heading 100% of the time (current agent 55–58%), and the hazards better than the current agent. Yet the agent idles as much or more: unfinished 98.8 / 70.5 / 98.4% (current 67 / 70 / 71%), returns −47 / 140 / −54. The navigation override is still worth +326 to +461 per game. **Branch C of section 6.2 is selected.** On the oracle latents a value fitted to the heuristic's returns ranks FORWARD first offline, but plugged into the unchanged search it does not stop the idling, at 1, 10 or 50 simulations: an idle step costs about 7 while the value's errors are of order 100, so differences of V between sibling children cannot carry the decision (the action-gap problem). **Running:** `q_head_screen.py` (an action-value head on the parent latent, trained on common-layout branch returns; `runs/wumpus/q_head_chain.sh`, log ends with `ALL DONE`).
-- **Housekeeping state:**
-  - Everything is committed and pushed to `origin/main` (section 3).
-  - The fast suite passes (171). The slow suite passed 7/7 at `f1e5bbf`; it has not been run since `privileged_belief_loss` was added (default off, fingerprinted).
-  - **New standing rule (user, 2026-10-11): after every implementation, commit AND push without asking** (section 2).
+  - **182 ± 62 per game over 5 seeds** (185, 166, 215, 107, 236; `runs/sweeps/wumpus_current/aggregate.json`). Wins 29.6 ± 2.7%, deaths 4.9 ± 7.8%, unfinished 65.5 ± 8.9%. Paired gap to the exact-belief heuristic (573): −391 ± 62.
+  - Storing the greedy games is what keeps deaths down (−110 ± 97 without it); ε does not matter.
+- **The open problem is idling.** About 65% of games end unfinished. The planner stops entering provably safe unvisited cells around step 11–14 and spends the rest of the 50-step window on no-ops. **50–90% of those idle actions are GRAB without gold or SHOOT (mostly without the arrow),** exact no-ops in the world and the exact belief (all 8 runs; section 5.9).
+- **The prize (section 5.8):** letting the heuristic's navigation rules override the planner gives 482 ± 39 (+300 ± 42 paired). Three quarters of it comes from targets ≤ 3 actions away (turn towards an adjacent safe cell, then step in). Forcing FORWARD alone gains nothing.
+- **Representation vs value, answered (section 5.9):** an oracle-latent arm (`model.privileged_belief_loss`; cell 96–98%, heading 100% decodable) idles as much or more (unfinished 70–99%). **The value/planner is the bottleneck.**
+- **Every remedy on the value side has failed** (sections 5.6, 5.7, 5.9; each option is in the code, default off, Tiger bit-identical):
+  - in training: the time-aware value, n-step greedy returns, γ = 0.95, a detached planning head at 128 updates;
+  - offline value targets on frozen latents: optimistic max(V̂, G), the agent's own Monte Carlo returns, heuristic returns (robust only on the oracle latent);
+  - **teacher values in play, on the oracle latent (2026-10-12/13):** a state value fitted to the heuristic's returns plugged into the search (1, 10 or 50 simulations), and action-value / common-layout advantage heads acting greedily. All rank actions about as well as the heuristic **on the heuristic's own states** (−5 to −11), and all fail in play: V idles, the Q/A heads leave the idle states but die 2–30% of the time. Compounding error off the teacher's state distribution. **The teacher line is closed.**
+- **Running (detached, started 2026-10-14 09:00 at `3924a9d`): `self_loop_diag.py`,** the exact self-loop identity applied at planning time (section 6.1).
+- **Housekeeping:** everything is committed and pushed. Fast suite 172 passed (2026-10-14). The slow suite last passed 7/7 at `f1e5bbf`; not run since `privileged_belief_loss` (default off, fingerprinted). Run it when the machine is free (~45 min).
 
 ## 1. Goals
 
@@ -45,6 +37,28 @@ Stages:
 **Honest status of "optimality"** (the user asked): the evidence is empirical and Tiger-only. There is no proof or convergence guarantee. Wumpus has no optimum to compare against.
 
 **Tension to keep in mind:** contribution (1) is the JEPA filter, but the working Wumpus agent uses the decoder representation, because JEPA learned the danger ahead worse in the offline A/B (section 5.5). With the fixed recipe JEPA plays as well as the decoder (2 seeds, section 5.3), so contribution (1) is viable on Wumpus; its latent is a little less position- and heading-aware.
+
+## 1b. Working conjectures and research principles ("taste in research")
+
+The user trusts the agent's research judgement (2026-10-10: "run the experiments you think will not waste meaningless compute and post-analysis"; 2026-10-12: "decide on the best direction forward without asking me to pick an option"). These are the beliefs that currently steer the work, strongest evidence first. Each is a conjecture with a stated test, not a result.
+
+**C1. The idle states prop up their own value through no-op self-loops (being tested).** A no-op child is its own parent, so the backup scores it r + γ·V̂(z), the parent's own value. In the value target that branch feeds V̂(z) back to itself, so an overestimate decays by only 1 − γ = 1% per backup. Evidence: idle actions are mostly exact no-ops; V̂ − realised return ≈ 950 on idle states, nearly flat; Bellman residual ≈ 5; at the root all 5 actions sit within 5–20 of V̂ ≈ 744; the oracle latent, whose filter is nearly idempotent on no-ops (GRAB's child moves 0.026·|z|), idles more. Exact identity: for a deterministic self-loop with reward r, V(z) = max(M, r/(1−γ)), M the best non-loop action, so valuing a loop child at r/(1−γ) changes no fixed point and is not a bias towards moving. Test: `self_loop_diag.py` (section 6.1).
+
+**C2. Behind the loops, the value is flat, sustained by the max over noisy children.** If loops are removed and the agent then idles by turning back and forth, the deeper cause is that V̂ has no gradient towards progress, and taking the max over 5 actions × observation branches of noisy values supplies the ~(1−γ)V + 1 ≈ 8 per step that a flat optimistic V needs to be self-consistent (maximisation bias). On the current agent the filter drifts on no-ops (0.46·|z|), so each no-op child is a fresh noise draw, which feeds the max. Test (planned, section 6.2): fitted value iteration on frozen latents with the agent's own model, standard max vs a double / clipped-double estimator, measuring the idle V̂, the root Q spread and the one-step play.
+
+**C3. Values learned from another policy's states fail by compounding error.** Shown twice now (teacher plug-in, Q/A heads): offline ranking on the teacher's states says nothing about play. Any value fix must be judged on the agent's own state distribution, in play.
+
+**C4. The current agent's filter is not belief-consistent on uninformative actions.** The exact belief is unchanged by a failed GRAB, but the latent moves by half its norm. This matters for C1 (the identity cannot detect loops there) and maybe for C2. Untested as a cause.
+
+**Principles that picked the experiments (keep using them):**
+- Cheapest informative test first: replay the trained networks with one piece swapped before any training run; train only when a frozen-network test passes.
+- Pre-register the readout in the script header before launching (thresholds, seeds, which networks), and read it out as written. If something learned before launch forces a change (e.g. a tolerance), write the change and its reason into the header before the runs.
+- Every replay must reproduce `analysis/report.json` exactly; scripts raise otherwise.
+- Separate "ranks well offline" from "plays well". Only play counts.
+- Check which checkpoint a readout uses (`best.pt` can be a collection-10 network).
+- State negative results and your own corrections plainly (e.g. the "action-gap" reading of 2026-10-12, corrected on 2026-10-13).
+- Privileged arms (exact belief, teacher, true layout) are diagnostics that bound what is possible, never agents.
+- Stop arms that can no longer change a decision; record each stop.
 
 ## 2. Rules the user set (follow them)
 
@@ -69,6 +83,7 @@ Stages:
 **Workflow**
 - Commit on `main` (remote `github.com/huytruong1810/jepa_ipomdp`). **Since 2026-10-11: after every implementation, commit and push right away, without asking** (user: "After every implementation, please go ahead and commit and push to git. No need to ask me for permissions on those."). Never force-push or rewrite history.
 - **Since 2026-10-10 the user pre-authorises running the recommended experiments without asking** ("have a good taste for research; don't waste compute"). Still ask before any change to canonical Tiger.
+- **2026-10-12 (user away for 24 h): "decide on the best direction forward without asking me to pick an option. I trust your 'taste in research'."** Within the Wumpus value/planner work, pick the next step yourself and record the reasoning here (section 1b). Domain changes, stage changes and canonical Tiger still need the user.
 - **Still ask the user** about changes of research direction or project stage (e.g. moving to multi-agent or I-POMDP), domain changes, and anything touching canonical Tiger. Offer a recommended option first. Within the agreed direction, pick and run the experiment with the best expected information per GPU-hour. Use cheap screens first, pre-register a pass criterion, stop arms that can no longer change a decision, and record each stop.
 - State results plainly, including unfavourable ones and your own mistakes.
 - **Reviewer pages:** minimal, figure-first, honest.
@@ -94,12 +109,14 @@ Stages:
 ## 3. Current state
 
 **Git**
-- **Everything is pushed** (2026-10-11 night): the diagnostics `counterfactual_diag.py` and `override_diag.py` (`c95e68b`), the option `model.privileged_belief_loss` (`25123d0`), its pre-registered readout (`ed7b564`) and the HANDOFF commits. Push after every implementation from now on (section 2).
-- The working tree is clean. `runs/` is untracked: keep it.
-- **Running:** the value-target screens on the oracle latents (`runs/wumpus/privileged_screen_chain.sh`, log `.log`, ends with `ALL DONE`; section 6.2 C). The oracle-latent arm finished on 2026-10-12 (section 5.9). The cancelled first launch (no evaluation or checkpoint reached) is parked in `runs/wumpus/aborted_privileged_2026-10-11/`; it holds nothing worth keeping.
+- **Everything is pushed** through `3924a9d` (2026-10-14). The working tree is clean. `runs/` is untracked: keep it.
+- **Running:** `runs/wumpus/self_loop_chain.sh` (log `runs/wumpus/self_loop_chain.log`, ends with `ALL DONE`, each step logs its exit status). It runs `self_loop_diag.py <run> 512 0.05,0.1` on the 3 oracle-latent final networks in parallel, then on `runs/sweeps/wumpus_current/seed{0,1,2}`. Outputs: `<run>.self_loop_diag.log` (a `decision N` progress line every 10 decisions). Each play takes about 30–60 min under load; expect it all by about 13:00–15:00 on 2026-10-14.
+  - It needs no Claude session (`setsid nohup`). To pause: `kill -STOP <pids>` / `kill -CONT <pids>` (the GPU memory stays held). It cannot resume mid-play: if it is killed, relaunch the chain (the baselines repeat).
+  - **Do not run more than 3 of these planner diagnostics at once.** Six filled the 16 GB GPU, WSL spilled into shared memory, and the plays slowed more than 10× (13 h lost on 2026-10-13/14).
+  - Find its PIDs with `pgrep -f "python reports/2026-10-02_wumpus_diagnostics/self_loop_diag.py"`; never `pkill -f` a pattern that appears in your own command (it killed the calling shell again on 2026-10-14).
 
 **Tests**
-- The fast suite passes: 171 tests, about 2 min.
+- The fast suite passes: 172 tests, about 1.5 min (2026-10-14).
 - **The slow suite passed 7/7 at `f1e5bbf` on 2026-10-11** (42.5 min; log `runs/slow_suite_f1e5bbf.log`). It covers every option added since 2026-10-05.
 - **Checkpoints from before `52ac3fc` cannot be resumed:** their buffer state has no `greedy` flags (no back-compat, by rule). They still load for analysis (`load_trained_run` reads networks only).
 - **The Tiger acceptance test now trains 6000 updates.** At 3000 the value gate (mean |V − V*| < 8) failed at 3–5 of 9 seeds. The two worst seeds drop to 5.3 and 1.1 at 6000. The seed table is in the test header; the logs are in `runs/tiger_acceptance_seeds/`.
@@ -135,6 +152,10 @@ Stages:
 | `runs/wumpus/objective_ab*/`, `offpolicy_reference_seed0`, `head_coverage.log`, `full_seed0*`, `smoke_seed0` | Older diagnostics (section 5.5) |
 | `runs/wumpus/reviewer_chain.sh`, `jepa_chain.sh` | The overnight pipeline and the JEPA launch-plus-analysis script |
 | `runs/tiger_acceptance_seeds/` | Value-gate seed study logs |
+| `runs/wumpus/u64_store_eval_eps_decoder_k5_privileged_seed{0,1,2}` | **The oracle-latent arm** (`model.privileged_belief_loss=true`, trained at `5416237`), analysed on `best.pt` (section 5.9) |
+| `runs/wumpus/u64_store_eval_eps_decoder_k5_privileged_seed{0,1,2}_final/` | The same runs' **final networks** (`.hydra` and `checkpoints/latest.pt` symlinked; `checkpoints/best.pt` is a best.pt-format copy of latest.pt's networks). All 2026-10-12/13 diagnostics use these. Logs beside them: `<run>_final.{analyze,unfinished_diag,value_chain_diag,grounding_screen,teacher_robustness,teacher_plugin_diag,teacher_plugin_sims,q_head_screen,self_loop_diag}.log` |
+| `runs/wumpus/{privileged,privileged_final,privileged_screen,teacher_plugin,teacher_plugin_sims,q_head,self_loop}_chain.sh` (+ `.log`) | The detached pipelines of 2026-10-11 to 10-14 |
+| `runs/sweeps/wumpus_current/seed{0,1,2}.self_loop_diag.log` | The self-loop test on the current agent (running) |
 
 **Reviewer pages**
 
@@ -452,53 +473,48 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 
 **What the idling is made of (2026-10-13; `unfinished_diag.py` logs, all 8 runs):** after the last new cell, 50–90% of actions are GRAB without gold or SHOOT, mostly without the arrow. These are exact no-ops: the world and the exact belief stay put. On the oracle latents the filter is nearly idempotent there (GRAB's child moves 0.026·|z| at the median, against 0.6–0.9 for turns and FORWARD). On the current agent it is not (0.46·|z|): the filter drifts on no-ops. At the root, all 5 actions' Q sit within 5–20 of each other and of V̂ ≈ 744.
 - **Hypothesis (self-loop):** a no-op child is its own parent, so the backup scores it r + γ·V̂(z), the parent's own optimistic value. In the value target that branch feeds V̂(z) back to itself, so an overestimate shrinks by 1% per backup. Exact identity for a deterministic self-loop: V(z) = max(M, r/(1−γ)), with M the best non-loop action. Valuing a loop child at r/(1−γ) therefore changes no fixed point.
-- **Running:** `self_loop_diag.py` (`self_loop_chain.sh`, log ends with `ALL DONE`). It applies the identity at planning time only (children with ‖z′−z‖ ≤ τ·‖z‖, τ = 0.05 and 0.1) on the oracle-latent networks and the current agent's seeds 0–2. Readout in the script header section 2b.
+- **Running:** `self_loop_diag.py`, see section 6.1.
 
-## 6. Planning agenda for the next session
+## 6. Next steps
 
-The user asked for the next experiments and implementations to be planned out clearly in a fresh session. Do that first: read the running arm's result (6.1), take the matching branch of 6.2, write the plan (question, method, pre-registered readout, cost, order) and show it to the user, then execute. Experiments within the agreed direction need no permission (section 2); direction changes do.
+Experiments within the agreed direction (fixing the Wumpus idling on the value/planner side) need no permission (section 2). Domain changes, project-stage changes and anything touching canonical Tiger do.
 
-### 6.1 Done: the oracle-latent arm (user choice 2026-10-11; result in section 5.9: value/planner)
+### 6.1 Running: the self-loop test (`self_loop_diag.py`; conjecture C1)
 
-- **Question:** is the idling a representation failure (the latent decodes heading/cell only ~58%, so a turn towards a safe cell looks like a no-op) or a value/planning failure?
-- **What runs:** the current recipe plus `model.privileged_belief_loss=true` (`25123d0`; `training/privileged.py`; trainer section 2e; run section 12). A readout of every latent z_0..z_T is trained on the exact Bayes filter's targets (cell, heading, 48 hazard marginals, danger ahead; `WumpusBeliefTracker.supervision_targets`, `domain/wumpus.py` section 6), with gradients into the filter. A diagnostic arm, never a method (it uses the exact model).
-- **Checks done:** Tiger fingerprint bit-identical against `c95e68b` (both representations); fast suite 171; small check `runs/wumpus/smoke_privileged` (6 collections, clean, ~1.8 min per collection, privileged loss 3.3 → ~2).
-- **Launch:** `setsid nohup runs/wumpus/privileged_chain.sh > runs/wumpus/privileged_chain.log 2>&1 < /dev/null & disown` (check the machine load first, section 2). It trains `runs/wumpus/u64_store_eval_eps_decoder_k5_privileged_seed{0,1,2}` and then runs, per seed, `analyze.py`, `unfinished_diag.py` (512 games) and `override_diag.py <run> 512 planner,navigate`. Its log ends with `ALL DONE`; each step logs its exit status. Training resumes bit-exactly from `checkpoints/latest.pt` with `resume=` if a run dies.
-- **Cost, measured and fixed (2026-10-11):** one warmup collection (64 updates, alone, idle machine) took 7 s with the option off and 46 s with it on: the exact filter was recomputed on every update (0.6 s each). The cancelled launch logged 140 s for collection 1 with 3 in parallel. `5416237` caches the targets per buffer slot (`privileged.py` section 2c; `EpisodeBatch.index`, `EpisodeBuffer.add` returns the slots), forgotten on rewrite and on load, never checkpointed. The first collection now takes 14 s. Tiger fingerprint bit-identical against `77f7679` (both representations); fast suite 172; a new test checks that cached targets equal fresh ones after the buffer wraps (and fails if `forget` is a no-op).
-- **Pre-registered readout (`training/privileged.py`, section 2b)**, paired with `runs/sweeps/wumpus_current` seeds 0–2 (185.5 / 166.0 / 215.2; unfinished 66.6 / 70.3 / 70.7%):
-  1. **Premise:** MLP probes on random histories (`analysis/report.json`, `probes.mlp_random.cell_accuracy` and `heading_accuracy`) reach cell and heading ≥ 90% (current agent 56–58%). Otherwise the arm did not deliver the oracle latent: report that and see 6.2 (A).
-  2. **Representation is the bottleneck:** unfinished falls by ≥ 15 points AND the return rises by ≥ +100 (paired).
-  3. **Value/planning is the bottleneck:** probes ≥ 90% but unfinished within ±10 points. Then `override.npz` (navigate − planner on these runs) says how much navigation is still lost with a perfect latent.
-  - Anything in between: report it as inconclusive with the paired intervals, and consider 2 more seeds before branching.
+- **Question:** do the no-op self-loops sustain the idling? Applied at planning time only, no retraining.
+- **Method:** `LearnedSearchModel.expand` is wrapped on the acting model's instance. A child (a, o′) whose latent satisfies ‖z′ − z‖ ≤ τ·‖z‖ gets the loop value r̂(z, a)/(1 − γ) instead of V̂(z′). Every backup, at the root and deeper, goes through `expand`. τ = 0.05 and 0.1, chosen from the smoke check's quantiles before the runs (header section 2): on the oracle latent GRAB's children move 0.003 / 0.026 / 0.11·‖z‖ (10/50/90%), turns 0.6–0.96, FORWARD 0.3–0.87. The baseline play must reproduce `report.json` (it did for all 6 networks in the stalled first launch: −46.9 / 139.9 / −54.3 and 185.5 / 166.0 / 215.2).
+- **Pre-registered readout (header section 2b):**
+  - **Primary mechanism:** on the oracle-latent networks a paired gain ≥ +100 on 2+ of 3 seeds at both τ (on the current agent, ≥ +100 on 2+ of 3 seeds and unfinished −15 points; not expected, because its filter drifts on no-ops, see C4).
+  - **A symptom:** a gain < +30 on 2+ of 3 oracle seeds. The idling moves elsewhere; read the action mix (turn cycles are 2-step loops the identity does not cover).
+  - **Otherwise partial:** report it, and look at deaths (gambling where looping forever, −100, is the true best is correct play) and at the action mix.
+- **Already seen in the 32-game smoke checks (not evidence, just orientation):** with τ = 0.02 on oracle seed 0 the planner still chose a partly flagged GRAB 43% of the time, because many GRAB children moved slightly more than 0.02·‖z‖; on the current agent's seed 0, τ = 0.1 flags 39% of the chosen actions and the gain is +19 ± 38 (32 games).
 
-### 6.2 Decision tree (plan the branch that the result selects)
+### 6.2 Decision tree after the self-loop result
 
-**(A) Premise fails (probes < 90%).** The readout's weight (1, as in `supervised_filter.py`) may be swamped by the other terms, or the acting (Polyak) copy may lag. Check the online filter's probe and the training curve of `loss_privileged_belief`. A weight option (e.g. ×10) is a small change; small check first.
+**(A) Primary mechanism.** Build the identity into the method:
+1. `model.self_loop_tolerance` (default off = no change), applied inside `LearnedSearchModel.expand`, so it reaches both the planner and the value targets (the trainer's Bellman target calls `target_model.expand`). Tiger fingerprint (section 2), fast suite, small check.
+2. Train 3 seeds of the oracle-latent recipe with it (where the identity bites), paired with `privileged_seed{0,1,2}`. If they stop idling, the remaining problem is C4 for the non-privileged agent: a filter that is idempotent on uninformative actions. Then screen offline on `pools.pt` (`objective_ab.py`) for a term that makes it so without privilege (e.g. an action-conditioned consistency target), and test 3 seeds of the current recipe.
+3. The tolerance is a free parameter; report results at two values and the per-action step quantiles.
 
-**(B) Representation is the bottleneck.** Goal: get the same latent WITHOUT privileged targets. Candidates, cheapest first:
-- Offline screens on `runs/wumpus/supervised_filter/pools.pt` with `objective_ab.py`: which self-supervised objective raises heading/cell decoding toward the oracle? The horizon A/B already ruled out k = 10/20 multi-step prediction (section 5.7), so look elsewhere: action-effect / inverse-dynamics terms (predict a_t from z_t, z_{t+1}), BUMP-after-k-FORWARDs targets, a hybrid JEPA + decoder.
-- The architecture rule (section 2): A/B a causal Transformer over history tokens with good statistics; the untuned one was no better (section 5.5).
-- Caveat: offline latent gains on `pools.pt` did NOT transfer to the agent before (section 5.7). Any candidate needs an agent test (3 seeds, paired).
+**(B) A symptom (expected by the smoke checks).** Go to C2:
+1. **Fitted value iteration screen on frozen latents** (new script, cheap, no agent training). States: the agent's own replay buffer from `latest.pt` (as `grounding_screen.py` loads it) plus the analysis games. Targets through the agent's own `expand` (learned reward and observation heads), iterated to convergence from a fresh MLP. Arms: (i) the standard max target (must reproduce a flat, optimistic idle V̂; if it does not, the training dynamics, not the backup, are to blame); (ii) a double estimator (two independently initialised value nets, action chosen by one, evaluated by the other); (iii) clipped double (min of the two, TD3-style). Measures: idle V̂ − realised return, the root Q spread at idle states, FORWARD preferred at declined safe steps, and **play** at 1 and 50 simulations with the fitted value plugged in (`teacher_plugin_diag.py`'s mechanism). Pre-register: a gain ≥ +100 on 2 of 3 seeds in play.
+2. If (ii)/(iii) pass, build the double value head as a default-off training option (Tiger fingerprint), small check, 3 seeds paired.
+3. If they fail too, the remaining candidates are in 6.3; choose by the FVI diagnostics (which part of the target is flat).
 
-**(C) Value/planning is the bottleneck: SELECTED by the oracle-latent result (section 5.9).** The latent knows the belief, yet the planner idles. Step 1 (the teacher-value screens on the oracle latents) is DONE (section 5.9), and so is the teacher-value plug-in with its simulation sweep (a state value fitted to the right returns cannot drive play: the action-gap problem). **Step 1b, running:** `q_head_screen.py` (header section 2b has the pre-registered readout). If the action-level head plays (≥ +150 over the one-step V on all 3 seeds, ≤ 60% unfinished), the next step is a non-privileged action-level value for the agent (a dueling/advantage head whose sibling errors cancel), a change of method to plan with the user. If it fails (< +50 on 2+ seeds), read its offline metric before anything else. **Re-assessment of step 2 (2026-10-12):** the greedy agent acts by argmax Q, and the root visits follow the same Q. So a policy prior distilled from the search's own visits would inherit the idling, and changing the visit allocation does not change argmax Q. It can only help if acting also follows the visits, or if the prior comes from outside the search. Ask the user before building it. Original candidates:
-- An AlphaZero-style **learned policy prior** for PUCT (trained on the search's own root policy); the search now uses a uniform prior.
-- **Teacher-value screens again on the oracle latents:** the offline screens of section 5.6 failed partly because the latent was poor; re-run `grounding_screen.py`/`teacher_robustness.py` on the privileged runs (cheap; no training).
-- An **action-gap-increasing operator** (advantage learning, Bellemare et al. 2016) on the value targets. The counterfactual test showed the one-step estimates carry no information about the true advantage (Spearman ≈ 0), so this is weaker than it looked before section 5.8.
-- **Option/macro-level planning** (e.g. turn-then-forward macros in the search). 200 simulations did not help (section 5.5), so search depth alone is not the limit; macros only help if the value at the macro's end is right.
+**(C) Partial.** Report it with the per-seed numbers; if deaths rose, check whether the extra deaths are at states where every move was risky (then the identity played correctly and the death model is the issue, section 5.8's remaining 23%).
 
-**(D) Whatever the branch:**
-- The remaining ~23% of the gap is risk decisions (seed 3 keeps 13.5% deaths even with the navigation override; section 5.8). Not yet diagnosed.
-- If an arm is significant at 3 seeds, extend it to 5 with `sweep.py` (it supports Wumpus; `runs/sweeps/<name>`).
-- Run the slow suite once the code settles (`uv run pytest -m slow`, ~45 min; last 7/7 at `f1e5bbf`).
+### 6.3 Other candidates (weaker or more expensive; reasons stated)
+- **A learned policy prior (AlphaZero-style).** A prior distilled from the search's own visits inherits the idling, and argmax-Q acting ignores the prior. Only worth it if acting follows visits or the prior comes from outside the search.
+- **Advantage learning (action-gap increasing operator, Bellemare et al. 2016).** The counterfactual test found the one-step estimates uncorrelated with the true advantage (section 5.8), so amplifying the gap amplifies noise.
+- **Turn-then-forward macro actions.** The value at the macro's end is the same flat V̂; only worth it after the value has a gradient.
+- **A privileged DAgger diagnostic** (teacher labels on the agent's own states) would bound what a value learned on the right states can do (C3). Diagnostic only; lower priority than (B).
+- **The remaining ~23% of the gap is risk decisions** (seed 3 keeps 13.5% deaths even with the navigation override). Not diagnosed.
+- If an arm is significant at 3 seeds, extend it to 5 with `sweep.py`.
+- Run the slow suite once the code settles (`uv run pytest -m slow`, ~45 min).
 
-### 6.3 Other open items (ask the user before starting)
-- **Reviewer page refresh**, only if the user wants a meeting. The 2026-10-07 page shows 3 seeds (189); the 5-seed numbers are in `runs/sweeps/wumpus_current`, and section 5.8 is the new story. Merge with `scripts/export.py add`, read the live page with the Artifact tool first, then republish to the same URL.
+### 6.4 Ask the user before starting
+- **Reviewer page refresh**, only if the user wants a meeting. The 2026-10-07 page shows 3 seeds (189); the 5-seed numbers are in `runs/sweeps/wumpus_current`. Merge with `scripts/export.py add`, read the live page with the Artifact tool first, then republish to the same URL.
 - **Direction calls:** the hybrid JEPA + observation condition; a model-free recurrent Q-learner baseline; multi-agent Tiger (verify its tables against Gmytrasiewicz & Doshi first); I-POMDP levels via the S × M_j reduction. Cheap Tiger questions: an observation-head detach ablation in JEPA mode; Polyak momentum 0.98.
-
-### 6.4 Done (kept for the record)
-- The counterfactual test and the override decomposition (section 5.8).
-- Recipe ablations (section 5.3); the latent A/Bs and the detached planning head (section 5.7).
-- 5 seeds and Wumpus support in `sweep.py`/`aggregate.py`; the slow suite at `f1e5bbf`.
 
 ## 7. Failed paths and pitfalls: do not repeat
 
@@ -530,6 +546,11 @@ The user asked for the next experiments and implementations to be planned out cl
 - **Wumpus, "always step into a provably safe cell ahead"** (exact-belief override, `override_diag.py`): +8 ± 24, nothing. Do not build a one-step FORWARD remedy; the missing skill is turning towards the safe cell (section 5.8).
 - **Wumpus, n-step returns of the agent's own greedy games mixed into the value target** (`model.value_nstep=10`, mix 0.5): worse (88–126 against 166–215). The greedy policy's returns are uniformly poor and push all values down without separating exploring from idling.
 
+- **Wumpus, an oracle latent (`model.privileged_belief_loss`) as a fix for the idling:** cell/heading decode 96–100%, the agent idles as much or more. The representation is not the bottleneck (section 5.9).
+- **Wumpus, teacher (heuristic) values on the oracle latent, in play** (section 5.9): a fitted state value plugged into the search at 1, 10 or 50 simulations (gains +4 to +79 on two seeds, −69 to −146 on seed 1); action-value and common-layout advantage heads acting greedily (A head medians +38 / −80 / +54; Q heads −86 to −129, deaths 11–30%). They rank as well as the teacher on the teacher's states and fail on the agent's own. Do not pursue teacher-derived values without on-policy states.
+- **Reading a fit's residual on single-game returns as its value error:** the residual is mostly layout luck (the "action-gap problem" reading of 2026-10-12, corrected on 2026-10-13). Measure ranking quality directly (G(chosen) − G(teacher) on branched states).
+- **Using the true next percept to score a one-step lookahead** ("V exact children"): it leaks the layout (it shows whether FORWARD kills) and looks +37 better than the teacher. Not a fair arm.
+
 **Planning**
 - **Mean (MuZero-style) backups with a uniform prior** degrade as search grows. Use expectimax.
 - **More simulations on Wumpus** (200 vs 50): no gain.
@@ -552,7 +573,8 @@ The user asked for the next experiments and implementations to be planned out cl
 
 **Machine and tooling**
 - **Running heavy jobs under ipomcp load:** CPU-bound search slows about 4×, and parallel runs can exhaust RAM (section 2, Machine).
-- **Six parallel GPU jobs** (pool builds or A/Bs) gain nothing. **`pkill -f`/`pgrep -f` self-matches** killed a shell once.
+- **Six parallel GPU jobs** (pool builds or A/Bs) gain nothing. **Six parallel planner diagnostics** (`self_loop_diag.py`, 2.6 GB each) filled the 16 GB GPU; WSL spilled to shared memory and the plays slowed > 10× (13 h lost, 2026-10-14). Run at most 3, and check `nvidia-smi` (it can take 1–2 min to answer under load) shortly after launch.
+- **`pkill -f`/`pgrep -f` self-matches** killed the calling shell twice (2026-10-06, 2026-10-14). Kill by PID.
 - **The page-data export plays 2 × 512 greedy games per run** for calibration; it took over 50 min under load. It now uses 256.
 - **Scratchpad files vanish with the session.** Keep anything reproducible in `reports/` or `runs/`.
 
@@ -590,7 +612,18 @@ The user asked for the next experiments and implementations to be planned out cl
 - `c95e68b`: `counterfactual_diag.py`, `override_diag.py` and the section 5.8 results.
 - `25123d0`: **`model.privileged_belief_loss`** (default off; fingerprinted); `ed7b564`: its pre-registered readout; `cad6836` and later: HANDOFF (the first launch was cancelled by the user so the next session can plan it).
 
+**Pushed 2026-10-12 to 10-14**
+- `5416237`: privileged targets cached per buffer slot (46 s → 14 s per collection; Tiger bit-identical against `77f7679`). `1f72a1e`, `2b996a6`, `2afd1db`: oracle-latent launch, result (value/planner), screens.
+- `b0d3848`, `968d008`, `0e27e80`: `teacher_plugin_diag.py` and its result; `ef315c6`, `bb3f8f0`: simulation sweep readout and `q_head_screen.py`.
+- `5bf5099`, `00e3704`, `3924a9d`: `self_loop_diag.py`, the Q-head result and the correction of the action-gap reading, the 3-at-a-time relaunch.
+- This HANDOFF rewrite.
+
 ## 9. Files touched since `9a9b726` (all pushed)
+
+**Added or changed 2026-10-12 to 10-14**
+- `src/ipomdp/training/privileged.py` (section 2c: the per-slot target cache, `forget()`, `targets()`), `training/episode_buffer.py` (`EpisodeBatch.index`; `add` returns the slots it wrote), `training/run.py` (`_store()`, `forget()` on load); test `test_privileged_cache_matches_fresh_targets_after_overwrites` in `tests/test_wumpus.py`.
+- `reports/2026-10-02_wumpus_diagnostics/teacher_plugin_diag.py` (teacher value plugged into the search; section 2c simulation sweep), `q_head_screen.py` (branched heuristic returns; V, Q and A heads in play), `self_loop_diag.py` (the self-loop identity at planning time; running).
+- `HANDOFF.md`, `CLAUDE.md` (project paragraph), memory files.
 
 **Added 2026-10-11 night**
 - `src/ipomdp/training/privileged.py` (new): `PrivilegedTargets`, `PrivilegedSpec`, `PrivilegedBeliefLoss`.
@@ -647,6 +680,9 @@ The user asked for the next experiments and implementations to be planned out cl
 | `grounding_screen.py`, `teacher_robustness.py` | **Offline screens of value targets** on frozen latents (section 5.6): optimistic, own MC, heuristic returns; robustness of the heuristic result to protocol, data and initialisation |
 | `value_chain_diag.py` | **Why the value prefers idling:** Bellman residual and drift on idle chains, progress probes, a value refit to the heuristic's returns (section 5.6) |
 | `counterfactual_diag.py`, `override_diag.py` | **Exact counterfactual branches at declined safe steps; persistent exact-belief overrides** (section 5.8) |
+| `teacher_plugin_diag.py` | **A heuristic-return value plugged into the unchanged search**, at any simulation count (section 5.9) |
+| `q_head_screen.py` | **Every action branched from heuristic states in the same layout; V, Q and advantage heads fitted and played** (section 5.9) |
+| `self_loop_diag.py` | **The exact self-loop identity applied at planning time** (section 6.1; running) |
 | `tiger_acceptance_seed.py` | Tiger acceptance at another seed and update count |
 | `hoist_forward_check.py`, `hoist_training_check.py`, `profile_train_step.py` | Hoist equivalence and runtime profile |
 
