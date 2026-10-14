@@ -111,6 +111,7 @@ The user trusts the agent's research judgement (2026-10-10: "run the experiments
 **Git**
 - **Everything is pushed** through `3924a9d` (2026-10-14). The working tree is clean. `runs/` is untracked: keep it.
 - **Running:** `runs/wumpus/self_loop_chain.sh` (log `runs/wumpus/self_loop_chain.log`, ends with `ALL DONE`, each step logs its exit status). It runs `self_loop_diag.py <run> 512 0.05,0.1` on the 3 oracle-latent final networks in parallel, then on `runs/sweeps/wumpus_current/seed{0,1,2}`. Outputs: `<run>.self_loop_diag.log` (a `decision N` progress line every 10 decisions). At 3 in parallel a 512-game play takes about 15 min (20 decisions in 6 min at launch), so the whole chain should end around 10:30–11:30 on 2026-10-14.
+  - **Relaunched 2026-10-14 09:13 at `3018ea1`** (same source as `3924a9d`): the machine rebooted at about 09:11 and killed the first run at decision 30 of the oracle plays. New ETA about 11:00–12:00; the log appends.
   - It needs no Claude session (`setsid nohup`). To pause: `kill -STOP <pids>` / `kill -CONT <pids>` (the GPU memory stays held). It cannot resume mid-play: if it is killed, relaunch the chain (the baselines repeat).
   - **Do not run more than 3 of these planner diagnostics at once.** Six filled the 16 GB GPU, WSL spilled into shared memory, and the plays slowed more than 10× (13 h lost on 2026-10-13/14).
   - Find its PIDs with `pgrep -f "python reports/2026-10-02_wumpus_diagnostics/self_loop_diag.py"`; never `pkill -f` a pattern that appears in your own command (it killed the calling shell again on 2026-10-14).
