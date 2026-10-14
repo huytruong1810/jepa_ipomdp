@@ -46,6 +46,27 @@
 #    - "The gap is not resolvable from this latent and data": the A head gains < +50 on 2+ seeds. Then:
 #      read the offline metric (does it rank well on teacher states but drift in play?) before more.
 #    - Otherwise: partial; report the per-seed numbers and the Q head beside A.
+#
+# 3. Result 2026-10-13 (oracle-latent final networks; 2048 teacher games, 15,070 branched states, every
+#    teacher branch reproduced its game; logs runs/wumpus/*_privileged_seed*_final.q_head_screen.log):
+#              play: paired gain over V (one step), per init (median)      deaths / unfinished
+#              A head                      Q head                          V        A           Q
+#      seed 0  -34 / +61 / +38  (+38)      -131 / -60 / -86   (-86)        0 / 93-96%  2-16 / 68-84%  14-21 / 65-74%
+#      seed 1  -22 / -176 / -80 (-80)      -114 / -197 / -65  (-114)       0 / 93%     6-29 / 54-83%  11-19 / 70-79%
+#      seed 2  +54 / +58 / -21  (+54)      -72 / -129 / -183  (-129)       0 / 99-100% 3-18 / 71-88%  20-30 / 59-73%
+#    - Pre-registered readout: "not resolvable from this latent and data" (the A head gains < +50 on
+#      seeds 0 and 1). Following the readout, the offline metric: on held-out teacher states every arm
+#      picks almost as well as the teacher, G(chosen) - G(teacher) = -5 to -11 for V through the
+#      learned children, -6 to -9 for Q and -5 to -9 for A (+-2-4). "V exact children" (+36 to +38)
+#      is NOT a fair arm: the true next percept leaks the layout (it shows whether FORWARD kills),
+#      so the unbiasedness argument of section 2 does not cover it.
+#    - Reading: the fits rank well where the teacher goes and fail where the greedy player goes. The
+#      state value idles (no deaths), the action-value heads leave the idle states but die 2-30% of
+#      the time: the classical compounding error of learning from a teacher's state distribution.
+#      This corrects teacher_plugin_diag.py's reading: its "errors of order 100" were the residual
+#      of single-layout returns, mostly layout luck; on the teacher's own states the one-step ranking
+#      is within ~8 of the teacher. The failure in play is off-distribution, not the size of the
+#      on-distribution error.
 # ==============================================================================
 
 import sys

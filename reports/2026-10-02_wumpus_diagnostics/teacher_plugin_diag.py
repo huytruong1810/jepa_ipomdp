@@ -76,6 +76,10 @@
 #      children of one state resolves the gap only if the errors of sibling latents cancel, and nothing in
 #      a state-value fit makes them cancel. Next: q_head_screen.py (an action-value head on the parent
 #      latent, trained on common-layout branch returns).
+#    - Correction (2026-10-13, q_head_screen.py section 3): the "residuals of order 100" are mostly the
+#      layout luck of single-game returns. On the teacher's own states the fitted V's one-step ranking
+#      is within ~8 of the teacher, so the failure in play is the state distribution (the greedy player
+#      leaves the teacher's states), not the size of the value's error.
 # ==============================================================================
 
 import sys

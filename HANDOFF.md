@@ -436,7 +436,23 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
   | 2 | −36 (+4) | −40 (+12) | −40 (+15) | −40 / −52 / −54 |
 
   No seed reaches the pre-registered +100 at 1 or 10 simulations, and unfinished stays at 89–100% at 1 simulation. **Readout: the deep max backups are not the blocker; the teacher value's one-step preference is too weak to drive play.**
-- **Reading (the action-gap problem):** under the heuristic an idle step costs about 1 + (1−γ)·V ≈ 7, while a fit that leaves 11% of the variance of returns unexplained (per-game sd ≈ 460) has errors of order 100. Comparing V on the children of one state resolves a gap of 7 only if sibling errors cancel, and nothing in a state-value fit makes them cancel. This is the procrastination-under-a-small-action-gap hypothesis of section 5.8, now shown to hold even for a value fitted to the right returns on a near-exact latent. Next: `q_head_screen.py` (section 6.2 C).
+- **Reading at the time (the action-gap problem), corrected below:** an idle step costs about 1 + (1−γ)·V ≈ 7, and I read the fit's residual (per-game sd ≈ 460, 11% unexplained) as value errors of order 100 that swamp the gap. The action-value screen showed that residual is mostly the layout luck of single-game returns.
+
+**The action-value head screen (2026-10-13; `q_head_screen.py`, `q_head_chain.sh`; header sections 2b and 3).** From 15,070 heuristic states, every action was branched and continued by the heuristic in the same layout (every teacher branch reproduced its game). On the oracle latents a state value V (acting by a one-step lookahead), a Q head and a common-layout advantage head A were fitted and played greedily (no search) on the 512 analysis games:
+
+| Seed | A head gain over V, per init (median) | Q head (median) | Deaths / unfinished: V, A, Q |
+|---|---|---|---|
+| 0 | −34 / +61 / +38 (**+38**) | −86 | 0 / 93–96%; 2–16 / 68–84%; 14–21 / 65–74% |
+| 1 | −22 / −176 / −80 (**−80**) | −114 | 0 / 93%; 6–29 / 54–83%; 11–19 / 70–79% |
+| 2 | +54 / +58 / −21 (**+54**) | −129 | 0 / 99–100%; 3–18 / 71–88%; 20–30 / 59–73% |
+
+- **Pre-registered readout: not resolvable from this latent and data** (A gains < +50 on seeds 0 and 1).
+- **Offline, on held-out teacher states, every arm picks almost as well as the teacher:** G(chosen) − G(teacher) is −5 to −11 (V through the learned children), −6 to −9 (Q) and −5 to −9 (A). The "V exact children" arm (+36 to +38) is not fair: the true next percept leaks the layout.
+- **Reading: compounding error off the teacher's state distribution,** not the size of the on-distribution error. V idles without dying; the action heads leave the idle states and die 2–30% of the time. **Teacher-derived values are a dead end without on-policy states**, so the teacher line (plug-in, Q/A heads) is closed.
+
+**What the idling is made of (2026-10-13; `unfinished_diag.py` logs, all 8 runs):** after the last new cell, 50–90% of actions are GRAB without gold or SHOOT, mostly without the arrow. These are exact no-ops: the world and the exact belief stay put. On the oracle latents the filter is nearly idempotent there (GRAB's child moves 0.026·|z| at the median, against 0.6–0.9 for turns and FORWARD). On the current agent it is not (0.46·|z|): the filter drifts on no-ops. At the root, all 5 actions' Q sit within 5–20 of each other and of V̂ ≈ 744.
+- **Hypothesis (self-loop):** a no-op child is its own parent, so the backup scores it r + γ·V̂(z), the parent's own optimistic value. In the value target that branch feeds V̂(z) back to itself, so an overestimate shrinks by 1% per backup. Exact identity for a deterministic self-loop: V(z) = max(M, r/(1−γ)), with M the best non-loop action. Valuing a loop child at r/(1−γ) therefore changes no fixed point.
+- **Running:** `self_loop_diag.py` (`self_loop_chain.sh`, log ends with `ALL DONE`). It applies the identity at planning time only (children with ‖z′−z‖ ≤ τ·‖z‖, τ = 0.05 and 0.1) on the oracle-latent networks and the current agent's seeds 0–2. Readout in the script header section 2b.
 
 ## 6. Planning agenda for the next session
 
