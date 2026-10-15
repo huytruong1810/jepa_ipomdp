@@ -154,6 +154,11 @@
 #    - Head A is built where the single head always is, B after every other network and only when
 #      enabled, so the default (max, canonical Tiger) draws and builds nothing new. Not combined with
 #      time_aware_value or value_nstep (raises).
+#    - Result 2026-10-15, oracle-latent recipe + double (3 seeds, analysis on the same 512 games, best.pt at
+#      collections 85 / 70 / 65): 215.7 / 231.4 / 223.1 against 55.6 / 168.0 / -5.7 (+160 / +63 / +229;
+#      unfinished 68-70% against 76-96%). V-hat > 999 on ~1% of live steps (was 36% on the final networks),
+#      and every game that perceived the gold took it (the baseline refused it in 13 of 13). Passes the
+#      pre-registered bar (>= +100 on 2 of 3). The current recipe + double: see HANDOFF.
 # ==============================================================================
 
 from collections.abc import Callable
