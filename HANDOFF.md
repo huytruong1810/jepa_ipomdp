@@ -1,7 +1,7 @@
 # HANDOFF: JEPA I-POMDP (as of 2026-10-14 evening: the Wumpus idling is a value failure; the no-op self-loops are a symptom (C1 closed); the flat, impossibly optimistic value (C2, maximisation bias through the learned model) is the lead, and `fvi_screen.py`, ready to launch with `runs/wumpus/fvi_chain.sh`, tests it)
 
 **The next session's job:**
-1. **The FVI screen is running** (`runs/wumpus/fvi_chain.sh`, launched 2026-10-14 21:22 at `3790114`; log `runs/wumpus/fvi_chain.log`). If it has died, relaunch as below.
+1. **The FVI screen is running.** Oracle seed 1 is from `runs/wumpus/fvi_chain.sh` (21:22). Its other two jobs were stopped at 23:47 because three uncapped jobs overfilled the GPU and WSL spilled into system memory (refresh 78 s instead of 4.7 s). `runs/wumpus/fvi_queue.sh` (log `fvi_queue.log`, launched 23:53) waits for oracle seed 1, then runs the other 5 networks 2 at a time, each capped at 45% of the GPU (`fvi_screen.py` 2b, change e). If it has died, rerun the missing networks with that queue.
    - First check the machine: `uptime`, `free -m`, `nvidia-smi`, and ipomcp workers in `ps`. Under ipomcp's 16-worker load (load ~25) each batch takes several hours; ask the user whether ipomcp can pause.
    - Then: `setsid nohup bash runs/wumpus/fvi_chain.sh > runs/wumpus/fvi_chain.log 2>&1 < /dev/null & disown`, and confirm the 3 python PIDs are alive.
    - It runs the 3 oracle networks, then the current agent's seeds 0–2, 3 at a time.

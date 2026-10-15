@@ -76,6 +76,11 @@
 #      seed 0 and current seed 0), so a target moves by <= gamma * 1.1e-5 * |V| ~ 0.02; the build prints the
 #      measured maximum. The sums accumulate in float64 so the scattered adds are order-independent in float32.
 #      The measures keep the exact, unpruned child_q. No readout criterion changes.
+#      (e) 2026-10-14 23:50, after the first launch: three uncapped jobs held ~11.6 GB of allocator cache each
+#      (a 512-game 50-simulation play needs ~5.4 GB at peak: 1.36 GB measured at 128 games), overcommitted the
+#      16 GB GPU, and WSL spilled into system memory: a refresh took 66-110 s instead of 4.7 s alone. Each job is
+#      now capped at MEMORY_FRACTION = 0.45 of the device and the chain runs 2 jobs at a time. Memory
+#      management only; results are unchanged.
 #
 # 3. Smoke check (16 games, 3 refreshes, oracle seed 0; orientation only): runs end to end.
 #    Re-run after the compute changes (2026-10-14, night): every printed target, residual, measure and return is
@@ -110,8 +115,11 @@ from ipomdp.training.checkpointing import load_checkpoint
 run_dir, n = Path(sys.argv[1]), int(sys.argv[2])
 refreshes = int(sys.argv[3]) if len(sys.argv) > 3 else 400
 STATE_GAMES, STEPS_PER_REFRESH, MINIBATCH, SCALE, CHUNK = 2560, 250, 4096, 1000.0, 2048
-PROB_FLOOR, VALUE_CHUNK = 1e-6, 65536
+PROB_FLOOR, VALUE_CHUNK, MEMORY_FRACTION = 1e-6, 65536, 0.45
 dev = torch.device("cuda")
+# Two jobs share the 16 GB GPU (2b, compute change e): the cap makes the caching allocator release its cache
+# instead of growing past half the device, and an overrun raises instead of spilling into WSL system memory.
+torch.cuda.set_per_process_memory_fraction(MEMORY_FRACTION, dev)
 settings = WumpusAnalysisSettings()
 trained = load_trained_run(run_dir, dev)
 world, run, cfg = trained.setup.domain, trained.run, trained.cfg
