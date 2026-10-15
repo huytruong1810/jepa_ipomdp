@@ -80,7 +80,10 @@
 #      (a 512-game 50-simulation play needs ~5.4 GB at peak: 1.36 GB measured at 128 games), overcommitted the
 #      16 GB GPU, and WSL spilled into system memory: a refresh took 66-110 s instead of 4.7 s alone. Each job is
 #      now capped at MEMORY_FRACTION = 0.45 of the device and the chain runs 2 jobs at a time. Memory
-#      management only; results are unchanged.
+#      management only; results are unchanged. The first capped launch (00:53) ran out of memory in the measures
+#      right after the 512-game play: the recorder kept the planner, whose BeliefTreeSearch keeps its last trees
+#      (4.65 GB allocated + 2.46 GB fragmented). play() now drops the planner and empties the cache, and the queue
+#      sets PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True.
 #
 # 3. Smoke check (16 games, 3 refreshes, oracle seed 0; orientation only): runs end to end.
 #    Re-run after the compute changes (2026-10-14, night): every printed target, residual, measure and return is
@@ -300,6 +303,9 @@ def play(sims: int, shadow: bool = False):
         n, temperature=0.0, seed=stream_seed(settings.seed, 3), device=dev)
     rec = Recorder(planner, shadow)
     episodes, _ = play_episodes(WumpusSimulator(world, n, cfg.env.max_steps, stream_seed(settings.seed, 1), dev), rec)
+    rec.actor = None                      # BeliefTreeSearch keeps its last trees (self.roots): ~2+ GB at 512 games
+    torch.cuda.empty_cache()
+    print(f"    play done: {torch.cuda.memory_allocated() / 2**30:.2f} GB still allocated", flush=True)
     return episodes, rec
 
 
