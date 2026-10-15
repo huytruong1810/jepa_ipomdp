@@ -119,7 +119,7 @@ PROB_FLOOR, VALUE_CHUNK, MEMORY_FRACTION = 1e-6, 65536, 0.45
 dev = torch.device("cuda")
 # Two jobs share the 16 GB GPU (2b, compute change e): the cap makes the caching allocator release its cache
 # instead of growing past half the device, and an overrun raises instead of spilling into WSL system memory.
-torch.cuda.set_per_process_memory_fraction(MEMORY_FRACTION, dev)
+torch.cuda.set_per_process_memory_fraction(MEMORY_FRACTION, torch.cuda.current_device())
 settings = WumpusAnalysisSettings()
 trained = load_trained_run(run_dir, dev)
 world, run, cfg = trained.setup.domain, trained.run, trained.cfg
