@@ -20,8 +20,8 @@
 #    - States: the agent's own replay buffer from checkpoints/latest.pt (grounding_screen.py's
 #      reconstruction, wrap-around check included), replayed through the ACTING filter, every step 0..T
 #      including post-terminal and the window-end latent, exactly the rows the trainer's value loss sees
-#      (trainer.py: value_targets over all_latents). A random subset of STATE_GAMES games keeps a target
-#      refresh to ~1 s; the subset is fixed by seed 0.
+#      (trainer.py: value_targets over all_latents). A random subset of STATE_GAMES games (fixed by seed 0)
+#      keeps the fit to ~1 h per network.
 #    - Targets go through the agent's own LearnedSearchModel.expand (learned reward head, observation head,
 #      filter successors; no pruning, as in the trainer), with the fitted value in place of the value head.
 #      Fitted value iteration: a target network is refreshed every STEPS_PER_REFRESH Adam steps (minibatch
@@ -63,8 +63,25 @@
 #    - Added before any run (2026-10-14, after phantom_reward_diag.py): the oracle-latent networks hold
 #      V_hat > 999 on 36-58% of live steps and seeds 0 and 2 refuse the gold. If (i) also exceeds 999 and
 #      (ii)/(iii) do not, the overshoot is the backup's maximisation bias; report it per arm either way.
+#    - Compute changes before any full run (2026-10-14, night; ipomcp holds ~21 CPU workers, so a 50-simulation
+#      play of 512 games takes ~3 h): (a) arm (i) is played at the configured simulation count only when its
+#      sanity gate FAILS, because only then is its play read above (at 1 simulation it is always played);
+#      (b) all arms are fitted, measured and played at 1 simulation before any arm's 50-simulation play, so the
+#      gate, the V > 999 shares and the 1-simulation gains are in the log hours before the long plays;
+#      (c) the fitted nets are saved to <run dir>.fvi_nets.pt, for a later clipped-leaf search test (HANDOFF
+#      6.2 C) without refitting; (d) the latents are frozen, so their children are too: they are expanded once
+#      (FrozenChildren) instead of at every refresh, which took 8.5 of a refresh's ~10 s (64 GPU-bound expands of
+#      2048 latents). Children with P(o) < PROB_FLOOR = 1e-6 are not kept (the planner's own pruning idea): about 4-5
+#      of 33 per (state, action) remain, the dropped mass is <= 1.1e-5 on both populations (measured on oracle
+#      seed 0 and current seed 0), so a target moves by <= gamma * 1.1e-5 * |V| ~ 0.02; the build prints the
+#      measured maximum. The sums accumulate in float64 so the scattered adds are order-independent in float32.
+#      The measures keep the exact, unpruned child_q. No readout criterion changes.
 #
 # 3. Smoke check (16 games, 3 refreshes, oracle seed 0; orientation only): runs end to end.
+#    Re-run after the compute changes (2026-10-14, night): every printed target, residual, measure and return is
+#    identical to the run with per-refresh expands; a refresh takes 1.7 / 4 / 3 s for arms (i) / (ii) / (iii)
+#    (was 10 / 13 / 14 s), so the fit takes ~1 h per network. OMP_NUM_THREADS 1 and 4 give identical output and
+#    timing, so the chain uses 1 (ipomcp shares the CPU).
 #
 # 4. Result: pending.
 # ==============================================================================
@@ -93,6 +110,7 @@ from ipomdp.training.checkpointing import load_checkpoint
 run_dir, n = Path(sys.argv[1]), int(sys.argv[2])
 refreshes = int(sys.argv[3]) if len(sys.argv) > 3 else 400
 STATE_GAMES, STEPS_PER_REFRESH, MINIBATCH, SCALE, CHUNK = 2560, 250, 4096, 1000.0, 2048
+PROB_FLOOR, VALUE_CHUNK = 1e-6, 65536
 dev = torch.device("cuda")
 settings = WumpusAnalysisSettings()
 trained = load_trained_run(run_dir, dev)
@@ -127,19 +145,50 @@ def child_q(states: torch.Tensor, values) -> list[torch.Tensor]:
     return [torch.cat(o) for o in out]
 
 
-@torch.no_grad()
-def clipped_q(states: torch.Tensor, va, vb) -> torch.Tensor:
-    return child_q(states, [lambda z: torch.minimum(va(z), vb(z))])[0]
+class FrozenChildren:
+    """The one-step children of the frozen FVI latents, expanded once (2b, compute change d).
+
+    Keeps every child with P(o) >= PROB_FLOOR as one flat row with its probability and its (state, action) slot;
+    q(values) is then R + gamma sum_o P(o) v(child) per value function, from one pass of each value over the rows.
+    """
+
+    @torch.no_grad()
+    def __init__(self, states: torch.Tensor):
+        rewards, kids, probs, slots, self.dropped = [], [], [], [], 0.0
+        for i in range(0, len(states), CHUNK):
+            e = model.expand(states[i:i + CHUNK])
+            keep = e.observation_probs >= PROB_FLOOR
+            self.dropped = max(self.dropped, (e.observation_probs * ~keep).sum(-1).max().item())
+            where = keep.nonzero()
+            rewards.append(e.rewards)
+            kids.append(e.next_states[keep])
+            probs.append(e.observation_probs[keep])
+            slots.append((i + where[:, 0]) * e.rewards.shape[1] + where[:, 1])
+        self.rewards, self.kids = torch.cat(rewards), torch.cat(kids)
+        self.probs, self.slots = torch.cat(probs).double(), torch.cat(slots)
+        print(f"  frozen children: {len(self.kids)} kept ({len(self.kids) / self.rewards.numel():.2f} per state-action), "
+              f"dropped mass max {self.dropped:.1e}", flush=True)
+
+    @torch.no_grad()
+    def q(self, values) -> list[torch.Tensor]:
+        out = []
+        for v in values:
+            child = torch.cat([v(self.kids[i:i + VALUE_CHUNK]) for i in range(0, len(self.kids), VALUE_CHUNK)])
+            mean = torch.zeros(self.rewards.numel(), dtype=torch.float64, device=dev)
+            mean.index_add_(0, self.slots, self.probs * child.double())
+            out.append(self.rewards + GAMMA * mean.view_as(self.rewards).float())
+        return out
 
 
-def fit(states: torch.Tensor, nets: list[nn.Module], halves: list[torch.Tensor], targets_fn, name: str) -> None:
+def fit(children: FrozenChildren, states: torch.Tensor, nets: list[nn.Module], halves: list[torch.Tensor],
+        targets_fn, name: str) -> None:
     """Refresh frozen copies, compute targets for every net from them, then STEPS_PER_REFRESH Adam steps each."""
     opts = [torch.optim.Adam(net.parameters(), lr=1e-3) for net in nets]
     gen = torch.Generator(device=dev).manual_seed(0)
     started = time.time()
     for r in range(refreshes):
         frozen = [as_value(_copy(net)) for net in nets]
-        targets = targets_fn(states, frozen)                       # one (N,) target per net
+        targets = targets_fn(children, frozen)                     # one (N,) target per net
         for net, opt, rows, y in zip(nets, opts, halves, targets):
             for _ in range(STEPS_PER_REFRESH):
                 idx = rows[torch.randint(len(rows), (MINIBATCH,), generator=gen, device=dev)]
@@ -159,18 +208,19 @@ def _copy(net: nn.Module) -> nn.Module:
     return copy.deepcopy(net).eval()
 
 
-def max_targets(states, frozen):
-    return [child_q(states, frozen)[0].max(-1).values]
+def max_targets(children, frozen):
+    return [children.q(frozen)[0].max(-1).values]
 
 
-def double_targets(states, frozen):
-    qa, qb = child_q(states, frozen)
+def double_targets(children, frozen):
+    qa, qb = children.q(frozen)
     pick_a, pick_b = qa.argmax(-1, keepdim=True), qb.argmax(-1, keepdim=True)
     return [qb.gather(1, pick_a).squeeze(1), qa.gather(1, pick_b).squeeze(1)]
 
 
-def clipped_targets(states, frozen):
-    y = clipped_q(states, *frozen).max(-1).values
+def clipped_targets(children, frozen):
+    va, vb = frozen
+    y = children.q([lambda z: torch.minimum(va(z), vb(z))])[0].max(-1).values
     return [y, y]
 
 
@@ -199,6 +249,7 @@ class Recorder:
     def __init__(self, actor, shadow: bool):
         self.actor, self.batch_size, self.rows = actor, n, []
         self.shadow = WumpusReferenceAgent(world, n, 0.4) if shadow else None
+        self.decisions, self.started = 0, time.time()
 
     def reset(self, initial_observation):
         self.actor.reset(initial_observation)
@@ -227,6 +278,9 @@ class Recorder:
                         and pit[b][ahead] + (wumpus[b][ahead] if alive[b] else 0.0) < _ZERO)
                 step.append((self.state[b].clone(), safe, int(m.cell[b])))
             self.rows.append(step)
+        self.decisions += 1
+        if self.decisions % 10 == 0:
+            print(f"    decision {self.decisions}; {time.time() - self.started:.0f} s", flush=True)
         return self.actor.act()
 
 
@@ -314,26 +368,40 @@ def measures(name: str, value) -> float:
 
 learned_idle_bias = measures("learned V", model.values)
 
-arms = {}
-net = mlp(0)
-fit(fvi_states, [net], [every], max_targets, "(i) max")
-arms["(i) max"] = as_value(net)
-a, b = mlp(1), mlp(2)
-fit(fvi_states, [a, b], [even, odd], double_targets, "(ii) double")
-arms["(ii) double"] = (lambda va, vb: lambda z: 0.5 * (va(z) + vb(z)))(as_value(a), as_value(b))
-a, b = mlp(3), mlp(4)
-fit(fvi_states, [a, b], [even, odd], clipped_targets, "(iii) clipped")
-arms["(iii) clipped"] = (lambda va, vb: lambda z: torch.minimum(va(z), vb(z)))(as_value(a), as_value(b))
+nets = {"(i) max": [mlp(0)], "(ii) double": [mlp(1), mlp(2)], "(iii) clipped": [mlp(3), mlp(4)]}
+children = FrozenChildren(fvi_states)
+fit(children, fvi_states, nets["(i) max"], [every], max_targets, "(i) max")
+fit(children, fvi_states, nets["(ii) double"], [even, odd], double_targets, "(ii) double")
+fit(children, fvi_states, nets["(iii) clipped"], [even, odd], clipped_targets, "(iii) clipped")
+del children
+(va, vb), (ca, cb) = [map(as_value, nets[k]) for k in ("(ii) double", "(iii) clipped")]
+arms = {"(i) max": as_value(nets["(i) max"][0]),
+        "(ii) double": lambda z: 0.5 * (va(z) + vb(z)),
+        "(iii) clipped": lambda z: torch.minimum(ca(z), cb(z))}
+torch.save({"scale": SCALE, **{k: [m.state_dict() for m in v] for k, v in nets.items()}},
+           run_dir.with_name(run_dir.name + ".fvi_nets.pt"))
 
+
+def play_arm(name: str, sims: int) -> None:
+    model.values = arms[name]                     # instance attribute: expand() now uses the fitted value
+    try:
+        episodes, _ = play(sims)
+        report(f"{name} s{sims}", episodes, base[sims])
+    finally:
+        del model.values
+
+
+# Information first (2b, compute changes): every arm's measures and 1-simulation play, then the long plays.
+gate_passed = None
 for name, value in arms.items():
     idle_bias = measures(name, value)
     if name == "(i) max":
+        gate_passed = idle_bias >= 0.5 * learned_idle_bias
         print(f"    sanity gate (2b): (i) idle bias {idle_bias:.1f} vs half the learned {0.5 * learned_idle_bias:.1f}: "
-              f"{'reproduces the flat optimism' if idle_bias >= 0.5 * learned_idle_bias else 'does NOT reproduce it'}", flush=True)
-    model.values = value                          # instance attribute: expand() now uses the fitted value
-    try:
-        for sims in SIMS:
-            episodes, _ = play(sims)
-            report(f"{name} s{sims}", episodes, base[sims])
-    finally:
-        del model.values
+              f"{'reproduces the flat optimism' if gate_passed else 'does NOT reproduce it'}", flush=True)
+    play_arm(name, SIMS[0])
+for name in arms:
+    if name == "(i) max" and gate_passed:
+        print(f"  {name} s{SIMS[1]}: skipped, the gate passed and its play is not read (2b, compute change a)", flush=True)
+        continue
+    play_arm(name, SIMS[1])
