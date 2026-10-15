@@ -1,8 +1,11 @@
-# HANDOFF: JEPA I-POMDP (as of 2026-10-14 evening: the Wumpus idling is a value failure; the no-op self-loops are a symptom (C1 closed); the flat, impossibly optimistic value (C2, maximisation bias through the learned model) is the lead, and `fvi_screen.py` tests it in the detached `runs/wumpus/c2_chain.sh`)
+# HANDOFF: JEPA I-POMDP (as of 2026-10-14 evening: the Wumpus idling is a value failure; the no-op self-loops are a symptom (C1 closed); the flat, impossibly optimistic value (C2, maximisation bias through the learned model) is the lead, and `fvi_screen.py`, ready to launch with `runs/wumpus/fvi_chain.sh`, tests it)
 
 **The next session's job:**
-1. Check `runs/wumpus/c2_chain.log` and the `*.fvi_screen.log` files (section 3 lists the files and how to check health).
-2. Read the FVI screen exactly as pre-registered (`fvi_screen.py` header 2b).
+1. **Launch the FVI screen** (nothing is running; the user stopped the chain on 2026-10-14 at 20:53 to run it in the new session).
+   - First check the machine: `uptime`, `free -m`, `nvidia-smi`, and ipomcp workers in `ps`. Under ipomcp's 16-worker load (load ~25) each batch takes several hours; ask the user whether ipomcp can pause.
+   - Then: `setsid nohup bash runs/wumpus/fvi_chain.sh > runs/wumpus/fvi_chain.log 2>&1 < /dev/null & disown`, and confirm the 3 python PIDs are alive.
+   - It runs the 3 oracle networks, then the current agent's seeds 0–2, 3 at a time.
+2. Watch the health (section 3), then read the screen exactly as pre-registered (`fvi_screen.py` header 2b).
 3. Take the matching branch of section 6.2.
 
 Section 1b holds the working conjectures and the research principles ("taste in research"), including the compute-efficiency rules learned on 2026-10-14. Section 7 lists what failed: do not repeat it.
@@ -33,10 +36,7 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
     - Oracle networks: V̂ > 999 on 36–58% of live steps. On oracle seeds 0 and 2, **every game that reached the gold stood on it, perceiving GLITTER, and never grabbed**: idling was valued ~1290, winning 999.
     - Current agent: grabs, but its idle V̂ (626–663, against realised returns of about −50) is just as flat, with a 7–10 margin for grabbing.
     - A value no policy can earn must come from the backup itself. This is the strongest evidence yet for **C2**.
-- **Running (detached, `runs/wumpus/c2_chain.sh`, at `690a737`; FVI batch since 2026-10-14 20:46):**
-  - `fvi_screen.py` on the 3 oracle networks;
-  - then on the current agent's seeds 0–2;
-  - then self-loop v2 on the current agent (low priority; it may be stopped).
+- **Nothing is running.** The user stopped `c2_chain.sh` at 20:53 (its FVI batch had only played the 1-simulation baselines). `runs/wumpus/fvi_chain.sh` is ready: the FVI screen on the 3 oracle networks, then the current agent's seeds 0–2. Self-loop v2 on the current agent was dropped: it is pre-registered as not expected to bite, and C1 is closed.
 - **Housekeeping:** everything is committed and pushed. Fast suite 172 passed (2026-10-14). The slow suite last passed 7/7 at `f1e5bbf`; not run since `privileged_belief_loss` (default off, fingerprinted). Run it when the machine is free (~45 min).
 
 ## 1. Goals
@@ -155,11 +155,8 @@ The user trusts the agent's research judgement (2026-10-10: "run the experiments
 
 **Git**
 - **Everything is pushed** through `3924a9d` (2026-10-14). The working tree is clean. `runs/` is untracked: keep it.
-- **Running: `runs/wumpus/c2_chain.sh`** (log `runs/wumpus/c2_chain.log`, which ends with `ALL DONE`; each step logs its exit status; started 2026-10-14 11:23 at `690a737`). 3 GPU jobs at a time:
-  1. self-loop v2 on the oracle networks: **done** (the τ=0.1 plays were stopped at 20:46, exit 143, on purpose; section 6.1);
-  2. `fvi_screen.py <oracle run> 512` → `<run>.fvi_screen.log`, started 20:46;
-  3. `fvi_screen.py` on `runs/sweeps/wumpus_current/seed{0,1,2}`;
-  4. `self_loop_diag.py` v2 on the current agent → `<run>.self_loop_frozen.log`. It is pre-registered as not expected to bite (C4). Stop it if the FVI result already decides the branch.
+- **Nothing is running (2026-10-14 20:53, on the user's request).** `runs/wumpus/c2_chain.sh` (log `c2_chain.log`) did self-loop v2 on the oracle networks; its τ=0.1 plays were stopped on purpose at 20:46 (exit 143; section 6.1). Its FVI batch was stopped at 20:53 after the 1-simulation baselines; those partial `*.fvi_screen.log` files are overwritten by the relaunch.
+- **To launch: `runs/wumpus/fvi_chain.sh`** (log `runs/wumpus/fvi_chain.log`, which ends with `ALL DONE`; each step logs its exit status). It runs `fvi_screen.py <run> 512` → `<run>.fvi_screen.log` on the 3 oracle `_final` networks, then on `runs/sweeps/wumpus_current/seed{0,1,2}`, 3 GPU jobs at a time. Learned-value baselines from the stopped run, for checking the relaunch: 1-simulation returns −41.9 / 136.1 / −40.4 on the oracle seeds.
 
   Each FVI job:
   - plays the learned value at 1 and 50 simulations;
@@ -219,7 +216,7 @@ The user trusts the agent's research judgement (2026-10-10: "run the experiments
 | `runs/sweeps/wumpus_current/seed{0,1,2}.self_loop_diag.log` | Self-loop v1 on the current agent: baselines only (stopped; v1 void) |
 | `<run>.self_loop_frozen.log` (oracle `_final` runs; later the current seeds) | Self-loop v2 (frozen loops): the C1 result |
 | `<run>.phantom_reward_diag.log` (oracle `_final` runs and `runs/sweeps/wumpus_current/seed{0,1,2}`) | No phantom reward; V̂ > 999 and gold refusal |
-| `<run>.fvi_screen.log`, `runs/wumpus/c2_chain.sh` (+ `.log`) | The C2 screen (running) |
+| `<run>.fvi_screen.log`, `runs/wumpus/fvi_chain.sh` | The C2 screen (to launch; `c2_chain.sh` + `.log` hold today's stopped run) |
 
 **Reviewer pages**
 
@@ -549,7 +546,7 @@ Experiments within the agreed direction (fixing the Wumpus idling on the value/p
   - Method: `self_loop_diag.py` header 2c; result in header 3.
   - τ=0.05, oracle networks: +21.8 ± 16.2 / +14.1 ± 27.0 / +38.2 ± 17.4. The loops are gone, and turns rise to ~70% of live steps.
   - v1 (leaf values only) is void and kept in the header for the record.
-- **FVI screen (running):** `fvi_screen.py`, readout in header 2b.
+- **FVI screen (to launch: `runs/wumpus/fvi_chain.sh`):** `fvi_screen.py`, readout in header 2b.
   - Fitted value iteration on 130,560 frozen buffer latents (2,560 games) of each network, through its own `expand`, 400 target refreshes. Three arms:
     - (i) the standard max target;
     - (ii) a double target, with nets A and B on disjoint game halves, each choosing a* with itself and evaluating it with the other;
@@ -720,7 +717,7 @@ If (i) also plays better than the learned value, retrain with the FVI protocol's
 - `reports/2026-10-02_wumpus_diagnostics/phantom_reward_diag.py` (new): the heads on no-op GRAB and SHOOT at the checkpoint's own stored greedy games, on the CPU; V̂ > 999; gold refusal.
 - `reports/2026-10-02_wumpus_diagnostics/fvi_screen.py` (new): fitted value iteration with max, double and clipped-double targets, played in the planner (C2).
 - `reports/2026-10-02_wumpus_diagnostics/self_loop_diag.py`: v2 `FrozenLoopSearch` (header 2c), results in header 3.
-- `runs/wumpus/c2_chain.sh` (untracked, like all of `runs/`).
+- `runs/wumpus/c2_chain.sh` (stopped) and `runs/wumpus/fvi_chain.sh` (ready to launch); untracked, like all of `runs/`.
 - `HANDOFF.md`, `CLAUDE.md` (project paragraph), memory files.
 
 **Added or changed 2026-10-12 to 10-14**
@@ -787,7 +784,7 @@ If (i) also plays better than the learned value, retrain with the FVI protocol's
 | `q_head_screen.py` | **Every action branched from heuristic states in the same layout; V, Q and advantage heads fitted and played** (section 5.9) |
 | `self_loop_diag.py` | **The exact self-loop identity at planning time**; v2 freezes loop children (C1: a symptom) |
 | `phantom_reward_diag.py` | **The reward/observation heads on no-ops (exact); V̂ > 999 and gold refusal** (CPU, stored greedy games) |
-| `fvi_screen.py` | **Fitted value iteration: max vs double vs clipped double, played** (C2; running) |
+| `fvi_screen.py` | **Fitted value iteration: max vs double vs clipped double, played** (C2; to launch) |
 | `tiger_acceptance_seed.py` | Tiger acceptance at another seed and update count |
 | `hoist_forward_check.py`, `hoist_training_check.py`, `profile_train_step.py` | Hoist equivalence and runtime profile |
 
