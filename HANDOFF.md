@@ -41,7 +41,8 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
   - (i) max, iterated on frozen latents, **diverges far above the ceiling**: idle V − return 8948 (learned 891), V > 999 on 100% of live steps. The gate passes, so the backup itself creates the optimism.
   - (ii) double / (iii) clipped **remove the impossible values**: V > 999 on 0.6% / 0.4% of live steps (learned 59%), idle bias 552 / 436. FORWARD is preferred at declined safe steps 63% / 55% of the time (learned 22%).
   - Play, paired over the learned value: at 1 simulation +21.6 ± 26.6 / +24.5 ± 25.4; **at 50 simulations +54.4 ± 33.7 / +40.2 ± 34.0**. Deaths fall (5.3% → 1.2% / 0.0%); unfinished does not (70.5% → 72.9% / 77.0%). Partial on this seed (below the +100 pass, above the +30 "not" line).
-- **FVI screen, oracle seeds 0 and 2 at 1 simulation (2026-10-15 03:05; 50-simulation plays running):**
+- **FVI screen, oracle population PASSES (2026-10-15 03:44; `fvi_screen.py` header 4):** at 50 simulations (ii) double gains +191.1 ± 38.3 / +54.4 ± 33.7 / +212.4 ± 37.2 and (iii) clipped +177.8 ± 39.6 / +40.2 ± 34.0 / +135.7 ± 47.0 on oracle seeds 0 / 1 / 2, with unfinished down on seeds 0 and 2 (98–99% → 63–77%). The maximisation bias is the mechanism there: branch 6.2 (A). The current agent's seeds 0–2 are running.
+- **FVI screen, oracle seeds 0 and 2 at 1 simulation (2026-10-15 03:05):**
   - (i) max **diverges outright** on frozen latents: mean target ~47,000–50,000 after 400 refreshes, V > 999 everywhere. The gate passes on all three oracle seeds.
   - The learned value idles completely (unfinished 98–100%). Paired gains at 1 simulation: (ii) double **+113.1 ± 32.8 / +150.4 ± 31.4**; (iii) clipped **+159.4 ± 33.4 / +164.5 ± 37.4**. Wins rise to 14–19% and unfinished falls to 78–85%.
   - V > 999: (ii) 4.1% / 17.7%, (iii) 1.7% / 11.5% (learned 40% / 51%).

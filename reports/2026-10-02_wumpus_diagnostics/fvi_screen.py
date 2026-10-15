@@ -91,7 +91,19 @@
 #    (was 10 / 13 / 14 s), so the fit takes ~1 h per network. OMP_NUM_THREADS 1 and 4 give identical output and
 #    timing, so the chain uses 1 (ipomcp shares the CPU).
 #
-# 4. Result: pending.
+# 4. Result (oracle-latent final networks, 2026-10-15; current agent seeds 0-2 pending), paired gains over the
+#    learned value, 512 games:
+#                 learned s50 return / unfinished | (ii) double s1, s50     | (iii) clipped s1, s50
+#      seed 0:    -46.9 / 98.8%                   | +113.1, +191.1 +- 38.3  | +159.4, +177.8 +- 39.6
+#      seed 1:    139.9 / 70.5%                   | +21.6,  +54.4 +- 33.7   | +24.5,  +40.2 +- 34.0
+#      seed 2:    -54.3 / 98.4%                   | +150.4, +212.4 +- 37.2  | +164.5, +135.7 +- 47.0
+#    - Gate: (i) max reproduces and far exceeds the optimism on all three: on frozen latents it diverges (mean
+#      target ~9,000 on seed 1, ~47,000-50,000 on seeds 0 and 2; V > 999 on 100% of live steps).
+#    - (ii) and (iii) remove most impossible values (V > 999 on 0.4-18% of live steps vs 40-59% learned).
+#    - Readout (2b): (ii) and (iii) each gain >= +100 at 50 simulations with unfinished down on 2 of 3 oracle
+#      seeds (0: 71.9% / 72.5%; 2: 77.2% / 62.7%). The maximisation bias IS the mechanism on the oracle
+#      networks. Seed 1 (the one network that already played, 140) gains +54 / +40 with deaths down
+#      (5.3% -> 1.2% / 0.0%) but not unfinished. (iii) on seed 2 pays for its gain with deaths (12.9%).
 # ==============================================================================
 
 import copy
