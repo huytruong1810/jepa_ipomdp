@@ -75,7 +75,17 @@
 #      oracle-latent final networks, paired gain at tau 0.05 / 0.1: seed 0 +26 / +25, seed 1 +6 / -19,
 #      seed 2 +27 / +69; GRAB rose on seeds 0 and 2 (e.g. 39% -> 63%). Read by 2b as "a symptom", but void
 #      as a test of C1 (section 2c).
-#    - Version 2: pending.
+#    - Version 2 (frozen loops; logs <run>.self_loop_frozen.log; baselines reproduce report.json), oracle-latent
+#      final networks, tau 0.05, paired gain: seed 0 +21.8 +- 16.2, seed 1 +14.1 +- 27.0, seed 2 +38.2 +- 17.4.
+#      Unfinished 98.8 -> 94.9%, 70.5 -> 63.7%, 98.4 -> 92.8%; deaths +0.8, +2.7, +0.6 points. The loops are gone
+#      (GRAB 2.6-5.9% of live steps, chosen action flagged <= 0.1%), and the idling moves into turning
+#      (TURN_LEFT + TURN_RIGHT 69%, 69%, 70% of live steps; FORWARD ~21%).
+#      Readout (2b): "primary mechanism" is excluded (it needs >= +100 at both tolerances); "a symptom" holds
+#      (< +30 on 2 of 3 seeds). The tau 0.1 plays were stopped on 2026-10-14 at 20:46 because they could not
+#      change the readout: they ran ~10x slower than planned (a per-edge device sync, since vectorised, plus
+#      CPU load ~25 from ipomcp).
+#    - Reading: C1 is a symptom. Without the no-op loops the planner cycles turns, the 2-step loop this
+#      identity does not cover, so the flat optimistic value (C2) is the cause to test next (fvi_screen.py).
 # ==============================================================================
 
 import json
@@ -124,15 +134,17 @@ class FrozenLoopSearch(BeliefTreeSearch):
         if not live:
             return
         super()._expand([n for n, _ in live], [st for _, st in live])
+        # One batched comparison and one device sync per call (a per-edge loop ran ~10x slower, 2026-10-14).
+        pairs = [(node, edge, child) for node, _ in live for edge in node.edges for child in edge.children]
+        kids = torch.stack([child.state for _, _, child in pairs])
+        parents = torch.stack([node.state for node, _, _ in pairs])
+        loop = ((kids - parents).norm(dim=-1) <= self.tau * parents.norm(dim=-1)).tolist()
+        for (node, edge, child), is_loop in zip(pairs, loop):
+            if is_loop:
+                child.frozen, child.leaf_value = True, edge.reward / (1.0 - GAMMA)
+        changed_nodes = {id(node) for (node, _, _), is_loop in zip(pairs, loop) if is_loop}
         for node, node_stats in live:
-            changed = False
-            for edge in node.edges:
-                kids = torch.stack([child.state for child in edge.children])
-                rel = ((kids - node.state).norm(dim=-1) / node.state.norm()).tolist()
-                for child, step in zip(edge.children, rel):
-                    if step <= self.tau:
-                        child.frozen, child.leaf_value, changed = True, edge.reward / (1.0 - GAMMA), True
-            if changed:
+            if id(node) in changed_nodes:
                 for edge in node.edges:
                     node_stats.update(edge.refresh(self.model.discount))
                 node.refresh()

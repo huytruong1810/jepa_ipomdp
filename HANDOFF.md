@@ -22,7 +22,8 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
   - **Self-loop test v1 was void.** It changed only the loop children's *leaf* values, and the search overwrites those once it expands a child. Oracle gains +26/+6/+27 at τ=0.05 and +25/−19/+69 at τ=0.1, and GRAB *rose*. **v2 freezes loop children** (`FrozenLoopSearch`); its 32-game smoke check removes the loops (GRAB 34% → 2%), and the idling moves into turning.
   - **No phantom reward** (`phantom_reward_diag.py`): the reward and observation heads are exact on no-op GRAB and SHOOT.
   - **The oracle values exceed what any game can pay** (V̂ > 999 on 36–58% of live steps). On oracle seeds 0 and 2 **every game that reached the gold stood on it, perceiving GLITTER, and never grabbed** (idling valued ~1290). The current agent grabs, but its idle V̂ ≈ 626–663 is just as flat. A value that no policy can earn must come from the backup itself: this is direct evidence for C2.
-- **Running (detached, 2026-10-14 11:23 at `690a737`): `runs/wumpus/c2_chain.sh`** (section 6.1).
+  - **Self-loop v2 result (oracle networks, τ=0.05): +22 / +14 / +38 paired.** The loops are gone, and the agent cycles turns instead (turns 69–70% of live steps). Pre-registered readout: **C1 is a symptom**, not the primary mechanism. The τ=0.1 plays were stopped at 20:46 because they could not change the readout and ran about 10× slow; the per-edge sync is now vectorised.
+- **Running (detached, 2026-10-14 11:23 at `690a737`): `runs/wumpus/c2_chain.sh`** (section 6.1). It is now at the FVI batch, started 20:46.
 - **Housekeeping:** everything is committed and pushed. Fast suite 172 passed (2026-10-14). The slow suite last passed 7/7 at `f1e5bbf`; not run since `privileged_belief_loss` (default off, fingerprinted). Run it when the machine is free (~45 min).
 
 ## 1. Goals
