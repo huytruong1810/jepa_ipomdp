@@ -47,7 +47,7 @@ from ..domain import (BatchedPOMDPEnv, FinitePOMDP, WumpusBeliefTracker, WumpusS
                       action_value_functions, build_tiger_pomdp, game_outcomes, solve_infinite_horizon)
 from ..domain.wumpus import NUM_CELLS
 from ..interpretability import BeliefAnalysis, analyze_beliefs, build_probe_dataset, build_wumpus_dataset, plot_latent_pca
-from ..models import BeliefFilter
+from ..models import BeliefFilter, ValueEstimator
 from ..planning import BeliefTreeSearch
 from ..telemetry import BeliefGeometryVisualizer
 from ..training import (Domain, DomainSetup, EpisodeBatch, PrivilegedSpec, PrivilegedTargets, Representation, RunConfig,
@@ -102,7 +102,7 @@ def build_run_config(cfg: DictConfig) -> RunConfig:
         epsilon=a.epsilon, epsilon_min=a.epsilon_min,
         store_eval_episodes=t.store_eval_episodes, time_aware_value=m.time_aware_value,
         value_nstep=m.value_nstep, value_nstep_mix=m.value_nstep_mix, detached_planning_head=m.detached_planning_head,
-        privileged_belief_loss=m.privileged_belief_loss)
+        privileged_belief_loss=m.privileged_belief_loss, value_estimator=ValueEstimator(m.value_estimator))
 
 
 def build_training_run(cfg: DictConfig, device: torch.device) -> tuple[DomainSetup, TrainingRun]:

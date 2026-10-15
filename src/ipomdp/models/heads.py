@@ -35,6 +35,19 @@
 #      stationary and get no k. The terminal rule V(z, 0) = 0 is applied by the callers
 #      (planning/search_model.py, section 5; training/trainer.py, section 3b), never learned.
 #
+# 2c. Value Pair for Double and Clipped-Double Estimation (optional, model.value_estimator; 2026-10-15):
+#    - Two independent value heads A and B read as one value: their mean (double, van Hasselt 2010) or
+#      their minimum (clipped double, Fujimoto et al. 2018). The trainer gives each its own targets and
+#      rows (training/trainer.py, section 3e); the planner and the backup read the combined value.
+#    - Why: on Wumpus the value backed up through the learned model, max over actions of noisy child
+#      values, is flat and impossibly optimistic (V-hat > 999, the most any game pays, on 40-59% of the
+#      oracle-latent agent's live steps; reports/2026-10-02_wumpus_diagnostics/phantom_reward_diag.py).
+#      Iterated on frozen latents the plain max diverges (to ~50,000), while double and clipped-double
+#      targets remove most impossible values and gain +136 to +212 per game at 50 simulations on 2 of 3
+#      oracle-latent networks (fvi_screen.py, section 4).
+#    - Every value head exposes value(latent, codec), the decoded V, so the search model reads one
+#      head or a pair the same way. A pair has no horizon variant (it raises in training/run.py).
+#
 # 3. Observation Head (the planning model):
 #    - P(o_{t+1} | z_t, a_t). The planner branches over its outcomes and steps the belief
 #      filter (world_model.py, section 6). It is trained on DETACHED latents, so it never
@@ -53,10 +66,13 @@
 #    - It is not a planning model: the planner never reads it. With k = 0 it is not built at all.
 # ==============================================================================
 
+from enum import StrEnum
+
 import torch
 import torch.nn as nn
 from torch import Tensor
 
+from .distributions import TwoHotSymlog
 from .layers import build_residual_stack
 
 
@@ -77,6 +93,37 @@ class ValueHead(nn.Module):
     def forward(self, latent: Tensor) -> Tensor:
         """(B, D) -> (B, num_bins) logits."""
         return self.net(latent)
+
+    def value(self, latent: Tensor, codec: TwoHotSymlog) -> Tensor:
+        """(B, D) -> (B,) decoded V (section 2c)."""
+        return codec.mean(self(latent))
+
+
+class ValueEstimator(StrEnum):
+    """How the value target backs up child values (section 2c; training/trainer.py, section 3e)."""
+
+    MAX = "max"                        # one head, max_a over its own child values (the default)
+    DOUBLE = "double"                  # pair: A picks the action, B evaluates it, and vice versa
+    CLIPPED_DOUBLE = "clipped_double"  # pair: max_a over child values min(A, B)
+
+
+class ValuePair(nn.Module):
+    """Two value heads read as one value: their mean (double) or their minimum (clipped double); section 2c."""
+
+    def __init__(self, a: ValueHead, b: ValueHead, estimator: ValueEstimator):
+        super().__init__()
+        if estimator is ValueEstimator.MAX:
+            raise ValueError("a value pair needs the double or clipped-double estimator.")
+        self.a, self.b, self.estimator = a, b, estimator
+
+    def head_values(self, latent: Tensor, codec: TwoHotSymlog) -> tuple[Tensor, Tensor]:
+        """(B, D) -> the decoded V of A and of B, each (B,)."""
+        return self.a.value(latent, codec), self.b.value(latent, codec)
+
+    def value(self, latent: Tensor, codec: TwoHotSymlog) -> Tensor:
+        """(B, D) -> (B,) the combined V: (A + B) / 2 for double, min(A, B) for clipped double."""
+        va, vb = self.head_values(latent, codec)
+        return 0.5 * (va + vb) if self.estimator is ValueEstimator.DOUBLE else torch.minimum(va, vb)
 
 
 class HorizonValueHead(nn.Module):

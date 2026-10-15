@@ -2,7 +2,8 @@
 
 from .distributions import TwoHotSymlog
 from .ema import ema_update, frozen_copy
-from .heads import HorizonValueHead, MultiStepObservationPredictor, ObservationHead, RewardHead, ValueHead
+from .heads import (HorizonValueHead, MultiStepObservationPredictor, ObservationHead, RewardHead, ValueEstimator, ValueHead,
+                    ValuePair)
 from .layers import RMSNorm, SwiGLUResidualBlock, build_residual_stack
 from .world_model import BeliefFilter, LatentPredictor, RecurrentJEPA
 
@@ -17,7 +18,9 @@ __all__ = [
     "RewardHead",
     "SwiGLUResidualBlock",
     "TwoHotSymlog",
+    "ValueEstimator",
     "ValueHead",
+    "ValuePair",
     "build_residual_stack",
     "ema_update",
     "frozen_copy",

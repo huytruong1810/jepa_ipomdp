@@ -118,6 +118,23 @@
 #    - Decoder only: in JEPA mode the observation head is already detached (raises).
 #    - None (the default and canonical Tiger) leaves every computation and the parameter order unchanged.
 #
+# 3e. Optional Double / Clipped-Double Value Targets (value head a ValuePair; model.value_estimator, 2026-10-15):
+#      double:          y_A = Q-bar_B(z, argmax_a Q-bar_A(z, a)),   y_B = Q-bar_A(z, argmax_a Q-bar_B(z, a))
+#      clipped double:  y_A = y_B = max_a [ R(z, a) + gamma * sum_o P(o | z, a) * min(V-bar_A, V-bar_B)(tau(z, a, o)) ]
+#                       Q-bar_X(z, a) = R(z, a) + gamma * sum_o P(o | z, a) * V-bar_X(tau(z, a, o)), V-bar_X the EMA copy of head X
+#    - Why (models/heads.py, section 2c): section 3's max over actions of noisy child values lifts a flat
+#      value above anything a game can pay (maximisation bias). On frozen Wumpus latents the plain max
+#      diverges, and both pair targets remove most impossible values and stop much of the idling
+#      (reports/2026-10-02_wumpus_diagnostics/fvi_screen.py, section 4).
+#    - Each row trains ONE head: rows of even-indexed episodes in the batch train A, odd ones B, so the
+#      two heads see independent samples at every step (double Q-learning updates one estimator per
+#      sample). Both are computed on every row and selected, so the loss has the scale of one head.
+#    - The targets come from the same LearnedSearchModel.expand; its next_values are the pair's
+#      combined value, which is exactly the clipped target's child value. The double target reads
+#      each head on the children again (one extra pass of the two target heads).
+#    - With the time-aware value or n-step grounding it raises (not combined; fail loudly). The
+#      default (a single ValueHead, canonical Tiger) leaves every computation unchanged.
+#
 # 2e. Optional Privileged Exact-Belief Term (privileged; model.privileged_belief_loss, user decision 2026-10-11):
 #      Privileged   CE(cell) + CE(heading) + BCE(hazards, danger ahead) of a readout of z_0..z_T,
 #                   live steps only; gradients INTO the filter (training/privileged.py)
@@ -150,7 +167,8 @@ from torch import Tensor
 
 from ..models.distributions import TwoHotSymlog
 from ..models.ema import ema_update, frozen_copy
-from ..models.heads import HorizonValueHead, MultiStepObservationPredictor, ObservationHead, RewardHead, ValueHead
+from ..models.heads import (HorizonValueHead, MultiStepObservationPredictor, ObservationHead, RewardHead, ValueEstimator, ValueHead,
+                            ValuePair)
 from ..models.world_model import BeliefFilter, RecurrentJEPA
 from ..planning.search_model import LearnedSearchModel
 from .episode_buffer import EpisodeBatch
@@ -181,7 +199,7 @@ class WorldModelTrainer:
         self,
         belief_filter: BeliefFilter,
         jepa: RecurrentJEPA | None,
-        value_head: ValueHead | HorizonValueHead,
+        value_head: ValueHead | ValuePair | HorizonValueHead,
         reward_head: RewardHead,
         observation_head: ObservationHead,
         codec: TwoHotSymlog,
@@ -207,6 +225,7 @@ class WorldModelTrainer:
             nstep, nstep_mix: n and the mixing weight of the n-step greedy-return target (section 3c); n = 0 is off.
             planning_observation_head: The detached planning head (section 3d), or None.
             privileged: The privileged exact-belief term (section 2e), or None.
+            value_head: A ValuePair selects the double or clipped-double targets (section 3e).
         """
         if nstep < 0 or not 0.0 <= nstep_mix <= 1.0 or (nstep > 0 and nstep_mix == 0.0):
             raise ValueError(f"need nstep >= 0 and nstep_mix in (0, 1] when nstep > 0; got {nstep}, {nstep_mix}.")
@@ -214,6 +233,8 @@ class WorldModelTrainer:
             raise ValueError("jepa must wrap the trained belief_filter")
         if jepa is not None and planning_observation_head is not None:
             raise ValueError("a detached planning head needs the decoder representation (section 3d).")
+        if isinstance(value_head, ValuePair) and (horizon is not None or nstep > 0):
+            raise ValueError("a value pair is not combined with the time-aware value or n-step grounding (section 3e).")
         self.belief_filter = belief_filter
         self.jepa = jepa
         self.representation = Representation.DECODER if jepa is None else Representation.JEPA
@@ -269,6 +290,29 @@ class WorldModelTrainer:
         return q.max(dim=-1).values
 
     @torch.no_grad()
+    def pair_value_targets(self, latents: Tensor) -> tuple[Tensor, Tensor]:
+        """
+        Double or clipped-double targets of a ValuePair (module header, section 3e).
+
+        Args:
+            latents: Belief latents (N, D).
+
+        Returns:
+            The targets of head A and of head B, each (N,), float32.
+        """
+        with torch.autocast(self.device.type, enabled=False):
+            expansion = self.target_model.expand(latents.float())
+            backup = lambda v: expansion.rewards + self.discount * (expansion.observation_probs * v).sum(-1)  # noqa: E731
+            if self.value_head.estimator is ValueEstimator.CLIPPED_DOUBLE:
+                target = backup(expansion.next_values).max(dim=-1).values          # next_values = min(A, B)
+                return target, target
+            children = expansion.next_states.flatten(0, 2)
+            va, vb = (v.view_as(expansion.next_values) for v in self.target_value_head.head_values(children, self.twohot))
+            qa, qb = backup(va), backup(vb)
+        return (qb.gather(1, qa.argmax(-1, keepdim=True)).squeeze(1),
+                qa.gather(1, qb.argmax(-1, keepdim=True)).squeeze(1))
+
+    @torch.no_grad()
     def nstep_returns(self, states: Tensor, rewards: Tensor) -> Tensor:
         """
         n-step returns bootstrapped with the target value (module header, section 3c).
@@ -321,7 +365,13 @@ class WorldModelTrainer:
                                                 episodes.rewards.reshape(-1)).mean()
 
             all_latents = latents.reshape(batch * (steps + 1), -1)
-            if self.horizon is None:
+            if isinstance(self.value_head, ValuePair):                                    # section 3e
+                head_a = (torch.arange(batch, device=self.device) % 2 == 0).repeat_interleave(steps + 1)
+                target_a, target_b = self.pair_value_targets(all_latents.detach())
+                targets_value = torch.where(head_a, target_a, target_b)
+                value_logits = torch.where(head_a.unsqueeze(-1), self.value_head.a(all_latents.detach()),
+                                           self.value_head.b(all_latents.detach()))
+            elif self.horizon is None:
                 targets_value = self.value_targets(all_latents.detach())
                 value_logits = self.value_head(all_latents.detach())
             else:

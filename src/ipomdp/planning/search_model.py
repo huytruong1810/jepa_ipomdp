@@ -60,7 +60,7 @@ from torch import Tensor
 
 from ..domain import AlphaVectorSet, FinitePOMDP, belief_update, initial_beliefs, observation_distribution
 from ..models.distributions import TwoHotSymlog
-from ..models.heads import HorizonValueHead, ObservationHead, RewardHead, ValueHead
+from ..models.heads import HorizonValueHead, ObservationHead, RewardHead, ValueHead, ValuePair
 from ..models.world_model import BeliefFilter
 
 
@@ -149,7 +149,7 @@ class LearnedSearchModel:
         belief_filter: BeliefFilter,
         reward_head: RewardHead,
         observation_head: ObservationHead,
-        value_head: ValueHead | HorizonValueHead,
+        value_head: ValueHead | ValuePair | HorizonValueHead,
         codec: TwoHotSymlog,
         num_actions: int,
         num_observations: int,
@@ -158,7 +158,8 @@ class LearnedSearchModel:
     ):
         """
         Args:
-            value_head: ValueHead, or HorizonValueHead exactly when horizon is given (section 5).
+            value_head: ValueHead or a ValuePair (one combined value; models/heads.py, section 2c), or
+                HorizonValueHead exactly when horizon is given (section 5).
             horizon: Steps per window H for the finite-horizon state [z, k] (section 5), or None.
         """
         if (horizon is not None) != isinstance(value_head, HorizonValueHead):
@@ -178,7 +179,7 @@ class LearnedSearchModel:
     def values(self, states: Tensor) -> Tensor:
         """Decoded V of states (N, ...) -> (N,); with a horizon, V(z, k) and exactly 0 at k = 0 (section 5)."""
         if self.horizon is None:
-            return self.codec.mean(self.value_head(states))
+            return self.value_head.value(states, self.codec)
         latents, steps_left = states[:, :-1], states[:, -1]
         return torch.where(steps_left > 0, self.codec.mean(self.value_head(latents, steps_left)), 0.0)
 

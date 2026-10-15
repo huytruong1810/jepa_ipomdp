@@ -143,6 +143,17 @@
 #      draws and builds nothing new.
 #    - Its targets are cached per buffer slot (privileged.py, section 2c). _store() forgets the slots
 #      every buffer write rewrites, and load_state_dict forgets them all.
+#
+# 13. Double / Clipped-Double Value (2026-10-15; models/heads.py 2c, trainer.py 3e):
+#    - cfg.value_estimator = double or clipped_double builds a second ValueHead B and trains the pair
+#      (A, B) on double or clipped-double targets; the target and acting copies are copies of the pair,
+#      and the planners read its combined value (mean or minimum).
+#    - Motivation: reports/2026-10-02_wumpus_diagnostics/fvi_screen.py, section 4 (the max backup's
+#      maximisation bias makes the Wumpus value impossibly optimistic and flat; the pair targets
+#      removed most of it and much of the idling on frozen oracle-latent networks).
+#    - Head A is built where the single head always is, B after every other network and only when
+#      enabled, so the default (max, canonical Tiger) draws and builds nothing new. Not combined with
+#      time_aware_value or value_nstep (raises).
 # ==============================================================================
 
 from collections.abc import Callable
@@ -153,7 +164,7 @@ import numpy as np
 import torch
 
 from ..agents import PlanningAgent, UniformRandomAgent
-from ..models import (BeliefFilter, HorizonValueHead, LatentPredictor, MultiStepObservationPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueHead,
+from ..models import (BeliefFilter, HorizonValueHead, LatentPredictor, MultiStepObservationPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueEstimator, ValueHead, ValuePair,
                       ema_update, frozen_copy)
 from ..planning import BeliefTreeSearch, LearnedSearchModel
 from .episode_buffer import EpisodeBatch, EpisodeBuffer
@@ -239,6 +250,7 @@ class RunConfig:
     value_nstep_mix: float
     detached_planning_head: bool      # planner reads a head on detached latents (section 11)
     privileged_belief_loss: bool      # privileged exact-belief term into the filter (section 12)
+    value_estimator: ValueEstimator   # max (default) | double | clipped_double value targets (section 13)
 
 
 class TrainingRun:
@@ -250,6 +262,8 @@ class TrainingRun:
             raise ValueError("value_nstep > 0 needs store_eval_episodes: greedy games are its only data (section 10).")
         if cfg.privileged_belief_loss and setup.privileged is None:
             raise ValueError("privileged_belief_loss needs a domain with exact-belief targets (section 12).")
+        if cfg.value_estimator is not ValueEstimator.MAX and (cfg.time_aware_value or cfg.value_nstep > 0):
+            raise ValueError("a double or clipped-double value is not combined with time_aware_value or value_nstep (section 13).")
         domain = self.domain = setup.domain
         seed = lambda stream: stream_seed(cfg.seed, stream)  # noqa: E731
         torch.manual_seed(seed(RunStream.NETWORK_INIT))
@@ -275,6 +289,9 @@ class TrainingRun:
         self.privileged = (PrivilegedBeliefLoss(setup.privileged, cfg.buffer_capacity, cfg.episode_length, cfg.latent_dim,
                                                 cfg.hidden_dim, cfg.num_blocks).to(device)
                            if cfg.privileged_belief_loss else None)                                   # section 12
+        if cfg.value_estimator is not ValueEstimator.MAX:                                                 # section 13
+            second = ValueHead(cfg.latent_dim, cfg.hidden_dim, cfg.num_blocks, cfg.num_bins).to(device)
+            self.value_head = ValuePair(self.value_head, second, cfg.value_estimator)
         self.trainer = WorldModelTrainer(self.belief_filter, self.jepa, self.value_head, self.reward_head, self.observation_head,
                                          self.codec, num_a, num_o, domain.discount, cfg.trainer, device,
                                          self.multistep_predictor, horizon, cfg.value_nstep, cfg.value_nstep_mix,

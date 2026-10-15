@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from ipomdp.experiments import tiger_setup
-from ipomdp.models import ema_update
+from ipomdp.models import ValueEstimator, ValueHead, ValuePair, ema_update
 from ipomdp.training import (Representation, RunConfig, RunStream, TrainerConfig, TrainingRun, load_checkpoint, save_checkpoint,
                              stream_seed)
 
@@ -26,7 +26,7 @@ def _config(**overrides) -> RunConfig:
         num_simulations=4, observation_prune=0.0, c_puct=1.25, dirichlet_alpha=0.3, dirichlet_epsilon=0.25, temperature=1.0,
         temperature_min=0.1, temperature_decay=0.5, epsilon=0.0, epsilon_min=0.0, store_eval_episodes=False,
         time_aware_value=False, value_nstep=0, value_nstep_mix=0.5,
-        detached_planning_head=False, privileged_belief_loss=False)
+        detached_planning_head=False, privileged_belief_loss=False, value_estimator=ValueEstimator.MAX)
     values.update(overrides)
     return RunConfig(**values)
 
@@ -164,6 +164,73 @@ class TestDetachedPlanningHead:
         first.collect_and_train()
         save_checkpoint(tmp_path / "latest.pt", first.state_dict())
         resumed = self._run(seed=123, detached_planning_head=True)
+        resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
+        assert [resumed.collect_and_train() for _ in range(2)] + [resumed.evaluate()] == expected[1:]
+        assert all(torch.equal(a, b) for a, b in zip(_parameters(resumed), _parameters(reference)))
+
+
+class TestValuePair:
+    """training/run.py, section 13; trainer.py, section 3e; models/heads.py, section 2c."""
+
+    @staticmethod
+    def _run(estimator: ValueEstimator, seed: int = 7) -> TrainingRun:
+        return TrainingRun(tiger_setup(CPU), _config(seed=seed, value_estimator=estimator), CPU)
+
+    @pytest.mark.parametrize("estimator", [ValueEstimator.DOUBLE, ValueEstimator.CLIPPED_DOUBLE])
+    def test_planners_targets_and_acting_copies_read_the_pair(self, estimator: ValueEstimator):
+        run = self._run(estimator)
+        for pair in (run.value_head, run.trainer.target_value_head, run.acting_value_head):
+            assert isinstance(pair, ValuePair) and pair.estimator is estimator
+        assert run.eval_agent.model.value_head is run.acting_value_head is run.train_agent.model.value_head
+        for _ in range(3):
+            run.collect_and_train()
+        assert not all(torch.equal(p, q) for p, q in zip(run.value_head.a.parameters(), run.value_head.b.parameters()))
+        z = torch.randn(5, 8)
+        va, vb = run.acting_value_head.head_values(z, run.codec)
+        expected = 0.5 * (va + vb) if estimator is ValueEstimator.DOUBLE else torch.minimum(va, vb)
+        assert torch.equal(run.eval_agent.model.values(z), expected)
+
+    @pytest.mark.parametrize("estimator", [ValueEstimator.DOUBLE, ValueEstimator.CLIPPED_DOUBLE])
+    def test_targets_follow_their_definitions(self, estimator: ValueEstimator):
+        run = self._run(estimator)
+        for _ in range(3):
+            run.collect_and_train()
+        trainer, z = run.trainer, torch.randn(6, 8)
+        target_a, target_b = trainer.pair_value_targets(z)
+        e = trainer.target_model.expand(z)
+        heads = trainer.target_value_head
+        children = e.next_states.flatten(0, 2)
+        va, vb = (run.codec.mean(h(children)).view_as(e.next_values) for h in (heads.a, heads.b))
+        qa = e.rewards + trainer.discount * (e.observation_probs * va).sum(-1)
+        qb = e.rewards + trainer.discount * (e.observation_probs * vb).sum(-1)
+        if estimator is ValueEstimator.DOUBLE:
+            rows = torch.arange(6)
+            assert torch.allclose(target_a, qb[rows, qa.argmax(-1)]) and torch.allclose(target_b, qa[rows, qb.argmax(-1)])
+        else:
+            clipped = e.rewards + trainer.discount * (e.observation_probs * torch.minimum(va, vb)).sum(-1)
+            assert torch.allclose(target_a, clipped.max(-1).values) and torch.equal(target_a, target_b)
+
+    def test_each_episode_trains_one_head(self):
+        # A one-episode batch is episode 0, so only head A may receive a value gradient.
+        run = self._run(ValueEstimator.DOUBLE)
+        run.collect_and_train()
+        run.trainer.train_step(run.buffer.sample(1))
+        assert all(p.grad is not None and not p.grad.any() for p in run.value_head.b.parameters())
+        assert any(p.grad.any() for p in run.value_head.a.parameters())
+
+    def test_raises_with_time_aware_or_nstep_and_off_builds_nothing(self):
+        for options in (dict(time_aware_value=True), dict(value_nstep=4, store_eval_episodes=True)):
+            with pytest.raises(ValueError):
+                TrainingRun(tiger_setup(CPU), _config(value_estimator=ValueEstimator.DOUBLE, **options), CPU)
+        assert isinstance(TrainingRun(tiger_setup(CPU), _config(), CPU).value_head, ValueHead)
+
+    def test_resume_continues_bit_for_bit(self, tmp_path: Path):
+        reference = self._run(ValueEstimator.CLIPPED_DOUBLE)
+        expected = [reference.collect_and_train() for _ in range(3)] + [reference.evaluate()]
+        first = self._run(ValueEstimator.CLIPPED_DOUBLE)
+        first.collect_and_train()
+        save_checkpoint(tmp_path / "latest.pt", first.state_dict())
+        resumed = self._run(ValueEstimator.CLIPPED_DOUBLE, seed=123)
         resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
         assert [resumed.collect_and_train() for _ in range(2)] + [resumed.evaluate()] == expected[1:]
         assert all(torch.equal(a, b) for a, b in zip(_parameters(resumed), _parameters(reference)))
