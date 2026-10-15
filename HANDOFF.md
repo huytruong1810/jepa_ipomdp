@@ -1,7 +1,7 @@
 # HANDOFF: JEPA I-POMDP (as of 2026-10-14 evening: the Wumpus idling is a value failure; the no-op self-loops are a symptom (C1 closed); the flat, impossibly optimistic value (C2, maximisation bias through the learned model) is the lead, and `fvi_screen.py`, ready to launch with `runs/wumpus/fvi_chain.sh`, tests it)
 
 **The next session's job:**
-1. **Launch the FVI screen** (nothing is running; the user stopped the chain on 2026-10-14 at 20:53 to run it in the new session).
+1. **The FVI screen is running** (`runs/wumpus/fvi_chain.sh`, launched 2026-10-14 21:22 at `3790114`; log `runs/wumpus/fvi_chain.log`). If it has died, relaunch as below.
    - First check the machine: `uptime`, `free -m`, `nvidia-smi`, and ipomcp workers in `ps`. Under ipomcp's 16-worker load (load ~25) each batch takes several hours; ask the user whether ipomcp can pause.
    - Then: `setsid nohup bash runs/wumpus/fvi_chain.sh > runs/wumpus/fvi_chain.log 2>&1 < /dev/null & disown`, and confirm the 3 python PIDs are alive.
    - It runs the 3 oracle networks, then the current agent's seeds 0–2, 3 at a time.
@@ -36,7 +36,7 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
     - Oracle networks: V̂ > 999 on 36–58% of live steps. On oracle seeds 0 and 2, **every game that reached the gold stood on it, perceiving GLITTER, and never grabbed**: idling was valued ~1290, winning 999.
     - Current agent: grabs, but its idle V̂ (626–663, against realised returns of about −50) is just as flat, with a 7–10 margin for grabbing.
     - A value no policy can earn must come from the backup itself. This is the strongest evidence yet for **C2**.
-- **Nothing is running.** The user stopped `c2_chain.sh` at 20:53 (its FVI batch had only played the 1-simulation baselines). `runs/wumpus/fvi_chain.sh` is ready: the FVI screen on the 3 oracle networks, then the current agent's seeds 0–2. Self-loop v2 on the current agent was dropped: it is pre-registered as not expected to bite, and C1 is closed.
+- **The FVI screen is running** (`runs/wumpus/fvi_chain.sh`, launched 21:22 at `3790114`). Before launch it was made ~4× cheaper with identical output (`fvi_screen.py` header 2b, compute changes a–d): the frozen children are expanded once (fit ~4 h → ~1 h per network), (i)'s 50-simulation play is skipped when its gate passes, the 1-simulation readout comes before the long plays, and the fitted nets are saved to `<run>.fvi_nets.pt`. One CPU thread per job (ipomcp holds ~21 workers). It covers the FVI screen on the 3 oracle networks, then the current agent's seeds 0–2. Self-loop v2 on the current agent was dropped: it is pre-registered as not expected to bite, and C1 is closed.
 - **Housekeeping:** everything is committed and pushed. Fast suite 172 passed (2026-10-14). The slow suite last passed 7/7 at `f1e5bbf`; not run since `privileged_belief_loss` (default off, fingerprinted). Run it when the machine is free (~45 min).
 
 ## 1. Goals
@@ -155,7 +155,7 @@ The user trusts the agent's research judgement (2026-10-10: "run the experiments
 
 **Git**
 - **Everything is pushed** through `3924a9d` (2026-10-14). The working tree is clean. `runs/` is untracked: keep it.
-- **Nothing is running (2026-10-14 20:53, on the user's request).** `runs/wumpus/c2_chain.sh` (log `c2_chain.log`) did self-loop v2 on the oracle networks; its τ=0.1 plays were stopped on purpose at 20:46 (exit 143; section 6.1). Its FVI batch was stopped at 20:53 after the 1-simulation baselines; those partial `*.fvi_screen.log` files are overwritten by the relaunch.
+- **Running: `runs/wumpus/fvi_chain.sh`** (launched 2026-10-14 21:22, `3790114`, 3 jobs, `OMP_NUM_THREADS=1`; the `decision N; s` lines in each `<run>.fvi_screen.log` show progress). Earlier: `runs/wumpus/c2_chain.sh` (log `c2_chain.log`) did self-loop v2 on the oracle networks; its τ=0.1 plays were stopped on purpose at 20:46 (exit 143; section 6.1). Its FVI batch was stopped at 20:53 after the 1-simulation baselines; those partial `*.fvi_screen.log` files are overwritten by the relaunch.
 - **To launch: `runs/wumpus/fvi_chain.sh`** (log `runs/wumpus/fvi_chain.log`, which ends with `ALL DONE`; each step logs its exit status). It runs `fvi_screen.py <run> 512` → `<run>.fvi_screen.log` on the 3 oracle `_final` networks, then on `runs/sweeps/wumpus_current/seed{0,1,2}`, 3 GPU jobs at a time. Learned-value baselines from the stopped run, for checking the relaunch: 1-simulation returns −41.9 / 136.1 / −40.4 on the oracle seeds.
 
   Each FVI job:
