@@ -158,7 +158,12 @@
 #      collections 85 / 70 / 65): 215.7 / 231.4 / 223.1 against 55.6 / 168.0 / -5.7 (+160 / +63 / +229;
 #      unfinished 68-70% against 76-96%). V-hat > 999 on ~1% of live steps (was 36% on the final networks),
 #      and every game that perceived the gold took it (the baseline refused it in 13 of 13). Passes the
-#      pre-registered bar (>= +100 on 2 of 3). The current recipe + double: see HANDOFF.
+#      pre-registered bar (>= +100 on 2 of 3).
+#    - Result 2026-10-15, current recipe + double (3 seeds, best.pt at 65 / 55 / 90): 163.8 / 81.7 / 168.0
+#      against 185.5 / 166.0 / 215.2 (-22 / -84 / -47; deaths 4-9% against 0-4%; unfinished unchanged).
+#      Idle V-hat falls (no-op GRAB 431-635 against 626-660) but stays flat. Fails, as the frozen-latent
+#      screen predicted: without an accurate latent the corrected value exploits the model's errors.
+#      Kept as an option; useful only with a better representation.
 # ==============================================================================
 
 from collections.abc import Callable
