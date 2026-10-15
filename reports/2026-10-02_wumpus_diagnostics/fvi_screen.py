@@ -104,6 +104,19 @@
 #      seeds (0: 71.9% / 72.5%; 2: 77.2% / 62.7%). The maximisation bias IS the mechanism on the oracle
 #      networks. Seed 1 (the one network that already played, 140) gains +54 / +40 with deaths down
 #      (5.3% -> 1.2% / 0.0%) but not unfinished. (iii) on seed 2 pays for its gain with deaths (12.9%).
+#    Current agent (runs/sweeps/wumpus_current seeds 0 and 1; seed 2 stopped on purpose at 05:00, since 2 of 3
+#    strongly negative seeds settle the population):
+#                 learned s50 return / unfinished | (ii) double s1, s50     | (iii) clipped s1, s50
+#      seed 0:    185.5 / 66.6%                   | -277.7, -370.0 +- 44.9  | -124.2, -296.3 +- 44.6
+#      seed 1:    166.0 / 70.3%                   | -5.7,   -160.3 +- 41.0  | +94.0,  -64.6 +- 51.8
+#    - Gate passes here too: (i) max diverges (mean target ~130,000-145,000). But the current agent's learned
+#      value is rarely impossible (V > 999 on 0.7-0.8% of live steps, against 40-59% on the oracle networks), and
+#      (ii) itself diverges on seed 0 (mean target ~1,640, V > 999 everywhere).
+#    - The pair values drive the planner into deaths (3-4% -> 5-16%) while unfinished barely moves: the
+#      converged backup exploits the current agent's model errors (its overconfident "safe" observation
+#      head, HANDOFF 5.5; and the filter's drift on no-ops, C4), which the training-time value had not.
+#    - Readout (2b): the current population does NOT pass, and is not "not the mechanism" either (the oracle
+#      population passed): HANDOFF 6.2 (A) with "the oracle networks passed and the current ones did not".
 # ==============================================================================
 
 import copy
