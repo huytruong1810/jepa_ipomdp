@@ -1,7 +1,7 @@
 # HANDOFF: JEPA I-POMDP (as of 2026-10-14 evening: the Wumpus idling is a value failure; the no-op self-loops are a symptom (C1 closed); the flat, impossibly optimistic value (C2, maximisation bias through the learned model) is the lead, and `fvi_screen.py`, ready to launch with `runs/wumpus/fvi_chain.sh`, tests it)
 
 **The next session's job:**
-1. **The FVI screen is running.** Oracle seed 1 is from `runs/wumpus/fvi_chain.sh` (21:22). Its other two jobs were stopped at 23:47 because three uncapped jobs overfilled the GPU and WSL spilled into system memory (refresh 78 s instead of 4.7 s). `runs/wumpus/fvi_queue.sh` (log `fvi_queue.log`, launched 23:53) waits for oracle seed 1, then runs the other 5 networks 2 at a time, each capped at 45% of the GPU (`fvi_screen.py` 2b, change e). If it has died, rerun the missing networks with that queue.
+1. **The FVI screen is running.** Oracle seed 1 is from `runs/wumpus/fvi_chain.sh` (21:22). Its other two jobs were stopped at 23:47 because three uncapped jobs overfilled the GPU and WSL spilled into system memory (refresh 78 s instead of 4.7 s). `runs/wumpus/fvi_queue.sh` (log `fvi_queue.log`) runs the other 5 networks 2 at a time, each capped at 45% of the GPU (`fvi_screen.py` 2b, change e). Its first start failed at once on a bad cap call (fixed in `5246ce9`, smoke-checked); it was relaunched at 00:53 on 2026-10-15. If it has died, rerun the missing networks with `bash runs/wumpus/fvi_queue.sh` (the PID argument is optional).
    - First check the machine: `uptime`, `free -m`, `nvidia-smi`, and ipomcp workers in `ps`. Under ipomcp's 16-worker load (load ~25) each batch takes several hours; ask the user whether ipomcp can pause.
    - Then: `setsid nohup bash runs/wumpus/fvi_chain.sh > runs/wumpus/fvi_chain.log 2>&1 < /dev/null & disown`, and confirm the 3 python PIDs are alive.
    - It runs the 3 oracle networks, then the current agent's seeds 0–2, 3 at a time.
@@ -37,10 +37,10 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
     - Current agent: grabs, but its idle V̂ (626–663, against realised returns of about −50) is just as flat, with a 7–10 margin for grabbing.
     - A value no policy can earn must come from the backup itself. This is the strongest evidence yet for **C2**.
 - **The FVI screen is running** (`runs/wumpus/fvi_chain.sh`, launched 21:22 at `3790114`). Before launch it was made ~4× cheaper with identical output (`fvi_screen.py` header 2b, compute changes a–d): the frozen children are expanded once (fit ~4 h → ~1 h per network), (i)'s 50-simulation play is skipped when its gate passes, the 1-simulation readout comes before the long plays, and the fitted nets are saved to `<run>.fvi_nets.pt`. One CPU thread per job (ipomcp holds ~21 workers). It covers the FVI screen on the 3 oracle networks, then the current agent's seeds 0–2. Self-loop v2 on the current agent was dropped: it is pre-registered as not expected to bite, and C1 is closed.
-- **FVI screen, early readout (oracle seed 1 only, 2026-10-15 00:36; 50-simulation plays pending):**
+- **FVI screen, oracle seed 1 done (2026-10-15 00:47):**
   - (i) max, iterated on frozen latents, **diverges far above the ceiling**: idle V − return 8948 (learned 891), V > 999 on 100% of live steps. The gate passes, so the backup itself creates the optimism.
   - (ii) double / (iii) clipped **remove the impossible values**: V > 999 on 0.6% / 0.4% of live steps (learned 59%), idle bias 552 / 436. FORWARD is preferred at declined safe steps 63% / 55% of the time (learned 22%).
-  - 1-simulation play: +21.6 ± 26.6 / +24.5 ± 25.4 paired. Not yet the pass, which is read at 50 simulations.
+  - Play, paired over the learned value: at 1 simulation +21.6 ± 26.6 / +24.5 ± 25.4; **at 50 simulations +54.4 ± 33.7 / +40.2 ± 34.0**. Deaths fall (5.3% → 1.2% / 0.0%); unfinished does not (70.5% → 72.9% / 77.0%). Partial on this seed (below the +100 pass, above the +30 "not" line).
 - **Housekeeping:** everything is committed and pushed. Fast suite 172 passed (2026-10-14). The slow suite last passed 7/7 at `f1e5bbf`; not run since `privileged_belief_loss` (default off, fingerprinted). Run it when the machine is free (~45 min).
 
 ## 1. Goals
