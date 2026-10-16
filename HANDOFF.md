@@ -1,11 +1,8 @@
-# HANDOFF: JEPA I-POMDP (as of 2026-10-15 evening: C2 (maximisation bias) is confirmed as the oracle networks' idling mechanism and fixed by `model.value_estimator=double` (oracle recipe 223, the best Wumpus result), but the same fix hurts the agent's own latent (138 vs 189). The user chose the REPRESENTATION direction; step R0 is ready to launch)
+# HANDOFF: JEPA I-POMDP (as of 2026-10-15 night: R0/R0' done (the jointly trained head under-reports MODERATE risks and the greedy double-value planner selects them; no confident-"safe" miscalibration); C4 no-op drift is real but costs no information; R1a head swaps on frozen networks FAIL (the planner exploits any swapped head worse). The next R1 step is a user decision; nothing running)
 
 **The next session's job:**
-1. **Check the machine** (`uptime`, `free -m`, `nvidia-smi`, ipomcp workers in `ps`), then **launch R0**: `setsid nohup bash runs/wumpus/head_shift_double_chain.sh > runs/wumpus/head_shift_double_chain.log 2>&1 < /dev/null & disown`. Confirm the 2 python PIDs are alive.
-   - It runs `head_shift.py <run> latest.pt 512` on the six double-value runs (current recipe first, then oracle recipe), 2 jobs at a time. A first launch was stopped after 3 min on the user's request (2026-10-15 19:06), with no results.
-   - **Pre-register the R0 readout in `head_shift.py`'s header before reading any result** (a suggested readout is in section 6.2).
-2. Read R0, then **design R1**: an offline `objective_ab.py` screen of non-privileged objectives scored on R0's metric (section 6.2).
-3. The agent run for the arm that wins R1, with `model.value_estimator=double`.
+1. **Get the user's decision on R1** (section 6.2 lists the options with my recommendation: the data-vs-objective screen for dead reckoning, offline, ~1 h).
+2. Run it with a pre-registered readout; then the agent run with `model.value_estimator=double` for an arm that passes.
 
 Section 1b holds the working conjectures and the research principles ("taste in research"), including the compute-efficiency rules (updated 2026-10-15). Section 7 lists what failed: do not repeat it.
 
@@ -45,6 +42,14 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
 
 - **Nothing is running.** Everything is committed and pushed (through the commit that wrote this file). Fast suite 179 passed (2026-10-15). The slow suite last passed 7/7 at `f1e5bbf`; not run since `privileged_belief_loss` and `value_estimator` (both default off, fingerprinted). Run it when the machine is free (~45 min).
 
+### 2026-10-15 night: R0, R0', C4 and the R1a head-swap screen (all `src/` untouched)
+
+1. **R0** (`head_shift.py` item 4, `latest.pt` of the six double runs): every head is calibrated in its confident-"safe" bin on fresh greedy games (miss rate <= 0.002); no pre-registered branch matched. **My miss:** R0 read `latest.pt` (collection 100), not the `best.pt` networks whose returns were compared.
+2. **R0'** (`head_shift.py` item 5, `best.pt` networks on `latest.pt`'s buffer; pre-registered): **branch (M), moderate-risk underestimation.** On current seeds 1 and 2 most greedy deaths sit in the head's [0.02, 0.5) bins with realised / predicted 2.2 and 8.0; on no oracle run. The greedy planner selects the head's underestimates (on fresh exploring games both recipes underrate that bin ~2x). At exact danger >= 0.4 a fresh head on the same frozen latents reads 0.35 / 0.83 where the joint head reads 0.07 / 0.05, but see 4.
+3. **C4** (`noop_drift_diag.py`, `noop_drift_cost.py`): the current latent moves 4-7x more on exact no-ops than the oracle latent (mean |dz|/|z| 0.10-0.22 vs 0.02-0.03), but at matched steps the drift costs no cell/heading information, and skipping no-op updates gains only +1 to +4 points. The cell/heading gap (59-66% vs 95-100% on the held-out random pool) is in tracking moves and turns. C4 is not an R1 arm.
+4. **R1a** (`head_swap_screen.py`, pre-registered; 128-game smoke on seeds 0-2, stopped there): fresh heads on the frozen acting latents (single, 5-ensemble mean, 5-ensemble pessimistic) swapped into the `best.pt` current + double planner. **No arm passes:** paired -359 / -164 / -77 (fresh), -134 / -275 / -81 (mean), -187 / -159 / +34 (pessimistic); deaths 2-9% -> up to 47%. The planner exploits the swapped heads' confident "safe" errors (their [0, 0.02) bin dies 1.3-6.2% in play). The fresh-head advantage in item 2 was a selection effect at the joint planner's states.
+5. **Reading (C6 sharpened):** with the double value, deaths come from the greedy planner selecting a learned head's errors; no head trained on the current latent (joint, fresh or ensembled) resists that, while the oracle latent's joint head does (deaths 1-2%). The lever stays the representation (dead reckoning of moves and turns), or robustness of the planner to model error. Also: oracle + double still leaves 68-70% of games unfinished, the same as the current recipe, so a representation fix bounds at ~223, not 573.
+
 ## 1. Goals
 
 Three research contributions:
@@ -66,7 +71,7 @@ Stages:
 
 The user trusts the agent's research judgement (2026-10-10: "run the experiments you think will not waste meaningless compute and post-analysis"; 2026-10-12: "decide on the best direction forward without asking me to pick an option"). These are the beliefs that currently steer the work, strongest evidence first. Each is a conjecture with a stated test, not a result.
 
-**C6 (new, 2026-10-15; the lead). The value bias and the model's accuracy are coupled.** The double value turns the oracle networks into the best agent so far (223) and makes the current agent worse (138 vs 189 on the same seeds; deaths up). On frozen latents the converged pair values exploit the current model's errors. Implication: fix the representation and heads first (what the planner exploits: confident "safe" errors), then use the double value. Test: R0/R1 (section 6.2).
+**C6 (new, 2026-10-15; the lead). The value bias and the model's accuracy are coupled.** The double value turns the oracle networks into the best agent so far (223) and makes the current agent worse (138 vs 189 on the same seeds; deaths up). On frozen latents the converged pair values exploit the current model's errors. Implication: fix the representation and heads first, then use the double value. **Sharpened 2026-10-15 night (R0', R1a):** what the planner exploits are the head's under-reported MODERATE risks, not confident "safe" errors, and swapping in fresh or ensembled heads on the same latent makes it worse (the planner finds their errors). Only the oracle latent's head resists. Next: section 6.2 options.
 
 **C2. Confirmed 2026-10-15 for the oracle networks: the value is flat and impossibly optimistic, sustained by the max over noisy children.** The plain max diverges on frozen latents. Double/clipped targets remove the impossible values in the screen and in training (V > 999: 36% → 1%; gold taken). For the current agent the bias is not the main problem (C6).
 - **The mechanism:** V̂ has no gradient towards progress. A flat optimistic V is self-consistent only if each step's backup supplies about (1−γ)V + 1 ≈ 8. Taking the max over 5 actions × observation branches of noisy child values supplies that (maximisation bias, van Hasselt 2010).
@@ -84,7 +89,7 @@ The user trusts the agent's research judgement (2026-10-10: "run the experiments
 
 **C3. Values learned from another policy's states fail by compounding error.** Shown twice now (teacher plug-in, Q/A heads): offline ranking on the teacher's states says nothing about play. Any value fix must be judged on the agent's own state distribution, in play.
 
-**C4. The current agent's filter is not belief-consistent on uninformative actions.** The exact belief is unchanged by a failed GRAB, but the latent moves by half its norm. It is untested as a cause. With the double value in place it is one candidate difference between the agent's latent and the oracle's (which is nearly idempotent on no-ops); a cheap CPU check on stored games can measure it on the double runs.
+**C4. The current agent's filter is not belief-consistent on uninformative actions.** (Measured 2026-10-15 night: real, 4-7x the oracle latent's drift, but it costs no cell/heading information; not an R1 arm. `noop_drift_cost.py`.) The exact belief is unchanged by a failed GRAB, but the latent moves by half its norm. It is untested as a cause. With the double value in place it is one candidate difference between the agent's latent and the oracle's (which is nearly idempotent on no-ops); a cheap CPU check on stored games can measure it on the double runs.
 
 **Principles that picked the experiments (keep using them):**
 - Cheapest informative test first: replay the trained networks with one piece swapped before any training run; train only when a frozen-network test passes.
@@ -555,17 +560,12 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 - The decoder objective beats JEPA on the latent (heading +20 points, cell +7); longer multi-step horizons (k = 10, 20) do not help; more offline updates improve the latent but overfit the jointly trained observation head (held-out NLL up, confident "safe" misses up). Weight decay does not help; a detached, NLL-early-stopped head is not more conservative where it matters.
 - What the double-value planner exploits on the current agent are deaths: the observation head's confident "safe" errors (`head_shift.py`: calibrated in-sample, overconfident on fresh games).
 
-**R0 (ready: `runs/wumpus/head_shift_double_chain.sh`):** `head_shift.py <run> latest.pt 512` on the six double runs. Its question: on the planner's own greedy histories, is the oracle-recipe head calibrated where the current-recipe head is confidently wrong, and is the danger in the current latent anyway (fresh-head fits on frozen latents)?
-- Suggested readout, to write into the header before reading: per run, realised death rate of greedy FORWARD steps predicted < 0.02; fresh-head danger at exact danger ≥ 0.4 (buffer-only vs buffer + greedy).
-  - The oracle runs are calibrated and the current runs are not, and a fresh head on current latents recovers the danger: the information is in the latent, so the fix is the head and its data/objective (R1 arms on the head side).
-  - A fresh head cannot recover it: the latent lacks the danger, so R1 arms on the representation objective.
+**Done 2026-10-15 night** (section 0, night): R0, R0' (branch M), C4 (not an arm), R1a head swaps (fail).
 
-**R1 (design after R0):** an offline `objective_ab.py` screen (cached pool `runs/wumpus/supervised_filter/pools.pt`, 3 seeds, save the networks with `--save`), scored on R0's metric (head safe-miss, danger error) as well as cell/heading/hazard probes. Candidate non-privileged arms, cheapest first:
-- the C4 no-op idempotence of the filter (a consistency term: the latent after an action whose percept is uninformative should equal the latent before, e.g. for GRAB without GLITTER; check first, on the CPU, whether drift correlates with the head's errors);
-- the head side if R0 says the information is there (e.g. ensembles or a calibrated head trained on held-out-style data);
-- representation objectives aimed at what dead reckoning needs (future BUMP and percept prediction under longer random action sequences, already partly covered by k-step; only with a new angle).
-
-Then the agent run with `value_estimator=double` for the winning arm, 3 seeds paired with `wumpus_current` 0–2 (pass ≥ +100 on 2 of 3, unfinished down).
+**R1 options for the user (2026-10-15 night; my recommendation first):**
+1. **(Recommended) Data vs objective for dead reckoning, offline.** `objective_ab.py` on the cached pool reaches cell 77-81% / heading 63-84% at the agent's 6400 updates; the agent's `best.pt` filters reach only 59-61% / 58-66% on the same held-out pool. Train the same objective offline on the agent's own buffer (a `--train-buffer <run>` option) vs the pool, 3 seeds, same updates, scored on the held-out pool. If the buffer arm stays near 60%, the agent's own (idle-heavy) data limits dead reckoning: exploration/data arms (e.g. a share of random-action games in the buffer) come next. If it reaches ~80%, the in-agent training (value loss, co-adaptation, Polyak) limits it. ~1 h, no `src/` change.
+2. **Planner robustness to model error, in training:** a default-off jointly trained head ensemble whose disagreement penalises the value targets (MOPO-style), with the double value. Larger change (trainer, fingerprint, 3 x 3 h runs); R1a suggests same-recipe ensembles share their errors, so the prior is low.
+3. **Accept the ~223 bound and turn to the unfinished games** on the oracle + double networks (turn-then-forward macro actions, section 6.3), i.e. the remaining 68% that no representation fix has touched.
 
 ### 6.3 Other candidates (weaker or more expensive; reasons stated)
 - **A learned policy prior (AlphaZero-style).** A prior distilled from the search's own visits inherits the idling, and argmax-Q acting ignores the prior. Only worth it if acting follows visits or the prior comes from outside the search.
@@ -710,9 +710,16 @@ Then the agent run with `value_estimator=double` for the winning arm, 3 seeds pa
 - `5dc41ce`: `model.value_estimator` (Tiger fingerprint identical; 179 tests).
 - `f9beec1`, `bd374b7`: the two training results (oracle + double passes, current + double fails).
 - `6278dd3`, `314e992`: the user's representation decision; the R0 plan.
-- This HANDOFF rewrite.
+- `3624c1c`: HANDOFF rewrite.
+- `cbac03f`, `2a741ac`, `95901d1`: R0 pre-registration, result (no branch) and R0' pre-registration, R0' result (branch M).
+- `1f7f216`: `noop_drift_diag.py`, `noop_drift_cost.py` (C4).
+- R1a `head_swap_screen.py` and this HANDOFF update.
 
 ## 9. Files touched since `9a9b726` (all pushed)
+
+**Added or changed 2026-10-15 night** (diagnostics only)
+- `reports/2026-10-02_wumpus_diagnostics/head_shift.py` (items 4, 5; optional 4th argument: another checkpoint's networks), `noop_drift_diag.py`, `noop_drift_cost.py`, `head_swap_screen.py` (new).
+- `runs/wumpus/head_shift_best_chain.sh` (untracked).
 
 **Added or changed 2026-10-15**
 - `src/ipomdp/models/heads.py` (section 2c: `ValueHead.value`, `ValueEstimator`, `ValuePair`), `models/__init__.py`; `planning/search_model.py` (`values` reads `value_head.value`); `training/trainer.py` (section 3e, `pair_value_targets`, per-episode head rows); `training/run.py` (section 13 with both results; `RunConfig.value_estimator`; head B built last); `experiments/runs.py`; `conf/config.yaml` (`model.value_estimator: max`, back-filled into all 63 saved run configs).
@@ -792,7 +799,9 @@ Then the agent run with `value_estimator=double` for the winning arm, 3 seeds pa
 | `q_head_screen.py` | **Every action branched from heuristic states in the same layout; V, Q and advantage heads fitted and played** (section 5.9) |
 | `self_loop_diag.py` | **The exact self-loop identity at planning time**; v2 freezes loop children (C1: a symptom) |
 | `phantom_reward_diag.py` | **The reward/observation heads on no-ops (exact); V̂ > 999 and gold refusal** (CPU, stored greedy games) |
-| `fvi_screen.py` | **Fitted value iteration: max vs double vs clipped double, played** (C2; to launch) |
+| `fvi_screen.py` | **Fitted value iteration: max vs double vs clipped double, played** (C2) |
+| `noop_drift_diag.py`, `noop_drift_cost.py` | **C4: latent drift on exact no-ops; it costs no cell/heading information** |
+| `head_swap_screen.py` | **R1a: fresh / ensemble heads swapped into the double-value planner (fail: the planner exploits them)** |
 | `tiger_acceptance_seed.py` | Tiger acceptance at another seed and update count |
 | `hoist_forward_check.py`, `hoist_training_check.py`, `profile_train_step.py` | Hoist equivalence and runtime profile |
 
