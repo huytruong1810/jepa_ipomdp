@@ -143,7 +143,21 @@
 #      * PARTIAL: >= +5 over the growing arm (76.6 / 71.9) on both but not a pass -> the better arm in the
 #        agent anyway if it is >= +8 on heading (the probe furthest from the oracle), else report.
 #      * FAIL: < +5 over the growing arm on either -> a reset does not undo the primacy effect offline; report.
-#    - Result: (pending)
+#    - Result 2026-10-16 (runs/wumpus/data_vs_objective/reset{1,3}_seed*.log; the first launch at 00:17 died with
+#      the machine before any reset fired, cause unknown (not memory: a rebuilt TrainingRun costs ~0.4 GB RAM,
+#      40 MB VRAM); relaunched unchanged at 13:10): FAIL on both arms.
+#                      cell                          heading                        held-out head NLL
+#        growing       0.750 / 0.770 / 0.778 (76.6)  0.777 / 0.658 / 0.722 (71.9)   0.355 / 0.352 / 0.336
+#        (i) reset1    0.806 / 0.797 / 0.804 (80.2)  0.746 / 0.747 / 0.796 (76.3)   0.295 / 0.310 / 0.308
+#        (ii) reset3   0.767 / 0.769 / 0.767 (76.8)  0.712 / 0.644 / 0.687 (68.1)   0.319 / 0.308 / 0.305
+#        buffer (2e)   0.874 / 0.845 / 0.838 (85.2)  0.781 / 0.917 / 0.919 (87.2)   0.288 / 0.265 / 0.287
+#      (i) gains +3.6 / +4.4 and (ii) +0.2 / -3.8 over the growing arm, below the +5 needed on both. The resets
+#      do cut the held-out NLL (0.30-0.31 vs 0.35), so they remove the head's overfitting, but not the
+#      cell/heading deficit. Reading: matching the TOTAL budget (pre-registered) left the FINAL network with
+#      less whole-buffer training than the buffer arm: (i)'s last network saw 3200 updates on the first 4352
+#      games and 3200 growing ones; (ii)'s only 1600 + 1600, which is why more resets did worse. A reset helps
+#      only to the extent the final network is trained long and uniformly on the full buffer, i.e. it
+#      approaches the buffer arm itself. A reset schedule is NOT added to the agent; next is 2h.
 #
 # 3. Usage:
 #    uv run python reports/2026-10-02_wumpus_diagnostics/objective_ab.py --representation jepa \
