@@ -125,6 +125,24 @@
 #      * NOT THE SCHEDULE: the growing arm is within 5 points of the buffer arm on both -> the difference is
 #        elsewhere in the agent loop; diff TrainingRun.collect_and_train against this script.
 #      * Otherwise PARTIAL: report the share of the buffer - agent gap the schedule reproduces.
+#    - Result 2026-10-16 (runs/wumpus/data_vs_objective/growing_seed*.log): SCHEDULE. Cell 0.750 / 0.770 / 0.778
+#      (mean 76.6 vs agent latest 76.3, buffer 85.2), heading 0.777 / 0.658 / 0.722 (mean 71.9 vs 68.3 and 87.2):
+#      within 5 points of the agent and 8.6 / 15.3 below the buffer arm. Held-out NLL 0.34-0.35 vs 0.26-0.29
+#      for the buffer arm: the early, repeatedly replayed games are overfitted and later data do not repair it.
+#
+# 2g. Resets with a catch-up (2026-10-16, after 2f; the primacy-bias remedy of Nikishin et al. 2022 adapted to
+#    a fixed update budget): --reset-at u1 u2 ... re-initialises EVERY network and the optimizer (a fresh
+#    TrainingRun from the same config, seed + 1000 k) after schedule update u_k, then runs --catch-up U updates
+#    sampled uniformly from the games available at that point, then resumes the growing schedule. Arms
+#    (3 seeds, growing schedule, 6400 schedule updates):
+#      (i)  one reset at 3200 (collection 50), catch-up 3200 (9600 updates in all);
+#      (ii) resets at 1600 / 3200 / 4800, catch-up 1600 each (11200 in all).
+#    - Pre-registered readout (before any run), cell and heading means over seeds 0-2:
+#      * PASS: within 5 points of the buffer arm (85.2 / 87.2) on both -> a default-off reset option in the
+#        agent (Tiger fingerprint), then 3 seeds with model.value_estimator=double paired with the double runs.
+#      * PARTIAL: >= +5 over the growing arm (76.6 / 71.9) on both but not a pass -> the better arm in the
+#        agent anyway if it is >= +8 on heading (the probe furthest from the oracle), else report.
+#      * FAIL: < +5 over the growing arm on either -> a reset does not undo the primacy effect offline; report.
 #    - Result: (pending)
 #
 # 3. Usage:
@@ -293,6 +311,9 @@ def main() -> None:
     parser.add_argument("--train-buffer", type=Path, default=None, help="Train on this run's replay buffer (2e).")
     parser.add_argument("--buffer-schedule", choices=("uniform", "growing"), default="uniform",
                         help="With --train-buffer: sample the whole buffer (2e) or the agent's growing buffer (2f).")
+    parser.add_argument("--reset-at", type=int, nargs="*", default=[],
+                        help="Re-initialise every network after these schedule updates (2g).")
+    parser.add_argument("--catch-up", type=int, default=0, help="Uniform updates right after each reset (2g).")
     parser.add_argument("--agent-reference", type=Path, default=None,
                         help="Score this run's networks (--agent-checkpoint) without training (2e).")
     parser.add_argument("--agent-checkpoint", default="best.pt", help="Checkpoint of --agent-reference (2e).")
@@ -333,6 +354,8 @@ def main() -> None:
             raise ValueError(f"buffer episodes have {data['actions'].shape[1]} steps, the pool {length}.")
         fit_rows = torch.arange(size, device=device)
         del buf
+    if args.reset_at and args.buffer_schedule != "growing":
+        raise ValueError("--reset-at emulates the agent's schedule; it needs --buffer-schedule growing.")
     if args.buffer_schedule == "growing" and (args.train_buffer is None or not cfg.training.store_eval_episodes):
         raise ValueError("--buffer-schedule growing needs --train-buffer of a run that stored its greedy games.")
     if args.agent_reference is not None:                                   # section 2e
@@ -361,6 +384,19 @@ def main() -> None:
         metrics = run.trainer.train_step(EpisodeBatch(data["actions"][rows], data["observations"][rows],
                                                       data["rewards"][rows], data["initial"][rows]))
         run._update_acting()
+        if update in args.reset_at:                                        # section 2g
+            reset_cfg = cfg.copy()
+            reset_cfg.seed = args.seed + 1000 * (args.reset_at.index(update) + 1)
+            del run
+            torch.cuda.empty_cache()
+            _, run = build_training_run(reset_cfg, device)
+            for _ in range(args.catch_up):
+                rows = fit_rows[torch.randint(0, available, (cfg.training.batch_size,), device=device,
+                                              generator=generator)]
+                run.trainer.train_step(EpisodeBatch(data["actions"][rows], data["observations"][rows],
+                                                    data["rewards"][rows], data["initial"][rows]))
+                run._update_acting()
+            print(f"reset after update {update}: {args.catch_up} catch-up updates on {available} games", flush=True)
         if update in args.score_at:
             score_both(run, train, held, fit_rows, num_a, num_o, cfg, device, args.planning_head, f"RESULT@{update}")
         if update % 1600 == 0:
