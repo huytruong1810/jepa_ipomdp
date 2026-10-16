@@ -78,6 +78,47 @@
 #          representation-objective arms.
 #      (D) the oracle runs are miscalibrated too: calibration does not separate the recipes -> R1 starts
 #          from the C4 no-op drift check.
+#    - Result 2026-10-15 (logs <run>.head_shift.log, ~20 min per run, 2 at a time):
+#      * Confident-safe miss rate, current 0.002 / 0.000 / 0.000, oracle 0.000 / 0.001 / 0.002: ALL SIX
+#        CALIBRATED. No pre-registered branch matches: (A)-(C) need the current head miscalibrated, (D) the
+#        oracle head. The premise of R0 (current head confidently wrong where the oracle head is right) is
+#        false for these networks. Read by (D)'s logic, stated as a deviation: the observation head's
+#        calibration does not separate the recipes, so R1 starts from C4 (no-op drift, which does separate
+#        them: below).
+#      * Fresh-head danger on current latents, buffer only 0.609 / 0.141 / 0.381, buffer + greedy 0.755 /
+#        0.214 / 0.590; on oracle latents 0.000 / 0.253 / 0.285 and 0.004 / 0.171 / 0.436. But the held-out
+#        exact-danger samples are n = 11 / 7 / 5 and 1 / 12 / 63: uninformative, no verdict.
+#      * Not pre-registered: greedy deaths at latest.pt are ~5.7% / 1.6% / 1.7% (current) and 0% / 2.5% /
+#        14% (oracle seed 2: 66 of ~72 in the predicted [0.2, 0.5) bin, realised 0.56). Deaths sit in the
+#        moderate bins (current seed 0: [0.02, 0.2) pred 0.044, died 0.198), where the planner takes risks
+#        rated 2-4x too low, not in confident-"safe" errors.
+#      * CAVEAT, my miss at pre-registration: this reads latest.pt (collection 100, it carries the buffer),
+#        whereas the compared returns (223 vs 138) and deaths (analysis) are of best.pt (collections 55-90).
+#        The final networks differ in behaviour (oracle seed 2 dies 14% here).
+#      * C4 check (scratch, best.pt's 128 stored greedy games, CPU 7 s per network): relative latent drift
+#        |dz|/|z| on exact no-ops (GRAB without GLITTER, SHOOT without the arrow) is mean 0.217 / 0.117 /
+#        0.098 (median 0.102 / 0.022 / 0.016) for the current recipe and 0.030 / 0.023 / 0.021 (median
+#        0.004) for the oracle recipe, against 0.47-0.81 on other actions in both. The agent's own latent
+#        moves 4-7x more on no-ops; this is a consistent difference between the two latents.
+#      * C4 follow-up (scratch, best.pt, held-out random pool games, MLP probes): the drift does NOT cost
+#        cell/heading information. Unmatched, accuracy falls with the number of no-ops seen (cell 0.97 ->
+#        0.32), but at matched steps (15-25) it RISES with it (fewer moves to dead-reckon), and skipping the
+#        filter update on exact no-ops gains only +1 to +4 points overall (current seeds; oracle unchanged at
+#        95-100%). The agent's cell/heading gap is in tracking moves and turns, not in the no-ops. So a C4
+#        consistency term is not a promising R1 arm.
+#
+# 5. R0' (2026-10-15; corrects item 4's checkpoint miss). Usage: <run> latest.pt 512 best.pt, i.e. best.pt's
+#    networks (the ones whose returns were compared: 223 vs 138) on latest.pt's buffer for the fresh heads.
+#    Pre-registered before any result, the six double runs:
+#    - Per run: greedy FORWARD deaths in the acting head's [0, 0.02) bin (n x died) as a share of all greedy
+#      FORWARD deaths, and the miss rate in [0, 0.02) and in [0.02, 0.5) (realised / predicted).
+#    - (S) confident-safe errors: on 2+ of 3 current runs the [0, 0.02) bin holds >= half the deaths with miss
+#      rate >= 0.04, and not on 2+ oracle runs -> R1 on the head's confident errors (item 4's (A)-(C) logic,
+#      with the fresh-head numbers where n >= 30).
+#    - (M) moderate-risk underestimation: on 2+ current runs most deaths are in [0.02, 0.5) with realised /
+#      predicted >= 2, and not on 2+ oracle runs -> R1 on calibration in the moderate range.
+#    - (N) neither separates the recipes -> the death gap is not the observation head's calibration; R1 moves
+#      to what the representation lacks for dead reckoning (moves and turns), per item 4's C4 follow-up.
 #    - Result: (pending)
 # ==============================================================================
 
@@ -101,6 +142,11 @@ dev = torch.device("cuda")
 cfg = OmegaConf.load(run_dir / ".hydra" / "config.yaml")
 setup, run = build_training_run(cfg, dev)
 run.load_state_dict(load_checkpoint(run_dir / "checkpoints" / name))
+if len(sys.argv) > 4:                     # header 5: another checkpoint's networks on <name>'s buffer
+    networks = load_checkpoint(run_dir / "checkpoints" / sys.argv[4])["networks"]
+    for net_name, net in run.networks.items():
+        net.load_state_dict(networks[net_name])
+    name = f"{sys.argv[4]} networks, {name} buffer"
 world, num_a, num_o = setup.domain, setup.domain.num_actions, setup.domain.num_observations
 FORWARD = 0
 torch.manual_seed(0)
