@@ -1,14 +1,13 @@
-# HANDOFF: JEPA I-POMDP (as of 2026-10-14 evening: the Wumpus idling is a value failure; the no-op self-loops are a symptom (C1 closed); the flat, impossibly optimistic value (C2, maximisation bias through the learned model) is the lead, and `fvi_screen.py`, ready to launch with `runs/wumpus/fvi_chain.sh`, tests it)
+# HANDOFF: JEPA I-POMDP (as of 2026-10-15 evening: C2 (maximisation bias) is confirmed as the oracle networks' idling mechanism and fixed by `model.value_estimator=double` (oracle recipe 223, the best Wumpus result), but the same fix hurts the agent's own latent (138 vs 189). The user chose the REPRESENTATION direction; step R0 is ready to launch)
 
 **The next session's job:**
-1. **Done 2026-10-15: the FVI screen and the double-value training (both recipes); see section 0. Nothing is running.** Next is a direction call for the user (section 0, "What the two results mean together"). Earlier state of this item: **The FVI screen was running.** Oracle seed 1 is from `runs/wumpus/fvi_chain.sh` (21:22). Its other two jobs were stopped at 23:47 because three uncapped jobs overfilled the GPU and WSL spilled into system memory (refresh 78 s instead of 4.7 s). `runs/wumpus/fvi_queue.sh` (log `fvi_queue.log`) runs the other 5 networks 2 at a time, each capped at 45% of the GPU (`fvi_screen.py` 2b, change e). Its first start failed at once on a bad cap call (`5246ce9`); the second (00:53) ran out of memory in the measures after the 512-game play because the recorder kept the planner's last search trees (fixed: the planner is released after each play, and the queue sets `expandable_segments`). Relaunched at about 01:35 on 2026-10-15. If it has died, rerun the missing networks with `bash runs/wumpus/fvi_queue.sh` (the PID argument is optional).
-   - First check the machine: `uptime`, `free -m`, `nvidia-smi`, and ipomcp workers in `ps`. Under ipomcp's 16-worker load (load ~25) each batch takes several hours; ask the user whether ipomcp can pause.
-   - Then: `setsid nohup bash runs/wumpus/fvi_chain.sh > runs/wumpus/fvi_chain.log 2>&1 < /dev/null & disown`, and confirm the 3 python PIDs are alive.
-   - It runs the 3 oracle networks, then the current agent's seeds 0–2, 3 at a time.
-2. Watch the health (section 3), then read the screen exactly as pre-registered (`fvi_screen.py` header 2b).
-3. Take the matching branch of section 6.2.
+1. **Check the machine** (`uptime`, `free -m`, `nvidia-smi`, ipomcp workers in `ps`), then **launch R0**: `setsid nohup bash runs/wumpus/head_shift_double_chain.sh > runs/wumpus/head_shift_double_chain.log 2>&1 < /dev/null & disown`. Confirm the 2 python PIDs are alive.
+   - It runs `head_shift.py <run> latest.pt 512` on the six double-value runs (current recipe first, then oracle recipe), 2 jobs at a time. A first launch was stopped after 3 min on the user's request (2026-10-15 19:06), with no results.
+   - **Pre-register the R0 readout in `head_shift.py`'s header before reading any result** (a suggested readout is in section 6.2).
+2. Read R0, then **design R1**: an offline `objective_ab.py` screen of non-privileged objectives scored on R0's metric (section 6.2).
+3. The agent run for the arm that wins R1, with `model.value_estimator=double`.
 
-Section 1b holds the working conjectures and the research principles ("taste in research"), including the compute-efficiency rules learned on 2026-10-14. Section 7 lists what failed: do not repeat it.
+Section 1b holds the working conjectures and the research principles ("taste in research"), including the compute-efficiency rules (updated 2026-10-15). Section 7 lists what failed: do not repeat it.
 
 Read `CLAUDE.md` first: it covers the architecture, commands and conventions. This file covers goals, the user's rules, the current state, every result that matters, the next steps, the dead ends and the files touched. Each module starts with a `DESIGN DECISIONS & THEORETICAL FOUNDATIONS` header with the evidence behind its design; read it before changing that module. Every diagnostic script in `reports/` explains its question, usage, pre-registered readout and result in its header. The user's auto-memory (`~/.claude/projects/-home-andyj1810-projects-jepa-ipomdp/memory/`) repeats the standing rules of section 2.
 
@@ -19,56 +18,32 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
   - The agent: decoder representation, 64 updates per collection, ε-uniform exploration, greedy evaluation games stored in the buffer (section 5.3 has the recipe).
   - **182 ± 62 per game over 5 seeds** (185, 166, 215, 107, 236; `runs/sweeps/wumpus_current/aggregate.json`). Wins 29.6 ± 2.7%, deaths 4.9 ± 7.8%, unfinished 65.5 ± 8.9%. Paired gap to the exact-belief heuristic (573): −391 ± 62.
   - Storing the greedy games is what keeps deaths down (−110 ± 97 without it); ε does not matter.
-- **The open problem is idling.** About 65% of games end unfinished. The planner stops entering provably safe unvisited cells around step 11–14 and spends the rest of the 50-step window on no-ops. **50–90% of those idle actions are GRAB without gold or SHOOT (mostly without the arrow),** exact no-ops in the world and the exact belief (all 8 runs; section 5.9).
-- **The prize (section 5.8):** letting the heuristic's navigation rules override the planner gives 482 ± 39 (+300 ± 42 paired). Three quarters of it comes from targets ≤ 3 actions away (turn towards an adjacent safe cell, then step in). Forcing FORWARD alone gains nothing.
-- **Representation vs value, answered (section 5.9):** an oracle-latent arm (`model.privileged_belief_loss`; cell 96–98%, heading 100% decodable) idles as much or more (unfinished 70–99%). **The value/planner is the bottleneck.**
-- **Every remedy on the value side has failed** (sections 5.6, 5.7, 5.9; each option is in the code, default off, Tiger bit-identical):
-  - in training: the time-aware value, n-step greedy returns, γ = 0.95, a detached planning head at 128 updates;
-  - offline value targets on frozen latents: optimistic max(V̂, G), the agent's own Monte Carlo returns, heuristic returns (robust only on the oracle latent);
-  - **teacher values in play, on the oracle latent (2026-10-12/13):** a state value fitted to the heuristic's returns plugged into the search (1, 10 or 50 simulations), and action-value / common-layout advantage heads acting greedily. All rank actions about as well as the heuristic **on the heuristic's own states** (−5 to −11), and all fail in play: V idles, the Q/A heads leave the idle states but die 2–30% of the time. Compounding error off the teacher's state distribution. **The teacher line is closed.**
-- **2026-10-14 (this session):**
-  - **C1 (no-op self-loops) is a symptom, not the cause.**
-    - The fixed test (`self_loop_diag.py` v2) freezes loop children at r̂/(1−γ) inside the search.
-    - On the oracle networks at τ=0.05 the paired gains are +22 / +14 / +38. The loops vanish (GRAB 3–6%), and the agent cycles turns instead (turns 69–70% of live steps).
-    - The first version of the test (v1) was void: the search overwrites leaf values on expansion (section 7).
-  - **No phantom reward** (`phantom_reward_diag.py`): the reward and observation heads are exact on no-op GRAB and SHOOT (r̂ = −1.00, P̂(win) ≈ 0).
-  - **The value overshoots what any game can pay.**
-    - Oracle networks: V̂ > 999 on 36–58% of live steps. On oracle seeds 0 and 2, **every game that reached the gold stood on it, perceiving GLITTER, and never grabbed**: idling was valued ~1290, winning 999.
-    - Current agent: grabs, but its idle V̂ (626–663, against realised returns of about −50) is just as flat, with a 7–10 margin for grabbing.
-    - A value no policy can earn must come from the backup itself. This is the strongest evidence yet for **C2**.
-- **The FVI screen is running** (`runs/wumpus/fvi_chain.sh`, launched 21:22 at `3790114`). Before launch it was made ~4× cheaper with identical output (`fvi_screen.py` header 2b, compute changes a–d): the frozen children are expanded once (fit ~4 h → ~1 h per network), (i)'s 50-simulation play is skipped when its gate passes, the 1-simulation readout comes before the long plays, and the fitted nets are saved to `<run>.fvi_nets.pt`. One CPU thread per job (ipomcp holds ~21 workers). It covers the FVI screen on the 3 oracle networks, then the current agent's seeds 0–2. Self-loop v2 on the current agent was dropped: it is pre-registered as not expected to bite, and C1 is closed.
-- **FVI screen, oracle seed 1 done (2026-10-15 00:47):**
-  - (i) max, iterated on frozen latents, **diverges far above the ceiling**: idle V − return 8948 (learned 891), V > 999 on 100% of live steps. The gate passes, so the backup itself creates the optimism.
-  - (ii) double / (iii) clipped **remove the impossible values**: V > 999 on 0.6% / 0.4% of live steps (learned 59%), idle bias 552 / 436. FORWARD is preferred at declined safe steps 63% / 55% of the time (learned 22%).
-  - Play, paired over the learned value: at 1 simulation +21.6 ± 26.6 / +24.5 ± 25.4; **at 50 simulations +54.4 ± 33.7 / +40.2 ± 34.0**. Deaths fall (5.3% → 1.2% / 0.0%); unfinished does not (70.5% → 72.9% / 77.0%). Partial on this seed (below the +100 pass, above the +30 "not" line).
-- **FVI screen, oracle population PASSES (2026-10-15 03:44; `fvi_screen.py` header 4):** at 50 simulations (ii) double gains +191.1 ± 38.3 / +54.4 ± 33.7 / +212.4 ± 37.2 and (iii) clipped +177.8 ± 39.6 / +40.2 ± 34.0 / +135.7 ± 47.0 on oracle seeds 0 / 1 / 2, with unfinished down on seeds 0 and 2 (98–99% → 63–77%). The maximisation bias is the mechanism there: branch 6.2 (A). The current agent's seeds 0–2 are running.
-- **FVI screen, current agent FAILS (2026-10-15 05:00; header 4):** at 50 simulations double −370.0 ± 44.9 / −160.3 ± 41.0 and clipped −296.3 ± 44.6 / −64.6 ± 51.8 on current seeds 0 / 1 (seed 2 stopped: it could not change the verdict). Deaths rise to 5–16%; unfinished barely moves. Converged pair values exploit the current agent's model errors. Its learned value is rarely impossible (V > 999 on <1% of live steps), unlike the oracle networks'. So the maximisation bias is the oracle networks' mechanism, and the current agent's value problem is mainly elsewhere (model errors; C4).
-  - Decision (6.2 A, the oracle-passed / current-failed case): train the pair in the oracle recipe (3 seeds, paired with the oracle seeds 0–2), then the current recipe (3 seeds, paired with `wumpus_current` 0–2), double estimator. The oracle recipe goes first because the screen predicts it gains. The current recipe goes second and can be dropped: the frozen-latent screen predicts a loss there, but training only corrects the bias a little at a time instead of converging on frozen latents, so the result can differ.
-- **RESULT (2026-10-15 13:25): the double value FAILS in the current recipe (training, 3 seeds).** 163.8 / 81.7 / 168.0 against 185.5 / 166.0 / 215.2: **−22 / −84 / −47**. Deaths 4–9% (baselines 0–4%), unfinished unchanged (65–70%). Idle V̂ falls (no-op GRAB 431–635 against 626–660) but stays flat. This matches the frozen-latent screen's prediction.
-- **What the two results mean together (the current reading):**
-  - Value bias and model accuracy are coupled. Removing the maximisation bias helps only when the latent and heads are accurate.
-  - Oracle latent + double = **223** (best so far). Own latent + double = 138. Own latent + max = 189 (same seeds).
-  - The 2026-10-12 conclusion ("the value/planner is the bottleneck, not the representation") held for the max backup only. With an unbiased value, the representation gap (cell / heading decodable 56–59% vs 96–100%) is again what separates the agent from the oracle arm.
-  - **User decision 2026-10-15: representation.** Bring the agent's own latent closer to the oracle latent without privileged targets, then train with `value_estimator=double`. Recommended at the time: make the agent's own latent approach the oracle's without privileged targets, then train with `value_estimator=double`. Cheap first: the filter's drift on no-op actions (C4), which feeds noisy children to the search. Also the remaining third of the oracle arm's gap to the heuristic: ~68% of its games still end unfinished.
-- **Representation plan (2026-10-15 evening):**
-  - Starting point: architecture is ruled out (a supervised GRU reaches ~100%; a causal Transformer was no better, section 5.5), so the objective is the limit. And the double value fails on the current agent by deaths, i.e. by exploiting confident "safe" errors of the observation head (section 5.5, items 5–8).
-  - **R0 (running: `runs/wumpus/head_shift_double_chain.sh`, log `.log`):** `head_shift.py` on the six double-value runs' `latest.pt`, 512 greedy games each, two at a time. Question: on the planner's own greedy histories, is the oracle-recipe head calibrated where the current-recipe head is confidently wrong (predicted < 0.02, realised deaths)? Is that information in the latent (fresh-head fits)?
-  - **R1 (next):** an offline `objective_ab.py` screen of non-privileged objectives, scored on R0's metric as well as probes. Then an agent run with `value_estimator=double` for the arm that closes the gap.
-- **RESULT (2026-10-15 10:00): the double value PASSES in the oracle recipe (training, 3 seeds).** Analysis returns 215.7 ± 20.5 / 231.4 ± 20.0 / 223.1 ± 19.7 (`best.pt` at collections 85 / 70 / 65), against baselines 55.6 / 168.0 / −5.7: **+160 / +63 / +229**. Unfinished 68–70% (baselines 76–96%), deaths 1–2%. V̂ > 999 on ~1% of live steps (baseline 36%), and every game that perceived the gold took it (`phantom_reward_diag.py` logs). This is the best Wumpus result so far (mean 223 vs the current agent's 182), but it is the privileged diagnostic arm, not an agent. **C2 is confirmed as the oracle networks' idling mechanism.** Two thirds of games still end unfinished, so the value fix is necessary but not sufficient.
-- **Branch (A) step 2 running: `runs/wumpus/double_chain.sh`** (log `double_chain.log`; launched 2026-10-15 05:18 at `da06d34`).
-  - It trains `model.value_estimator=double` in the oracle recipe, `u64_store_eval_eps_decoder_k5_privileged_double_seed{0,1,2}`, then in the current recipe, `u64_store_eval_eps_decoder_k5_double_seed{0,1,2}`. Three runs at a time, then `analyze.py` on each.
-  - The small check (`runs/wumpus/smoke_double`, 6 collections) was clean: 16 min, 3.4 GB GPU peak, evaluations −583 / 62 / −36 at collections 2 / 4 / 6.
-  - **Pre-registered readout** (before any result): the analysis return (`analysis/report.json`, the same analysis games) minus its baseline seed's. The baselines are `u64_store_eval_eps_decoder_k5_privileged_seed*` and `runs/sweeps/wumpus_current/seed*`. Pass: ≥ +100 on 2+ of 3 seeds with unfinished down.
-  - Also read V > 999 with `phantom_reward_diag.py`. Check which checkpoint `best.pt` is: the oracle baselines' `best.pt` was an early network on some seeds (section 5.9), so compare the `_final` networks too.
-- **Branch (A) step 1 done (`5dc41ce`, 2026-10-15): `model.value_estimator: max | double | clipped_double`** (default `max`).
-  - A second `ValueHead` B is built after every other network. `ValuePair` (models/heads.py 2c) reads mean(A, B) for double and min(A, B) for clipped. Per-head targets are in `WorldModelTrainer.pair_value_targets` (trainer.py 3e). Rows of even-indexed episodes in the batch train A, odd ones B. The target and acting copies are copies of the pair.
-  - Raises with `time_aware_value` or `value_nstep`. Tiger fingerprint identical (both representations, 222 lines). Fast suite 179 passed (7 new tests in `TestValuePair`). The key is added as `max` to all 63 saved `.hydra/config.yaml`.
-  - Next: the 6-collection Wumpus small check (waits for GPU room: the FVI jobs are capped at 7.3 GB each), then 3 seeds of the current recipe paired with `wumpus_current` seeds 0–2. Estimator: double unless the current-agent screen favours clipped (double was steadier on the oracle networks: fewer deaths on seed 2).
-- **FVI screen, oracle seeds 0 and 2 at 1 simulation (2026-10-15 03:05):**
-  - (i) max **diverges outright** on frozen latents: mean target ~47,000–50,000 after 400 refreshes, V > 999 everywhere. The gate passes on all three oracle seeds.
-  - The learned value idles completely (unfinished 98–100%). Paired gains at 1 simulation: (ii) double **+113.1 ± 32.8 / +150.4 ± 31.4**; (iii) clipped **+159.4 ± 33.4 / +164.5 ± 37.4**. Wins rise to 14–19% and unfinished falls to 78–85%.
-  - V > 999: (ii) 4.1% / 17.7%, (iii) 1.7% / 11.5% (learned 40% / 51%).
-- **Housekeeping:** everything is committed and pushed. Fast suite 172 passed (2026-10-14). The slow suite last passed 7/7 at `f1e5bbf`; not run since `privileged_belief_loss` (default off, fingerprinted). Run it when the machine is free (~45 min).
+- **The open problem is idling.** About 65% of games end unfinished. The planner stops entering provably safe unvisited cells around step 11–14 and spends the rest of the 50-step window on no-ops (GRAB without gold, SHOOT without the arrow; section 5.9).
+- **The prize (section 5.8):** letting the heuristic's navigation rules override the planner gives 482 ± 39 (+300 ± 42 paired), three quarters of it from turning towards an adjacent safe cell and stepping in.
+- **Before 2026-10-14** (sections 5.6–5.9): every value-side remedy failed (time-aware value, n-step greedy returns, γ = 0.95, detached planning head, offline value targets, teacher values in play). An oracle-latent arm (`model.privileged_belief_loss`; cell 96–98%, heading 100% decodable) idled as much or more, so the value/planner was judged the bottleneck.
+- **2026-10-14:** no-op self-loops are a symptom (C1 closed); the heads are exact on no-ops (no phantom reward); the oracle networks' value exceeds 999, which no game can pay, on 36–58% of live steps, and two oracle seeds refuse the gold for it. That pointed to C2, maximisation bias in the backup.
+
+### 2026-10-15: C2 tested and confirmed on the oracle networks; the fix does not transfer to the agent's own latent
+
+1. **FVI screen** (`fvi_screen.py`, results in its header 4; fitted value iteration on frozen buffer latents through each network's own model, then played in the planner):
+   - (i) the plain max target **diverges**: mean target ~9,000–50,000 on the oracle networks, ~130,000–145,000 on the current agent; V > 999 everywhere. The backup itself creates the optimism (gate passed on all 5 networks).
+   - **Oracle networks: pass.** At 50 simulations, (ii) double gains +191.1 ± 38.3 / +54.4 ± 33.7 / +212.4 ± 37.2 and (iii) clipped +177.8 ± 39.6 / +40.2 ± 34.0 / +135.7 ± 47.0 (seeds 0 / 1 / 2). Unfinished falls 98–99% → 63–77% on seeds 0 and 2. V > 999 falls to 0.4–18%.
+   - **Current agent: fail.** Double −370.0 ± 44.9 / −160.3 ± 41.0, clipped −296.3 ± 44.6 / −64.6 ± 51.8 (seeds 0 / 1; seed 2 stopped because it could not change the verdict). Deaths rise to 5–16%. Its learned value is rarely impossible (V > 999 on < 1% of live steps): the converged values exploit its model errors instead.
+2. **`model.value_estimator: max | double | clipped_double`** (`5dc41ce`; default `max`, Tiger bit-identical; section 9).
+3. **Training with `value_estimator=double`** (`runs/wumpus/double_chain.sh`, 3 seeds per recipe, analysis on the same 512 games against each baseline seed; pass ≥ +100 on 2 of 3 with unfinished down, pre-registered):
+
+| Recipe, seeds 0 / 1 / 2 | Baseline | With double value | Difference | Unfinished | Deaths |
+|---|---|---|---|---|---|
+| Oracle latent (`privileged_belief_loss`) | 55.6 / 168.0 / −5.7 | **215.7 / 231.4 / 223.1** | **+160 / +63 / +229: PASS** | 76–96% → 68–70% | 1–2% |
+| Current agent | 185.5 / 166.0 / 215.2 | 163.8 / 81.7 / 168.0 | −22 / −84 / −47: FAIL | 65–70% (unchanged) | 0–4% → 4–9% |
+
+   - Oracle + double: V̂ > 999 on ~1% of live steps (baseline 36%), and every game that perceived the gold took it (baseline: refused in 13 of 13). `best.pt` at collections 85 / 70 / 65, so not an early-network artefact. **Mean 223, the best Wumpus result so far**, but this is the privileged diagnostic arm, not an agent.
+   - Current + double: idle V̂ falls (no-op GRAB 431–635 vs 626–660) but stays flat; deaths rise.
+4. **Reading (C6, section 1b): the value bias and the model's accuracy are coupled.** Removing the maximisation bias helps only when the latent and heads are accurate; otherwise the corrected value exploits the model's errors (confident "safe" mistakes of the observation head, section 5.5). The 2026-10-12 conclusion ("the value/planner, not the representation, is the bottleneck") held for the max backup only. With an unbiased value, the representation is again what separates the agent (cell/heading decodable 56–59% on random histories) from the oracle arm (96–100%).
+5. **User decision (2026-10-15): the representation direction.** Bring the agent's own latent closer to the oracle latent **without privileged targets**, then train with `value_estimator=double`. Plan in section 6.2.
+6. Even oracle + double leaves ~68% of games unfinished (the heuristic makes 573), so the value fix is necessary but not sufficient.
+
+- **Nothing is running.** Everything is committed and pushed (through the commit that wrote this file). Fast suite 179 passed (2026-10-15). The slow suite last passed 7/7 at `f1e5bbf`; not run since `privileged_belief_loss` and `value_estimator` (both default off, fingerprinted). Run it when the machine is free (~45 min).
 
 ## 1. Goals
 
@@ -91,14 +66,16 @@ Stages:
 
 The user trusts the agent's research judgement (2026-10-10: "run the experiments you think will not waste meaningless compute and post-analysis"; 2026-10-12: "decide on the best direction forward without asking me to pick an option"). These are the beliefs that currently steer the work, strongest evidence first. Each is a conjecture with a stated test, not a result.
 
-**C2. The value is flat and impossibly optimistic, sustained by the max over noisy children (the lead; being tested by `fvi_screen.py`).**
+**C6 (new, 2026-10-15; the lead). The value bias and the model's accuracy are coupled.** The double value turns the oracle networks into the best agent so far (223) and makes the current agent worse (138 vs 189 on the same seeds; deaths up). On frozen latents the converged pair values exploit the current model's errors. Implication: fix the representation and heads first (what the planner exploits: confident "safe" errors), then use the double value. Test: R0/R1 (section 6.2).
+
+**C2. Confirmed 2026-10-15 for the oracle networks: the value is flat and impossibly optimistic, sustained by the max over noisy children.** The plain max diverges on frozen latents. Double/clipped targets remove the impossible values in the screen and in training (V > 999: 36% → 1%; gold taken). For the current agent the bias is not the main problem (C6).
 - **The mechanism:** V̂ has no gradient towards progress. A flat optimistic V is self-consistent only if each step's backup supplies about (1−γ)V + 1 ≈ 8. Taking the max over 5 actions × observation branches of noisy child values supplies that (maximisation bias, van Hasselt 2010).
 - **Evidence:**
   - the oracle networks hold V̂ > 999, which no policy can reach, and refuse the gold for it;
   - the idle bias is ≈ 950 and the Bellman residual ≈ 5 (self-consistent, not under-trained);
   - with loops removed, the idling moves to turn cycles (C1 result);
   - on the current agent the filter drifts on no-ops (0.46·|z|), so every no-op child is a fresh noise draw for the max.
-- **Test:** `fvi_screen.py`, comparing a standard max target, a double target and a clipped-double target on frozen latents, then played in the planner.
+- **Test (done):** `fvi_screen.py` (header 4), then training with `model.value_estimator=double` (section 0).
 - **Caveat to keep in mind:** the planner's own tree search also maxes over noisy leaves. A value trained with a double target can still be lifted by a 50-simulation search, which is why the screen plays at 1 and at 50 simulations.
 
 **C1. Closed 2026-10-14: no-op self-loops are a symptom.** A loop child is scored r + γV̂(z), and the exact identity V(z) = max(M, r/(1−γ)) removes it without biasing decisions. Applied correctly (v2) it removes the loops; the idling moves to 2-step turn cycles and the gains stay below +40. The identity is not worth building into the method on its own. Revisit only if C2's fix leaves loops behind.
@@ -107,7 +84,7 @@ The user trusts the agent's research judgement (2026-10-10: "run the experiments
 
 **C3. Values learned from another policy's states fail by compounding error.** Shown twice now (teacher plug-in, Q/A heads): offline ranking on the teacher's states says nothing about play. Any value fix must be judged on the agent's own state distribution, in play.
 
-**C4. The current agent's filter is not belief-consistent on uninformative actions.** The exact belief is unchanged by a failed GRAB, but the latent moves by half its norm. This may feed C2: each no-op child is a fresh noise draw for the max. It is untested as a cause. The oracle latent is nearly idempotent on no-ops and still idles, so C4 is at most secondary.
+**C4. The current agent's filter is not belief-consistent on uninformative actions.** The exact belief is unchanged by a failed GRAB, but the latent moves by half its norm. It is untested as a cause. With the double value in place it is one candidate difference between the agent's latent and the oracle's (which is nearly idempotent on no-ops); a cheap CPU check on stored games can measure it on the double runs.
 
 **Principles that picked the experiments (keep using them):**
 - Cheapest informative test first: replay the trained networks with one piece swapped before any training run; train only when a frozen-network test passes.
@@ -133,6 +110,9 @@ The user trusts the agent's research judgement (2026-10-10: "run the experiments
   - 1-simulation plays take ~3 min.
   - At most 3 planner jobs on the GPU at once; the caching allocator then shows ~15.9 of 16.3 GB.
 - **Give every long play a progress line** (decision counter, timestamps), so a stall shows within minutes rather than hours.
+- **Profile a smoke run before a long launch** (2026-10-15): the FVI fit spent 85% of each refresh re-expanding frozen latents; expanding the children once made it ~4× cheaper with identical output. `OMP_NUM_THREADS` made no difference to the GPU-bound jobs, so use 1–2 threads beside ipomcp.
+- **Cap GPU memory per job when several share the GPU** (`torch.cuda.set_per_process_memory_fraction(f, torch.cuda.current_device())`; it needs an indexed device). Without a cap, three planner jobs held ~11.6 GB of allocator cache each, and WSL spilled into system memory (a refresh took 78 s instead of 4.7 s). `BeliefTreeSearch` keeps its last trees (`self.roots`): drop the planner after a big play. A 512-game, 50-simulation play peaks at ~5.4 GB; a Wumpus `main.py` at ~3.4 GB.
+- **Smoke-check every edit, even a one-liner,** before relaunching (a cap call without a device index failed 5 queued jobs at start-up, 2026-10-15).
 - **Order chains by information per GPU-hour.** Put the arms that decide the branch first, and confirmations and low-prior arms last, where they can be dropped.
 
 
@@ -185,27 +165,13 @@ The user trusts the agent's research judgement (2026-10-10: "run the experiments
 ## 3. Current state
 
 **Git**
-- **Everything is pushed** through `3924a9d` (2026-10-14). The working tree is clean. `runs/` is untracked: keep it.
-- **Running: `runs/wumpus/fvi_chain.sh`** (launched 2026-10-14 21:22, `3790114`, 3 jobs, `OMP_NUM_THREADS=1`; the `decision N; s` lines in each `<run>.fvi_screen.log` show progress). Earlier: `runs/wumpus/c2_chain.sh` (log `c2_chain.log`) did self-loop v2 on the oracle networks; its τ=0.1 plays were stopped on purpose at 20:46 (exit 143; section 6.1). Its FVI batch was stopped at 20:53 after the 1-simulation baselines; those partial `*.fvi_screen.log` files are overwritten by the relaunch.
-- **To launch: `runs/wumpus/fvi_chain.sh`** (log `runs/wumpus/fvi_chain.log`, which ends with `ALL DONE`; each step logs its exit status). It runs `fvi_screen.py <run> 512` → `<run>.fvi_screen.log` on the 3 oracle `_final` networks, then on `runs/sweeps/wumpus_current/seed{0,1,2}`, 3 GPU jobs at a time. Learned-value baselines from the stopped run, for checking the relaunch: 1-simulation returns −41.9 / 136.1 / −40.4 on the oracle seeds.
-
-  Each FVI job:
-  - plays the learned value at 1 and 50 simulations;
-  - fits 3 arms × 400 refreshes (progress lines every 25 refreshes, with seconds elapsed);
-  - plays each arm at 1 and 50 simulations.
-
-  Expect several hours per batch under ipomcp load. The 1-simulation plays took ~3 min. The chain needs no Claude session (`setsid nohup`).
-  - **Health check:**
-    - `cat runs/wumpus/c2_chain.log`;
-    - `tail -3 <run>.fvi_screen.log` (`refresh N … s` lines should advance);
-    - `ps -eo pid,etime,args | grep "^ *[0-9]* *[0-9:-]* [^ ]*python[^ ]* reports/"`;
-    - `nvidia-smi` (≤ 3 jobs);
-    - `uptime` (ipomcp load).
-  - **Never `pkill -f`** a pattern that appears in your own command line; kill by PID. A killed FVI job cannot resume: rerun that network.
-- Earlier today: `runs/wumpus/self_loop_chain.sh` (v1; the oracle batch finished; the current-agent v1 runs were stopped at 11:12 because v1 is void, and their baselines reproduce `report.json`). A clean WSL shutdown at 09:07 killed its first launch.
+- **Everything is pushed** (2026-10-15). The working tree is clean. `runs/` is untracked: keep it.
+- **Nothing is running** (2026-10-15 19:06). The R0 chain, `runs/wumpus/head_shift_double_chain.sh`, was stopped on the user's request 3 minutes after launch; its two partial logs were deleted. Relaunch it as in the next-session job above.
+- Chains of 2026-10-14/15, all finished or stopped on purpose, with logs beside them: `c2_chain.sh` (self-loop v2), `fvi_chain.sh` then `fvi_queue.sh` (FVI screen; `fvi_queue.log` records the relaunches and the stop of current seed 2), `double_chain.sh` (training with `value_estimator=double`, both recipes, then `analyze.py`).
+- **Health checks for any chain:** `cat <chain>.log`; `tail -3 <run>.<diag>.log` (progress lines should advance); `ps -eo pid,etime,args | grep "^ *[0-9]* *[0-9:-]* [^ ]*python[^ ]* \(main.py\|reports/\)"`; `nvidia-smi`; `uptime` (ipomcp load). **Never `pkill -f`** a pattern in your own command line; kill by PID (chain shell, `xargs`, then the python jobs).
 
 **Tests**
-- The fast suite passes: 172 tests, about 1.5 min (2026-10-14).
+- The fast suite passes: 179 tests (2026-10-15; 7 new in `TestValuePair`), about 1.5 min on an idle machine (6 min under load).
 - **The slow suite passed 7/7 at `f1e5bbf` on 2026-10-11** (42.5 min; log `runs/slow_suite_f1e5bbf.log`). It covers every option added since 2026-10-05.
 - **Checkpoints from before `52ac3fc` cannot be resumed:** their buffer state has no `greedy` flags (no back-compat, by rule). They still load for analysis (`load_trained_run` reads networks only).
 - **The Tiger acceptance test now trains 6000 updates.** At 3000 the value gate (mean |V − V*| < 8) failed at 3–5 of 9 seeds. The two worst seeds drop to 5.3 and 1.1 at 6000. The seed table is in the test header; the logs are in `runs/tiger_acceptance_seeds/`.
@@ -247,7 +213,11 @@ The user trusts the agent's research judgement (2026-10-10: "run the experiments
 | `runs/sweeps/wumpus_current/seed{0,1,2}.self_loop_diag.log` | Self-loop v1 on the current agent: baselines only (stopped; v1 void) |
 | `<run>.self_loop_frozen.log` (oracle `_final` runs; later the current seeds) | Self-loop v2 (frozen loops): the C1 result |
 | `<run>.phantom_reward_diag.log` (oracle `_final` runs and `runs/sweeps/wumpus_current/seed{0,1,2}`) | No phantom reward; V̂ > 999 and gold refusal |
-| `<run>.fvi_screen.log`, `runs/wumpus/fvi_chain.sh` | The C2 screen (to launch; `c2_chain.sh` + `.log` hold today's stopped run) |
+| `<run>.fvi_screen.log`, `<run>.fvi_nets.pt` (oracle `_final` runs, `runs/sweeps/wumpus_current/seed{0,1}`); `runs/wumpus/fvi_chain.sh`, `fvi_queue.sh` (+ `.log`) | The C2 screen and its fitted nets (`fvi_screen.py` header 4). `seed2.fvi_screen.log` of the current agent holds a stale start-up failure: that seed was stopped on purpose |
+| `runs/wumpus/u64_store_eval_eps_decoder_k5_privileged_double_seed{0,1,2}` | **Oracle recipe + `value_estimator=double`** (trained at `da06d34`), analysed; `.phantom_reward_diag.log` beside: **the best Wumpus result (223)** |
+| `runs/wumpus/u64_store_eval_eps_decoder_k5_double_seed{0,1,2}` | Current recipe + `value_estimator=double`, analysed, `.phantom_reward_diag.log`: failed (138) |
+| `runs/wumpus/smoke_double` | 6-collection small check of the double value (oracle recipe; clean) |
+| `runs/wumpus/double_chain.sh` (+ `.log`), `head_shift_double_chain.sh` (+ `.log`) | The double-value training chain (done); R0 (ready to relaunch) |
 
 **Reviewer pages**
 
@@ -501,6 +471,8 @@ A correction to the earlier write-up: a single realised return is **not** ≤ V*
 
 ### 5.9 The oracle-latent arm (2026-10-12): a near-exact latent does not stop the idling
 
+**Updated 2026-10-15:** this holds for the max backup only. With `value_estimator=double` the oracle recipe reaches 223 (section 0); its idling was the maximisation bias (C2). The representation matters again (C6).
+
 Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `5416237` (`runs/wumpus/u64_store_eval_eps_decoder_k5_privileged_seed{0,1,2}`; `privileged_chain.sh`). Paired with `wumpus_current` seeds 0–2, same 512 analysis games, Student-t 95% intervals over 3 seeds:
 
 | | Final networks (collection 100) | Current agent | Paired |
@@ -569,55 +541,36 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 
 ## 6. Next steps
 
-Experiments within the agreed direction (fixing the Wumpus idling on the value/planner side) need no permission (section 2). Domain changes, project-stage changes and anything touching canonical Tiger do.
+**Direction (user decision 2026-10-15): representation.** Make the agent's own latent approach the oracle latent without privileged targets, then train with `model.value_estimator=double`. Experiments within this direction need no permission (section 2). Domain changes, project-stage changes and anything touching canonical Tiger do.
 
-### 6.1 Done and running
+### 6.1 Done 2026-10-15
+- **FVI screen** (`fvi_screen.py`, header 4): oracle networks pass, current agent fails (section 0).
+- **`model.value_estimator`** (`5dc41ce`): `ValuePair` (models/heads.py 2c), `WorldModelTrainer.pair_value_targets` (trainer.py 3e), run.py section 13 with both training results.
+- **Double-value training, both recipes** (section 0 table): oracle + double passes (223), current + double fails (138).
 
-- **Self-loop v2 (done; C1 a symptom):**
-  - Method: `self_loop_diag.py` header 2c; result in header 3.
-  - τ=0.05, oracle networks: +21.8 ± 16.2 / +14.1 ± 27.0 / +38.2 ± 17.4. The loops are gone, and turns rise to ~70% of live steps.
-  - v1 (leaf values only) is void and kept in the header for the record.
-- **FVI screen (to launch: `runs/wumpus/fvi_chain.sh`):** `fvi_screen.py`, readout in header 2b.
-  - Fitted value iteration on 130,560 frozen buffer latents (2,560 games) of each network, through its own `expand`, 400 target refreshes. Three arms:
-    - (i) the standard max target;
-    - (ii) a double target, with nets A and B on disjoint game halves, each choosing a* with itself and evaluating it with the other;
-    - (iii) a clipped-double target: max_a over children valued by min(V_A, V_B).
-  - Each arm is played in the planner at 1 and 50 simulations, paired with the learned value. Also measured:
-    - the idle bias;
-    - V > 999;
-    - whether FORWARD is preferred at declined safe steps;
-    - the root Q spread.
-  - Gate: (i) must reproduce the optimism (idle bias ≥ half the learned value's). If it does not, the training dynamics, not the backup, are to blame, and (i)'s own play is the result.
-  - Pass: (ii) or (iii) ≥ +100 at 50 simulations on 2+ of 3 seeds of a population, with unfinished down.
-  - The 16-game smoke check (3 refreshes) is not evidence, only proof that the script runs.
+### 6.2 The representation plan
 
-### 6.2 Decision tree after the FVI screen
+**What is already known** (do not redo; sections 5.5, 5.7, 7):
+- The architecture is not the limit: the same GRU reaches ~100% cell/heading from exact targets, and a causal Transformer was no better (`supervised_filter.py`). The objective is the limit.
+- The decoder objective beats JEPA on the latent (heading +20 points, cell +7); longer multi-step horizons (k = 10, 20) do not help; more offline updates improve the latent but overfit the jointly trained observation head (held-out NLL up, confident "safe" misses up). Weight decay does not help; a detached, NLL-early-stopped head is not more conservative where it matters.
+- What the double-value planner exploits on the current agent are deaths: the observation head's confident "safe" errors (`head_shift.py`: calibrated in-sample, overconfident on fresh games).
 
-**(A) (ii) or (iii) passes** (maximisation bias is the mechanism):
-1. Add a default-off trainer option, e.g. `model.value_estimator: max | double | clipped_double`, in `WorldModelTrainer.value_targets` (`training/trainer.py`).
-   - It needs two target value heads: a second `ValueHead` with its own EMA copy, trained on alternating batches or on the same batch with the cross targets.
-   - Add the key to every saved `.hydra/config.yaml`.
-   - Run the Tiger fingerprint (section 2), the fast suite and a 6-collection small check.
-2. Train 3 seeds of the current recipe paired with `wumpus_current` seeds 0–2. If the oracle networks passed and the current ones did not, train the oracle recipe as well. Pre-register: ≥ +100 paired on 2+ seeds, unfinished down.
-3. If the search's own max re-inflates the values (the arm passes at 1 simulation but not at 50), also act with the clipped value at the leaves.
+**R0 (ready: `runs/wumpus/head_shift_double_chain.sh`):** `head_shift.py <run> latest.pt 512` on the six double runs. Its question: on the planner's own greedy histories, is the oracle-recipe head calibrated where the current-recipe head is confidently wrong, and is the danger in the current latent anyway (fresh-head fits on frozen latents)?
+- Suggested readout, to write into the header before reading: per run, realised death rate of greedy FORWARD steps predicted < 0.02; fresh-head danger at exact danger ≥ 0.4 (buffer-only vs buffer + greedy).
+  - The oracle runs are calibrated and the current runs are not, and a fresh head on current latents recovers the danger: the information is in the latent, so the fix is the head and its data/objective (R1 arms on the head side).
+  - A fresh head cannot recover it: the latent lacks the danger, so R1 arms on the representation objective.
 
-**(B) (i) fails the gate** (FVI to convergence is NOT optimistic): the optimism comes from the training dynamics. Suspects, cheapest first:
-- the EMA 0.9 target updated every step with 64 updates per collection;
-- the two-hot loss on a 100,000-wide support (`value_bound` = 1000/(1−γ));
-- non-stationary latents.
+**R1 (design after R0):** an offline `objective_ab.py` screen (cached pool `runs/wumpus/supervised_filter/pools.pt`, 3 seeds, save the networks with `--save`), scored on R0's metric (head safe-miss, danger error) as well as cell/heading/hazard probes. Candidate non-privileged arms, cheapest first:
+- the C4 no-op idempotence of the filter (a consistency term: the latent after an action whose percept is uninformative should equal the latent before, e.g. for GRAB without GLITTER; check first, on the CPU, whether drift correlates with the head's errors);
+- the head side if R0 says the information is there (e.g. ensembles or a calibrated head trained on held-out-style data);
+- representation objectives aimed at what dead reckoning needs (future BUMP and percept prediction under longer random action sequences, already partly covered by k-step; only with a new angle).
 
-If (i) also plays better than the learned value, retrain with the FVI protocol's main difference (a hard target refresh, i.e. a slower target update) as a default-off option. **Two cheap bounds to consider:** clip the value targets to the attainable range [−1000 − 50, 999] (domain-derived, so it needs the user's approval as a method change; ask), or narrow the two-hot support.
-
-**(C) Neither passes, and (i) reproduces the optimism:** the bias is not from the max alone. Read the measures:
-- if FORWARD is preferred at declined safe steps under (ii)/(iii) but play does not improve, the search's own maximisation re-inflates the values, so test a clipped leaf value in the search (planning-time only, the `teacher_plugin_diag.py` mechanism);
-- otherwise go to 6.3.
-
-**In every branch:** if a planning-time fix passes on the oracle networks only, C4 (no-op drift) is the next thing to test for the current agent.
+Then the agent run with `value_estimator=double` for the winning arm, 3 seeds paired with `wumpus_current` 0–2 (pass ≥ +100 on 2 of 3, unfinished down).
 
 ### 6.3 Other candidates (weaker or more expensive; reasons stated)
 - **A learned policy prior (AlphaZero-style).** A prior distilled from the search's own visits inherits the idling, and argmax-Q acting ignores the prior. Only worth it if acting follows visits or the prior comes from outside the search.
 - **Advantage learning (action-gap increasing operator, Bellemare et al. 2016).** The counterfactual test found the one-step estimates uncorrelated with the true advantage (section 5.8), so amplifying the gap amplifies noise.
-- **Turn-then-forward macro actions.** The value at the macro's end is the same flat V̂; only worth it after the value has a gradient.
+- **Turn-then-forward macro actions.** Worth revisiting on the oracle + double networks, whose value now has a gradient: about 68% of their games still end unfinished.
 - **A privileged DAgger diagnostic** (teacher labels on the agent's own states) would bound what a value learned on the right states can do (C3). Diagnostic only; lower priority than (B).
 - **The remaining ~23% of the gap is risk decisions** (seed 3 keeps 13.5% deaths even with the navigation override). Not diagnosed.
 - If an arm is significant at 3 seeds, extend it to 5 with `sweep.py`.
@@ -657,7 +610,7 @@ If (i) also plays better than the learned value, retrain with the FVI protocol's
 - **Wumpus, "always step into a provably safe cell ahead"** (exact-belief override, `override_diag.py`): +8 ± 24, nothing. Do not build a one-step FORWARD remedy; the missing skill is turning towards the safe cell (section 5.8).
 - **Wumpus, n-step returns of the agent's own greedy games mixed into the value target** (`model.value_nstep=10`, mix 0.5): worse (88–126 against 166–215). The greedy policy's returns are uniformly poor and push all values down without separating exploring from idling.
 
-- **Wumpus, an oracle latent (`model.privileged_belief_loss`) as a fix for the idling:** cell/heading decode 96–100%, the agent idles as much or more. The representation is not the bottleneck (section 5.9).
+- **Wumpus, an oracle latent (`model.privileged_belief_loss`) as a fix for the idling:** cell/heading decode 96–100%, the agent idles as much or more. The representation is not the bottleneck **under the max backup** (section 5.9; with the double value it is, C6).
 - **Wumpus, teacher (heuristic) values on the oracle latent, in play** (section 5.9): a fitted state value plugged into the search at 1, 10 or 50 simulations (gains +4 to +79 on two seeds, −69 to −146 on seed 1); action-value and common-layout advantage heads acting greedily (A head medians +38 / −80 / +54; Q heads −86 to −129, deaths 11–30%). They rank as well as the teacher on the teacher's states and fail on the agent's own. Do not pursue teacher-derived values without on-policy states.
 - **Reading a fit's residual on single-game returns as its value error:** the residual is mostly layout luck (the "action-gap problem" reading of 2026-10-12, corrected on 2026-10-13). Measure ranking quality directly (G(chosen) − G(teacher) on branched states).
 - **Using the true next percept to score a one-step lookahead** ("V exact children"): it leaks the layout (it shows whether FORWARD kills) and looks +37 better than the teacher. Not a fair arm.
@@ -686,7 +639,15 @@ If (i) also plays better than the learned value, retrain with the FVI protocol's
 - **Expanding a whole data set at once through `LearnedSearchModel.expand`** (N × A × O children; 20,000 states → 6.4 M rows) runs out of GPU memory. Chunk it (`value_chain_diag.py`, `one_step`).
 - **`echo "... $(date ...) exit $?"`** logs the exit status of `date`, not of the job, so crashed runs looked successful once. Capture `status=$?` first.
 
+**Value targets (2026-10-15)**
+- **The double value on the agent's own latent** (`value_estimator=double`, current recipe): −22 / −84 / −47, deaths up. The frozen-latent screen predicted it. Only combine it with a better representation (C6).
+- **Fitted value iteration with the plain max through the learned model** diverges (to 10^4–10^5) on frozen latents. Never use it as a value target.
+
 **Machine and tooling**
+- **Several uncapped GPU planner jobs on WSL** (2026-10-15): three FVI jobs held ~11.6 GB of cache each and spilled into system memory (fit 78 s per refresh instead of 4.7 s; ~2.5 h lost with the two relaunches below). Cap per process (section 1b).
+- **`torch.cuda.set_per_process_memory_fraction(f, torch.device("cuda"))`** raises: it needs an index (`torch.cuda.current_device()`).
+- **A recorder holding the planner after a play** keeps the search trees (`BeliefTreeSearch.roots`, ~2+ GB at 512 games); under a cap the next step ran out of memory.
+- **`kill -0 0` always succeeds** (it signals the process group): a "wait for PID" loop given 0 waits forever.
 - **Running heavy jobs under ipomcp load:** CPU-bound search slows about 4×, and parallel runs can exhaust RAM (section 2, Machine).
 - **Six parallel GPU jobs** (pool builds or A/Bs) gain nothing. **Six parallel planner diagnostics** (`self_loop_diag.py`, 2.6 GB each) filled the 16 GB GPU; WSL spilled to shared memory and the plays slowed > 10× (13 h lost, 2026-10-14). Run at most 3, and check `nvidia-smi` (it can take 1–2 min to answer under load) shortly after launch.
 - **`pkill -f`/`pgrep -f` self-matches** killed the calling shell twice (2026-10-06, 2026-10-14). Kill by PID.
@@ -740,9 +701,25 @@ If (i) also plays better than the learned value, retrain with the FVI protocol's
 - `b2c3a91`: `phantom_reward_diag.py` (no phantom reward; V̂ > 999; gold refusal) and `fvi_screen.py` (C2, pre-registered).
 - `690a737`: `self_loop_diag.py` v2 (`FrozenLoopSearch`; v1 void); `fvi_screen.py` smoke-checked; `c2_chain.sh` launched.
 - `e91dc00`, `2061a9b`: the self-loop v2 result (C1 a symptom); `FrozenLoopSearch` vectorised.
+- `46f1750`, `a8b4f40`: HANDOFF rewrite; chain stopped on request.
+
+**Pushed 2026-10-15**
+- `3790114`: `fvi_screen.py` compute changes (children expanded once, information-first order, saved nets, progress lines).
+- `61ba76c`, `5246ce9`, `d223e6d`: GPU memory cap per job, its indexed-device fix, the planner released after each play.
+- `b8cc795`, `96bbdaf`, `ac63ebd`, `d40e511`, `da06d34`: FVI results (oracle pass, current fail).
+- `5dc41ce`: `model.value_estimator` (Tiger fingerprint identical; 179 tests).
+- `f9beec1`, `bd374b7`: the two training results (oracle + double passes, current + double fails).
+- `6278dd3`, `314e992`: the user's representation decision; the R0 plan.
 - This HANDOFF rewrite.
 
 ## 9. Files touched since `9a9b726` (all pushed)
+
+**Added or changed 2026-10-15**
+- `src/ipomdp/models/heads.py` (section 2c: `ValueHead.value`, `ValueEstimator`, `ValuePair`), `models/__init__.py`; `planning/search_model.py` (`values` reads `value_head.value`); `training/trainer.py` (section 3e, `pair_value_targets`, per-episode head rows); `training/run.py` (section 13 with both results; `RunConfig.value_estimator`; head B built last); `experiments/runs.py`; `conf/config.yaml` (`model.value_estimator: max`, back-filled into all 63 saved run configs).
+- Tests: `TestValuePair` in `tests/test_training_run.py` (wiring, target definitions, one head per episode, raises, resume); `value_estimator` in the test configs of `test_training_run.py` and `test_wumpus.py`.
+- `reports/2026-10-02_wumpus_diagnostics/fvi_screen.py` (compute changes 2b a–e, result header 4).
+- `runs/wumpus/fvi_queue.sh`, `double_chain.sh`, `head_shift_double_chain.sh` (untracked).
+- `HANDOFF.md`, `CLAUDE.md` (project paragraph), memory files.
 
 **Added or changed 2026-10-14** (diagnostics only; `src/` untouched, so Tiger is unaffected)
 - `reports/2026-10-02_wumpus_diagnostics/phantom_reward_diag.py` (new): the heads on no-op GRAB and SHOOT at the checkpoint's own stored greedy games, on the CPU; V̂ > 999; gold refusal.
