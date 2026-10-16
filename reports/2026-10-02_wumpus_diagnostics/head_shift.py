@@ -119,7 +119,22 @@
 #      predicted >= 2, and not on 2+ oracle runs -> R1 on calibration in the moderate range.
 #    - (N) neither separates the recipes -> the death gap is not the observation head's calibration; R1 moves
 #      to what the representation lacks for dead reckoning (moves and turns), per item 4's C4 follow-up.
-#    - Result: (pending)
+#    - Result 2026-10-15 (logs <run>.head_shift_best.log): (M) MODERATE-RISK UNDERESTIMATION.
+#      deaths in [0, 0.02) / in [0.02, 0.5) (n x died), realised / predicted in [0.02, 0.2):
+#        current seed 0   ~8 (miss 0.001) / ~10   0.044 / 0.058 = 0.76
+#        current seed 1   ~5 (miss 0.002) / ~41   0.129 / 0.059 = 2.2
+#        current seed 2   ~0              / ~44   0.346 / 0.043 = 8.0
+#        oracle seeds     ~0 / 0 / ~6 (miss <= 0.001)  /  ~1 / 0 / ~1   (0.37 / 0 / 0.22)
+#      (S) on 0 of 3 current runs; (M) on 2 of 3 current (seeds 1, 2) and 0 of 3 oracle runs. The greedy
+#      current planner also steps into the moderate bin 2-4x as often (227 / 311 / 127 FORWARDs vs 75 / 47 /
+#      84). On fresh EXPLORING games both recipes' heads underrate this bin ~2x, so the greedy planner selects
+#      the head's underestimates (a winner's curse on the model).
+#      Not pre-registered: at held-out greedy FORWARDs with exact danger >= 0.4, where n is usable (current
+#      seeds 1, 2: n = 25, 21), the agent's head reads 0.066 / 0.045 and a FRESH head on the same frozen
+#      latents (buffer only) 0.354 / 0.826 (died 0.64 / 1.00). The danger is in the latent; the jointly trained
+#      head does not report it. Caveat: the fresh heads train on latest.pt's buffer, which includes the
+#      collections after best.pt.
+#      -> R1 on the head side: the planning model's death estimate in the moderate range (HANDOFF 6.2).
 # ==============================================================================
 
 import sys
