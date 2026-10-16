@@ -72,6 +72,36 @@
 #        (paired +0.025 +- 0.062). Even on the same 6400 latent the fresh head misses more
 #        (0.021/0.065/0.050): NLL early stopping does not make the head conservative where it matters.
 #
+# 2e. Data vs objective for dead reckoning (user decision, 2026-10-15 night, R1 of HANDOFF 6.2):
+#    - The agent's best.pt filters decode cell / heading 59-61% / 58-66% on the held-out random pool, whereas
+#      this script's offline decoder k5 at the same 6400 updates reaches 77-81% / 63-84% (2c). Is the agent's
+#      own data (idle-heavy greedy and exploring games) what limits dead reckoning, or its in-agent training?
+#    - --train-buffer <run>: train on that run's replay buffer (latest.pt, every game, uniformly sampled) instead
+#      of the pool. The probes are still fitted on the pool's training games and scored on the held-out pool,
+#      so every arm is scored identically. Caveat: the agent trained on a GROWING buffer; uniform sampling of
+#      the final buffer gives later games more weight than the agent saw.
+#    - --agent-reference <run>: no training; the run's best.pt networks are loaded and scored the same way.
+#    - Arms (3 seeds, paired by seed with u64_store_eval_eps_decoder_k5_seed{0,1,2}, config of seed 0, decoder,
+#      k = 5, 6400 updates): pool (rerun, same code), buffer (that seed's run), agent reference.
+#    - Pre-registered readout (before any run), on held-out probe cell and heading accuracy, means over seeds:
+#      * DATA-LIMITED: the buffer arm is within 5 points of the agent reference AND >= 8 points below the pool
+#        arm, on both cell and heading -> exploration / data arms next (e.g. a share of random-action games).
+#      * TRAINING-LIMITED: the buffer arm is within 5 points of the pool arm AND >= 8 points above the agent
+#        reference, on both -> the in-agent training limits it (growing buffer, Polyak, value-loss coupling);
+#        ablate those next.
+#      * Otherwise MIXED: report the share of the pool - agent gap that the data explain,
+#        (pool - buffer) / (pool - agent), per probe.
+#    - AMENDED before any training run (2026-10-15 night), after scoring the agent references with this
+#      script (runs/wumpus/agent_reference_probes.txt): the 59-61% premise came from noop_drift_cost.py's harder
+#      random-only half. On the full held-out pool the agents decode cell / heading 74-76% / 62-65% (current
+#      recipe, 5 seeds; double runs 73-75% / 60-64%), against 77-81% / 63-84% for the pool arm (2c) and
+#      97-100% / 98-100% for the oracle-recipe networks. The pool - agent gap (~5 / ~8 points) is too small for
+#      the 8-point thresholds above, so the readout becomes: per probe, the share of the pool - agent gap the
+#      data explain, (pool - buffer) / (pool - agent), means over seeds, plus the buffer arm against the oracle.
+#      Whatever the share, the data can move the latent by at most the pool - agent gap, a fraction of the
+#      25-35 points to the oracle latent; that bound is the main reading.
+#    - Result: (pending)
+#
 # 3. Usage:
 #    uv run python reports/2026-10-02_wumpus_diagnostics/objective_ab.py --representation jepa \
 #        --horizon 5 --seed 1 --pool-cache runs/wumpus/supervised_filter/pools.pt
@@ -90,7 +120,7 @@ from omegaconf import OmegaConf
 from ipomdp.domain.wumpus import GAME_OVER, NUM_CELLS
 from ipomdp.experiments.runs import build_training_run
 from ipomdp.models import ObservationHead
-from ipomdp.training import EpisodeBatch
+from ipomdp.training import EpisodeBatch, load_checkpoint
 
 sys.path.insert(0, str(Path(__file__).parent))
 from supervised_filter import pool  # noqa: E402  (same diagnostics directory)
@@ -235,6 +265,9 @@ def main() -> None:
     parser.add_argument("--train-games", type=int, default=None,
                         help="Train on the first n games of each half of the pool (2n games; default: all).")
     parser.add_argument("--planning-head", action="store_true", help="Also score a decoupled planning head (section 2d).")
+    parser.add_argument("--train-buffer", type=Path, default=None, help="Train on this run's replay buffer (2e).")
+    parser.add_argument("--agent-reference", type=Path, default=None,
+                        help="Score this run's best.pt networks without training (2e).")
     parser.add_argument("--save", type=Path, default=None, help="Write run.networks' states here after training.")
     parser.add_argument("--score-at", type=int, nargs="*", default=[],
                         help="Also score at these update counts (lines 'RESULT@<updates> name value').")
@@ -260,15 +293,37 @@ def main() -> None:
     half = train["actions"].shape[0] // 2
     fit_rows = (torch.arange(train["actions"].shape[0], device=device) if args.train_games is None else
                 torch.cat([torch.arange(args.train_games, device=device), half + torch.arange(args.train_games, device=device)]))
+    data = train
+    if args.train_buffer is not None:                                      # section 2e
+        if args.train_games is not None:
+            raise ValueError("--train-games selects pool games; it does not apply to --train-buffer.")
+        buf = load_checkpoint(args.train_buffer / "checkpoints" / "latest.pt")["buffer"]
+        size = buf["size"]
+        data = {"actions": buf["actions"][:size].to(device), "observations": buf["observations"][:size].to(device),
+                "rewards": buf["rewards"][:size].to(device), "initial": buf["initial_observations"][:size].to(device)}
+        if data["actions"].shape[1] != length:
+            raise ValueError(f"buffer episodes have {data['actions'].shape[1]} steps, the pool {length}.")
+        fit_rows = torch.arange(size, device=device)
+        del buf
+    if args.agent_reference is not None:                                   # section 2e
+        if args.train_buffer is not None:
+            raise ValueError("--agent-reference scores a trained run; it takes no training data.")
+        networks = load_checkpoint(args.agent_reference / "checkpoints" / "best.pt")["networks"]
+        for name, net in run.networks.items():
+            net.load_state_dict(networks[name])
+        args.updates = 0
     print(f"arm representation={args.representation} horizon={args.horizon} seed={args.seed} "
-          f"weight_decay={cfg.trainer.weight_decay}; {len(fit_rows)} training games", flush=True)
+          f"weight_decay={cfg.trainer.weight_decay}; {len(fit_rows)} training games"
+          + (f" from the buffer of {args.train_buffer}" if args.train_buffer is not None else "")
+          + (f"; agent reference {args.agent_reference} best.pt" if args.agent_reference is not None else ""),
+          flush=True)
 
     t0 = time.time()
     generator = torch.Generator(device=device).manual_seed(args.seed)
     for update in range(1, args.updates + 1):
         rows = fit_rows[torch.randint(0, len(fit_rows), (cfg.training.batch_size,), device=device, generator=generator)]
-        metrics = run.trainer.train_step(EpisodeBatch(train["actions"][rows], train["observations"][rows],
-                                                      train["rewards"][rows], train["initial"][rows]))
+        metrics = run.trainer.train_step(EpisodeBatch(data["actions"][rows], data["observations"][rows],
+                                                      data["rewards"][rows], data["initial"][rows]))
         run._update_acting()
         if update in args.score_at:
             score_both(run, train, held, fit_rows, num_a, num_o, cfg, device, args.planning_head, f"RESULT@{update}")
