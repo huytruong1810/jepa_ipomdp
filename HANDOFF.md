@@ -1,8 +1,8 @@
-# HANDOFF: JEPA I-POMDP (as of 2026-10-16 early: the agent's latent is limited by its GROWING-BUFFER TRAINING SCHEDULE (primacy bias): its own buffer trained uniformly offline gives cell/heading 85/87% vs the agent's 76/68%; a reset + catch-up screen is running. Earlier, 2026-10-15 night: R0/R0' done (the jointly trained head under-reports MODERATE risks and the greedy double-value planner selects them; no confident-"safe" miscalibration); C4 no-op drift is real but costs no information; R1a head swaps on frozen networks FAIL (the planner exploits any swapped head worse). The next R1 step is a user decision; nothing running)
+# HANDOFF: JEPA I-POMDP (as of 2026-10-16 afternoon: the reset + catch-up screen (2g) FAILED: a budget-matched reset leaves the final network under-trained on the full buffer (cell/heading 80/76% at best vs 85/87% for a uniform whole-buffer training). Running: 2h `retrain_play.py`, networks retrained from scratch on each double run's whole final buffer with the double value, played against best.pt. Earlier: the agent's latent is limited by its growing-buffer schedule (primacy, 2f); R0/R0' (branch M), C4, R1a head swaps FAIL)
 
 **The next session's job:**
-1. **Read the reset screen** (`objective_ab.py` 2g; `runs/wumpus/reset_chain.sh`, logs `runs/wumpus/data_vs_objective/reset*_seed*.log`; launched 2026-10-16 00:2x, ~2 h) exactly as pre-registered in that header.
-2. On PASS (or the PARTIAL rule): a default-off reset option in the agent (reset every network + optimizer at given collections, then a catch-up of uniform updates on the buffer), Tiger fingerprint, smoke check, then 3 seeds with `model.value_estimator=double` paired with the double runs (pass >= +100 on 2 of 3, deaths/unfinished down).
+1. **Read the 2h screen** (`reports/2026-10-02_wumpus_diagnostics/retrain_play.py`, pre-registered in its header; `runs/wumpus/retrain_play_chain.sh`, logs `runs/wumpus/retrain_play/{train,play}_seed*.log`; launched 2026-10-16 15:26, ~1 h) exactly as written there.
+2. On PASS: a default-off "retrain the world model from scratch on the whole buffer" step in the agent (Tiger fingerprint, smoke), then 3 seeds with `model.value_estimator=double` paired with the double runs. On FAIL: the decision goes to the user (section 6.2 options 2 and 3).
 
 Section 1b holds the working conjectures and the research principles ("taste in research"), including the compute-efficiency rules (updated 2026-10-15). Section 7 lists what failed: do not repeat it.
 
@@ -57,6 +57,8 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
 3. **2f, growing-buffer schedule** (the agent's exact data schedule, offline): cell 76.6%, heading 71.9% (means), within 5 points of the agent, and held-out NLL 0.34-0.35 vs 0.26-0.29: **SCHEDULE (primacy bias, Nikishin et al. 2022).** The first few dozen games are replayed hundreds of times and the latent never recovers.
 4. **2g, reset + catch-up** (running): (i) one reset at update 3200 + 3200 uniform catch-up updates; (ii) resets at 1600/3200/4800 + 1600 each. Pre-registered PASS: within 5 points of the buffer arm on cell and heading.
 5. Implication if it passes: the representation direction does not need a new objective; the agent needs to retrain its world model on its whole buffer (resets with catch-up), then the double value.
+6. **2g result (2026-10-16): FAIL.** The first launch (00:17) died with the machine before any reset fired; cause unknown, not memory (a rebuilt `TrainingRun` costs ~0.4 GB RAM); relaunched unchanged at 13:10 with a per-minute system log (`runs/wumpus/reset_chain_sysmon.log`). (i) one reset: cell / heading 80.2 / 76.3% (+3.6 / +4.4 over the growing arm); (ii) three resets: 76.8 / 68.1%. Both cut the held-out head NLL (0.30-0.31 vs 0.35). Matching the total budget left the final network with less whole-buffer training than the buffer arm (3200 + 3200 and 1600 + 1600 updates), which is why more resets did worse. No reset schedule goes into the agent.
+7. **2h (running):** retrain every network from scratch on each double run's whole final buffer (the buffer arm, with `value_estimator=double`), then play them in that run's planner against its `best.pt` on the 512 analysis games (`retrain_play.py`). PASS (>= +50 paired on 2 of 3, deaths not up) -> a whole-buffer retrain step in the agent.
 
 ## 1. Goals
 
@@ -570,7 +572,7 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 
 **Done 2026-10-15 night** (section 0, night): R0, R0' (branch M), C4 (not an arm), R1a head swaps (fail).
 
-**2026-10-16: the user chose option 1 (data vs objective); result: training-limited, the growing-buffer schedule (section 0, 2026-10-16). Reset screen running.**
+**2026-10-16: the user chose option 1 (data vs objective); result: training-limited, the growing-buffer schedule (section 0, 2026-10-16). Reset + catch-up (2g) FAILED; whole-buffer retrain-and-play (2h) running.**
 
 **R1 options for the user (2026-10-15 night; my recommendation first):**
 1. **(Recommended) Data vs objective for dead reckoning, offline.** `objective_ab.py` on the cached pool reaches cell 77-81% / heading 63-84% at the agent's 6400 updates; the agent's `best.pt` filters reach only 59-61% / 58-66% on the same held-out pool. Train the same objective offline on the agent's own buffer (a `--train-buffer <run>` option) vs the pool, 3 seeds, same updates, scored on the held-out pool. If the buffer arm stays near 60%, the agent's own (idle-heavy) data limits dead reckoning: exploration/data arms (e.g. a share of random-action games in the buffer) come next. If it reaches ~80%, the in-agent training (value loss, co-adaptation, Polyak) limits it. ~1 h, no `src/` change.
