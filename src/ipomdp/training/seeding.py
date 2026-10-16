@@ -51,3 +51,4 @@ class RunStream(IntEnum):
     TRAIN_AGENT = 6
     EVAL_AGENT = 7
     WARMUP_AGENT = 8
+    RETRAIN = 9                # network re-initialisation of the whole-buffer retrain (run.py, section 14)

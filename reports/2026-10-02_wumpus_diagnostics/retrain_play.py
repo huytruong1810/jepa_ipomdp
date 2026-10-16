@@ -40,7 +40,20 @@
 #      and best.pt is a max over evaluations (biased upward relative to a single network), which favours the
 #      baseline; a PASS is therefore conservative.
 #
-# 4. Result: (pending)
+# 4. Result 2026-10-16 (runs/wumpus/retrain_play/{train,play}_seed*.log; the first, parallel plays OOMed under a
+#    0.3 GPU memory cap and were rerun one at a time, runs/wumpus/retrain_play_plays.sh): PASS (2 of 3).
+#    Retrained latent (objective_ab probes, held-out pool): cell 0.853 / 0.843 / 0.831, heading 0.911 / 0.895 /
+#    0.786 (the agent's best.pt: ~0.75 / ~0.63). Every baseline replay reproduces report.json.
+#                 best.pt          retrained        paired gain (95%)   deaths          unfinished
+#      seed 0     163.8 +- 20.0    230.3 +- 20.4    +66.5 +- 41.9       4.1% -> 2.9%    69.5% -> 64.1%
+#      seed 1      81.7 +- 20.6     81.1 +- 16.0     -0.6 +- 44.3       9.0% -> 4.3%    69.5% -> 76.0%
+#      seed 2     168.0 +- 21.9    256.0 +- 20.2    +88.0 +- 43.2       5.9% -> 0.6%    64.8% -> 68.0%
+#    - Mean 189 vs 138; seed 2 (256) is above the privileged oracle + double recipe (223) without privilege.
+#      Deaths fall on all three seeds: the better latent's model is what the double-value planner needed (C6).
+#      Seed 1, the weakest heading (0.79), gains nothing in return (its deaths turn into unfinished games).
+#      The SHOOT-heavy idling of the baseline (57% of live actions on seeds 1-2) largely disappears; unfinished
+#      games stay ~64-76%, so the idling problem is reduced in kind, not in count.
+#    - Per 3: a default-off whole-buffer retrain step in the agent, then 3 seeds paired with the double runs.
 # ==============================================================================
 
 import json
@@ -61,7 +74,8 @@ from ipomdp.training import discounted_returns, play_episodes, stream_seed
 
 run_dir, saved = Path(sys.argv[1]), Path(sys.argv[2])
 dev = torch.device("cuda")
-torch.cuda.set_per_process_memory_fraction(0.3, torch.cuda.current_device())    # three jobs share the GPU
+# No per-process memory cap: a 512-game search needs > 4.8 GB (the 0.3 cap of head_swap_screen.py OOMed);
+# the plays run one at a time (runs/wumpus/retrain_play_plays.sh).
 settings = WumpusAnalysisSettings()
 n = int(sys.argv[3]) if len(sys.argv) > 3 else settings.episodes
 trained = load_trained_run(run_dir, dev)

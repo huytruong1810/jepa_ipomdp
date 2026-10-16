@@ -26,7 +26,8 @@ def _config(**overrides) -> RunConfig:
         num_simulations=4, observation_prune=0.0, c_puct=1.25, dirichlet_alpha=0.3, dirichlet_epsilon=0.25, temperature=1.0,
         temperature_min=0.1, temperature_decay=0.5, epsilon=0.0, epsilon_min=0.0, store_eval_episodes=False,
         time_aware_value=False, value_nstep=0, value_nstep_mix=0.5,
-        detached_planning_head=False, privileged_belief_loss=False, value_estimator=ValueEstimator.MAX)
+        detached_planning_head=False, privileged_belief_loss=False, value_estimator=ValueEstimator.MAX,
+        retrain_every=0, retrain_updates=0)
     values.update(overrides)
     return RunConfig(**values)
 
@@ -233,6 +234,50 @@ class TestValuePair:
         resumed = self._run(ValueEstimator.CLIPPED_DOUBLE, seed=123)
         resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
         assert [resumed.collect_and_train() for _ in range(2)] + [resumed.evaluate()] == expected[1:]
+        assert all(torch.equal(a, b) for a, b in zip(_parameters(resumed), _parameters(reference)))
+
+
+class TestWholeBufferRetrain:
+    """training/run.py, section 14."""
+
+    @staticmethod
+    def _run(seed: int = 7, **options) -> TrainingRun:
+        return TrainingRun(tiger_setup(CPU), _config(seed=seed, **options), CPU)
+
+    def test_partial_settings_raise_and_off_logs_nothing(self):
+        for options in (dict(retrain_every=2), dict(retrain_updates=3)):
+            with pytest.raises(ValueError):
+                self._run(**options)
+        run = self._run()
+        assert all("retrained" not in run.collect_and_train() for _ in range(3))
+
+    def test_retrain_resets_networks_and_optimizer_then_trains_on_the_buffer(self):
+        # Collection 0 is warm-up; with retrain_every = 2 the retrain follows collection index 1 (the 2nd call).
+        run, plain = self._run(retrain_every=2, retrain_updates=3), self._run()
+        flags = [run.collect_and_train()["retrained"] for _ in range(2)]
+        plain.collect_and_train(); plain.collect_and_train()
+        assert flags == [0.0, 1.0]
+        steps = {int(state["step"]) for state in run.trainer.optimizer.state.values()}
+        assert steps == {3}                                    # Adam restarted: only the catch-up updates
+        assert not any(torch.equal(a, b) for a, b in zip(run.belief_filter.parameters(), plain.belief_filter.parameters()))
+        assert not any(torch.equal(a, b) for a, b in zip(run.acting_filter.parameters(), plain.acting_filter.parameters()))
+        assert run.eval_agent.model.belief_filter is run.acting_filter    # the planners keep reading the same modules
+        # The retrained filter starts from the networks of the retrain seed, not from the trained ones.
+        fresh = self._run(seed=stream_seed(stream_seed(7, RunStream.RETRAIN), 1))
+        moved = [(a - f).abs().max() for a, f in zip(run.belief_filter.parameters(), fresh.belief_filter.parameters())]
+        trained = [(a - f).abs().max() for a, f in zip(plain.belief_filter.parameters(), fresh.belief_filter.parameters())]
+        assert sum(moved) < sum(trained)
+
+    def test_resume_continues_bit_for_bit(self, tmp_path: Path):
+        options = dict(retrain_every=2, retrain_updates=3)
+        reference = self._run(**options)
+        expected = [reference.collect_and_train() for _ in range(4)] + [reference.evaluate()]
+        first = self._run(**options)
+        first.collect_and_train()
+        save_checkpoint(tmp_path / "latest.pt", first.state_dict())
+        resumed = self._run(seed=123, **options)
+        resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
+        assert [resumed.collect_and_train() for _ in range(3)] + [resumed.evaluate()] == expected[1:]
         assert all(torch.equal(a, b) for a, b in zip(_parameters(resumed), _parameters(reference)))
 
 

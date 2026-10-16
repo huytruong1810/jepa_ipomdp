@@ -164,10 +164,40 @@
 #      Idle V-hat falls (no-op GRAB 431-635 against 626-660) but stays flat. Fails, as the frozen-latent
 #      screen predicted: without an accurate latent the corrected value exploits the model's errors.
 #      Kept as an option; useful only with a better representation.
+#
+# 14. Whole-Buffer Retrain (2026-10-16; reports/2026-10-02_wumpus_diagnostics/objective_ab.py 2e-2g and
+#     retrain_play.py):
+#    - cfg.retrain_every = N > 0: after the updates of every N-th collection (after warm-up), EVERY network
+#      (filter, heads, value pair, JEPA parts, target and acting copies) and the optimizer state are
+#      re-initialised, and cfg.retrain_updates uniform updates on the whole replay buffer follow, with the
+#      acting copies Polyak-averaged as usual. The evaluation that follows such a collection (N a multiple
+#      of eval_every) reads the retrained networks.
+#    - Motivation: the agent's latent is limited by its growing-buffer schedule (primacy bias, Nikishin et
+#      al. 2022): the first few dozen games are replayed hundreds of times. Trained uniformly on the agent's
+#      own final buffer the same objective reaches cell / heading 85 / 87% against the agent's 76 / 68%
+#      (objective_ab.py 2e, 2f). A reset with a budget-matched catch-up does not recover that (2g): the
+#      final network must be trained long and uniformly on the full buffer. Networks retrained so on the
+#      double-value runs' final buffers play +66.5 / -0.6 / +88.0 better than their best.pt (paired, 512
+#      games; deaths down on all three; retrain_play.py, section 4).
+#    - The fresh networks are drawn by constructing a TrainingRun with seed stream_seed(retrain_seed,
+#      collection), retrain_seed = stream_seed(seed, RETRAIN): exactly the networks a run with that seed
+#      starts from; its simulators, buffer and agents are discarded. retrain_seed is checkpointed (only when
+#      enabled), so a resume reads it from the checkpoint like every other stream. The construction reseeds
+#      torch's global generator, which is deterministic and checkpointed (torch_rng), so resume is bit-exact.
+#    - retrain_every = 0 (the default, canonical Tiger) builds, draws and logs nothing new.
+#    - Pre-registered test (2026-10-16, before launch; runs/wumpus/retrain_chain.sh): the current recipe +
+#      value_estimator=double + retrain_every=50, retrain_updates=6400 (retrains after collections 50 and 100;
+#      the second is the retrain_play.py condition, the first also changes the data of collections 51-100),
+#      seeds 0-2, analysed on the same 512 games as the double runs (163.8 / 81.7 / 168.0).
+#      * PASS: >= +50 on 2+ of 3 seeds with the death rate not up on those seeds -> 5 seeds (sweep.py) and
+#        this becomes the Wumpus recipe; then the unfinished games (HANDOFF 6.3, macro actions).
+#      * FAIL: otherwise -> compare with the offline retrain (230.3 / 81.1 / 256.0): if the in-agent retrain
+#        is clearly worse, the agent's own later data or best.pt selection differs; report before more runs.
+#    - Result: (pending)
 # ==============================================================================
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 import numpy as np
@@ -261,6 +291,8 @@ class RunConfig:
     detached_planning_head: bool      # planner reads a head on detached latents (section 11)
     privileged_belief_loss: bool      # privileged exact-belief term into the filter (section 12)
     value_estimator: ValueEstimator   # max (default) | double | clipped_double value targets (section 13)
+    retrain_every: int                # whole-buffer retrain every N collections (section 14); 0 = off
+    retrain_updates: int              # uniform updates on the whole buffer after each retrain
 
 
 class TrainingRun:
@@ -274,6 +306,8 @@ class TrainingRun:
             raise ValueError("privileged_belief_loss needs a domain with exact-belief targets (section 12).")
         if cfg.value_estimator is not ValueEstimator.MAX and (cfg.time_aware_value or cfg.value_nstep > 0):
             raise ValueError("a double or clipped-double value is not combined with time_aware_value or value_nstep (section 13).")
+        if (cfg.retrain_every > 0) != (cfg.retrain_updates > 0):
+            raise ValueError("retrain_every and retrain_updates must both be positive or both 0 (section 14).")
         domain = self.domain = setup.domain
         seed = lambda stream: stream_seed(cfg.seed, stream)  # noqa: E731
         torch.manual_seed(seed(RunStream.NETWORK_INIT))
@@ -333,6 +367,7 @@ class TrainingRun:
                                     seed(RunStream.BUFFER))
         self.collection = 0
         self.best_eval_return = -float("inf")
+        self.retrain_seed = seed(RunStream.RETRAIN)          # section 14; checkpointed like every other stream
         self.domain_metric_names: tuple[str, ...] = ()     # keys of setup.episode_metrics, set by evaluate()
 
     @property
@@ -359,6 +394,19 @@ class TrainingRun:
         if self.planning_observation_head is not None:                                  # section 11
             ema_update(self.acting_planning_observation_head, self.planning_observation_head, momentum)
 
+    def _retrain(self) -> dict[str, float]:
+        """Re-initialises every network and the optimizer, then trains uniformly on the whole buffer (section 14)."""
+        fresh = TrainingRun(self.setup, replace(self.cfg, seed=stream_seed(self.retrain_seed, self.collection)), self.device)
+        for name, net in self.networks.items():
+            net.load_state_dict(fresh.networks[name].state_dict())
+        self.trainer.optimizer.load_state_dict(fresh.trainer.optimizer.state_dict())     # empty Adam moments
+        del fresh
+        metrics: dict[str, float] = {}
+        for _ in range(self.cfg.retrain_updates):
+            metrics = self.trainer.train_step(self.buffer.sample(self.cfg.batch_size))
+            self._update_acting()
+        return metrics
+
     def _store(self, episodes: EpisodeBatch, greedy: bool) -> None:
         """Adds episodes to the replay buffer; the privileged term forgets the rewritten slots (section 12)."""
         slots = self.buffer.add(episodes, greedy)
@@ -378,6 +426,10 @@ class TrainingRun:
         for _ in range(self.cfg.updates_per_collection):
             metrics = self.trainer.train_step(self.buffer.sample(self.cfg.batch_size))
             self._update_acting()
+        retrain = (self.cfg.retrain_every > 0 and not warmup
+                   and (self.collection + 1) % self.cfg.retrain_every == 0)                 # section 14
+        if retrain:
+            metrics = self._retrain()
         if not warmup:
             agent = self.train_agent
             agent.temperature = max(self.cfg.temperature_min, agent.temperature * self.cfg.temperature_decay)
@@ -388,6 +440,8 @@ class TrainingRun:
         for a, name in enumerate(self.domain.action_names):
             metrics[f"collect_action_fraction/{name}"] = float((episodes.actions == a).double().mean())
         metrics["warmup"] = float(warmup)
+        if self.cfg.retrain_every > 0:
+            metrics["retrained"] = float(retrain)
         metrics["temperature"] = self.train_agent.temperature
         metrics["epsilon"] = self.train_agent.epsilon
         self.collection += 1
@@ -424,12 +478,14 @@ class TrainingRun:
             "eval_agent": self.eval_agent.state_dict(),
             "torch_rng": torch.get_rng_state(),
             "cuda_rng": torch.cuda.get_rng_state_all() if self.device.type == "cuda" else [],
-        }
+        } | ({"retrain_seed": self.retrain_seed} if self.cfg.retrain_every > 0 else {})            # section 14
 
     def load_state_dict(self, state: dict) -> None:
         """Restores a state produced by state_dict()."""
         self.collection = state["collection"]
         self.best_eval_return = state["best_eval_return"]
+        if self.cfg.retrain_every > 0:
+            self.retrain_seed = state["retrain_seed"]                                      # section 14
         for name, net in self.networks.items():
             net.load_state_dict(state["networks"][name])
         self.trainer.optimizer.load_state_dict(state["optimizer"])

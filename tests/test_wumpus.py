@@ -212,7 +212,8 @@ class TestLearningStack:
             num_simulations=4, observation_prune=1e-3, c_puct=1.25, dirichlet_alpha=0.3, dirichlet_epsilon=0.25,
             temperature=1.0, temperature_min=0.1, temperature_decay=0.5, epsilon=0.0, epsilon_min=0.0, store_eval_episodes=False,
             time_aware_value=False, value_nstep=0, value_nstep_mix=0.5,
-            detached_planning_head=False, privileged_belief_loss=False, value_estimator=ValueEstimator.MAX)
+            detached_planning_head=False, privileged_belief_loss=False, value_estimator=ValueEstimator.MAX,
+            retrain_every=0, retrain_updates=0)
         values.update(overrides)
         return RunConfig(**values)
 

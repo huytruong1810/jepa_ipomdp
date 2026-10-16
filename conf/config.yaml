@@ -75,6 +75,8 @@ training:
   eval_every: 5               # Collections between greedy evaluations (discounted return vs V*)
   eval_episodes: 128          # Episodes per greedy evaluation
   store_eval_episodes: false  # Also add the greedy evaluation games to the replay buffer (training/run.py, 8)
+  retrain_every: 0            # N > 0: re-initialise every network after every N-th collection, then train on the whole buffer (run.py, 14)
+  retrain_updates: 0          # uniform updates on the whole buffer after each retrain
   save_every: 10              # Collections between latest.pt checkpoints
   viz_every: 20               # Collections between latent / search-tree / reward visualisations
 
