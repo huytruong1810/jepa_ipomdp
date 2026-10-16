@@ -53,6 +53,32 @@
 #      0.89): died 96% in the buffer, 40% on fresh exploring games. store_eval_eps_decoder_k5_u256
 #      _seed0 (greedy games stored): 0.2% / 2.7% / 5.5% and 89% / 43%. The greedy planner is the
 #      worst case because it selects the confident "safe" errors.
+#
+# 4. R0 of the representation plan (HANDOFF 6.2; pre-registered 2026-10-15 BEFORE any result was read):
+#    - Networks: latest.pt of the six double-value runs, u64_store_eval_eps_decoder_k5_double_seed{0,1,2}
+#      (current recipe) and u64_store_eval_eps_decoder_k5_privileged_double_seed{0,1,2} (oracle recipe),
+#      512 greedy games each (runs/wumpus/head_shift_double_chain.sh). No code change from item 3.
+#    - Question: on the planner's own greedy histories, is the oracle-recipe head calibrated where the
+#      current-recipe head is confidently "safe" and wrong (C6), and is the danger in the current latent
+#      anyway?
+#    - Metrics per run:
+#      * confident-safe miss rate = realised death of the acting pair's greedy FORWARDs in the predicted
+#        bin [0, 0.02). MISCALIBRATED if >= 0.04 (twice the bin edge) with n >= 200; CALIBRATED if
+#        <= 0.02; in between is ambiguous and counts against neither.
+#      * fresh-head danger = mean predicted death on held-out greedy FORWARDs at exact danger >= 0.4, for
+#        the fresh head on the buffer only and on the buffer + greedy half. RECOVERS if >= 0.40, LACKS if
+#        < 0.25.
+#    - Decision (each recipe by majority of its 3 seeds):
+#      (A) current miscalibrated, oracle calibrated, buffer-only fresh head on current latents recovers:
+#          the danger is in the latent and the head overfits its games -> R1 screens head-side arms
+#          (ensemble/uncertainty heads; the NLL-early-stopped detached head already failed, HANDOFF 7).
+#      (B) as (A) but only buffer + greedy recovers: outcome coverage of the data is missing -> R1
+#          screens head/data arms.
+#      (C) neither fresh head recovers on current latents: the latent lacks the danger -> R1 screens
+#          representation-objective arms.
+#      (D) the oracle runs are miscalibrated too: calibration does not separate the recipes -> R1 starts
+#          from the C4 no-op drift check.
+#    - Result: (pending)
 # ==============================================================================
 
 import sys
