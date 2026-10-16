@@ -1,8 +1,8 @@
-# HANDOFF: JEPA I-POMDP (as of 2026-10-15 night: R0/R0' done (the jointly trained head under-reports MODERATE risks and the greedy double-value planner selects them; no confident-"safe" miscalibration); C4 no-op drift is real but costs no information; R1a head swaps on frozen networks FAIL (the planner exploits any swapped head worse). The next R1 step is a user decision; nothing running)
+# HANDOFF: JEPA I-POMDP (as of 2026-10-16 early: the agent's latent is limited by its GROWING-BUFFER TRAINING SCHEDULE (primacy bias): its own buffer trained uniformly offline gives cell/heading 85/87% vs the agent's 76/68%; a reset + catch-up screen is running. Earlier, 2026-10-15 night: R0/R0' done (the jointly trained head under-reports MODERATE risks and the greedy double-value planner selects them; no confident-"safe" miscalibration); C4 no-op drift is real but costs no information; R1a head swaps on frozen networks FAIL (the planner exploits any swapped head worse). The next R1 step is a user decision; nothing running)
 
 **The next session's job:**
-1. **Get the user's decision on R1** (section 6.2 lists the options with my recommendation: the data-vs-objective screen for dead reckoning, offline, ~1 h).
-2. Run it with a pre-registered readout; then the agent run with `model.value_estimator=double` for an arm that passes.
+1. **Read the reset screen** (`objective_ab.py` 2g; `runs/wumpus/reset_chain.sh`, logs `runs/wumpus/data_vs_objective/reset*_seed*.log`; launched 2026-10-16 00:2x, ~2 h) exactly as pre-registered in that header.
+2. On PASS (or the PARTIAL rule): a default-off reset option in the agent (reset every network + optimizer at given collections, then a catch-up of uniform updates on the buffer), Tiger fingerprint, smoke check, then 3 seeds with `model.value_estimator=double` paired with the double runs (pass >= +100 on 2 of 3, deaths/unfinished down).
 
 Section 1b holds the working conjectures and the research principles ("taste in research"), including the compute-efficiency rules (updated 2026-10-15). Section 7 lists what failed: do not repeat it.
 
@@ -49,6 +49,14 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
 3. **C4** (`noop_drift_diag.py`, `noop_drift_cost.py`): the current latent moves 4-7x more on exact no-ops than the oracle latent (mean |dz|/|z| 0.10-0.22 vs 0.02-0.03), but at matched steps the drift costs no cell/heading information, and skipping no-op updates gains only +1 to +4 points. The cell/heading gap (59-66% vs 95-100% on the held-out random pool) is in tracking moves and turns. C4 is not an R1 arm.
 4. **R1a** (`head_swap_screen.py`, pre-registered; 128-game smoke on seeds 0-2, stopped there): fresh heads on the frozen acting latents (single, 5-ensemble mean, 5-ensemble pessimistic) swapped into the `best.pt` current + double planner. **No arm passes:** paired -359 / -164 / -77 (fresh), -134 / -275 / -81 (mean), -187 / -159 / +34 (pessimistic); deaths 2-9% -> up to 47%. The planner exploits the swapped heads' confident "safe" errors (their [0, 0.02) bin dies 1.3-6.2% in play). The fresh-head advantage in item 2 was a selection effect at the joint planner's states.
 5. **Reading (C6 sharpened):** with the double value, deaths come from the greedy planner selecting a learned head's errors; no head trained on the current latent (joint, fresh or ensembled) resists that, while the oracle latent's joint head does (deaths 1-2%). The lever stays the representation (dead reckoning of moves and turns), or robustness of the planner to model error. Also: oracle + double still leaves 68-70% of games unfinished, the same as the current recipe, so a representation fix bounds at ~223, not 573.
+
+### 2026-10-16 early: data vs objective (user choice), then the schedule (`objective_ab.py` 2e-2g)
+
+1. **Agent references** (scored like every `objective_ab.py` arm, on the full held-out pool; `runs/wumpus/agent_reference_probes.txt`): current recipe cell / heading 74-76% / 62-65% at `best.pt` (76-77% / 65-75% at `latest.pt`); oracle + double 97-100%. The 59-61% I quoted earlier came from the harder random-only half.
+2. **2e, data vs objective** (3 seeds, 6400 updates, same code): training offline on the agent's OWN buffer (uniform over the final buffer) gives **cell 85 / 84 / 87%, heading 92 / 78 / 92%**, probe danger error 0.03-0.09, better than the pool arm (80 / 77 / 81%, 72 / 63 / 69%). Neither data nor objective limits the agent's latent: **its training does.**
+3. **2f, growing-buffer schedule** (the agent's exact data schedule, offline): cell 76.6%, heading 71.9% (means), within 5 points of the agent, and held-out NLL 0.34-0.35 vs 0.26-0.29: **SCHEDULE (primacy bias, Nikishin et al. 2022).** The first few dozen games are replayed hundreds of times and the latent never recovers.
+4. **2g, reset + catch-up** (running): (i) one reset at update 3200 + 3200 uniform catch-up updates; (ii) resets at 1600/3200/4800 + 1600 each. Pre-registered PASS: within 5 points of the buffer arm on cell and heading.
+5. Implication if it passes: the representation direction does not need a new objective; the agent needs to retrain its world model on its whole buffer (resets with catch-up), then the double value.
 
 ## 1. Goals
 
@@ -562,6 +570,8 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 
 **Done 2026-10-15 night** (section 0, night): R0, R0' (branch M), C4 (not an arm), R1a head swaps (fail).
 
+**2026-10-16: the user chose option 1 (data vs objective); result: training-limited, the growing-buffer schedule (section 0, 2026-10-16). Reset screen running.**
+
 **R1 options for the user (2026-10-15 night; my recommendation first):**
 1. **(Recommended) Data vs objective for dead reckoning, offline.** `objective_ab.py` on the cached pool reaches cell 77-81% / heading 63-84% at the agent's 6400 updates; the agent's `best.pt` filters reach only 59-61% / 58-66% on the same held-out pool. Train the same objective offline on the agent's own buffer (a `--train-buffer <run>` option) vs the pool, 3 seeds, same updates, scored on the held-out pool. If the buffer arm stays near 60%, the agent's own (idle-heavy) data limits dead reckoning: exploration/data arms (e.g. a share of random-action games in the buffer) come next. If it reaches ~80%, the in-agent training (value loss, co-adaptation, Polyak) limits it. ~1 h, no `src/` change.
 2. **Planner robustness to model error, in training:** a default-off jointly trained head ensemble whose disagreement penalises the value targets (MOPO-style), with the double value. Larger change (trainer, fingerprint, 3 x 3 h runs); R1a suggests same-recipe ensembles share their errors, so the prior is low.
@@ -713,7 +723,8 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 - `3624c1c`: HANDOFF rewrite.
 - `cbac03f`, `2a741ac`, `95901d1`: R0 pre-registration, result (no branch) and R0' pre-registration, R0' result (branch M).
 - `1f7f216`: `noop_drift_diag.py`, `noop_drift_cost.py` (C4).
-- R1a `head_swap_screen.py` and this HANDOFF update.
+- `ddedd5d`: R1a `head_swap_screen.py` and the HANDOFF update.
+- `af4fbee`, `684ffa6`, `13060d6`: `objective_ab.py` 2e (`--train-buffer`, `--agent-reference`, `--agent-checkpoint`), 2f (`--buffer-schedule growing`), 2g (`--reset-at`, `--catch-up`), their pre-registrations and results; this HANDOFF update.
 
 ## 9. Files touched since `9a9b726` (all pushed)
 
@@ -788,7 +799,7 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 | `offpolicy_reference.py` | Off-policy training diagnostic |
 | `death_calibration.py`, `danger_probe.py`, `reference_probe.py` | Death calibration and latent probes |
 | `supervised_filter.py`, `ab_summary.py` | Supervised bound; GRU/Transformer arms; pool cache; A/B summaries |
-| `objective_ab.py`, `overfit_summary.py` | Offline objective and overfitting A/Bs (weight-decay and data-size arms, held-out NLL, `head_safe_miss`); section 2c horizon A/B, section 2d decoupled planning head (`--planning-head`), `--save`; learning-curve summary |
+| `objective_ab.py`, `overfit_summary.py` | **2e-2g: the agent's own buffer offline (training-limited), its growing schedule (primacy), resets + catch-up.** Offline objective and overfitting A/Bs (weight-decay and data-size arms, held-out NLL, `head_safe_miss`); section 2c horizon A/B, section 2d decoupled planning head (`--planning-head`), `--save`; learning-curve summary |
 | `head_coverage.py` | Coverage diagnostic |
 | `absorbing_value.py`, `greedy_deaths.py`, `start_danger.py`, `head_shift.py` | V̂ by game status; danger at the greedy planner's FORWARDs; first-step danger; **calibration in-sample vs fresh exploring vs fresh greedy** |
 | `unfinished_diag.py` | **Why games end unfinished:** action mix, idling, safe cells left, root Q gaps, the one-step Q(FORWARD) − Q(chosen) split into reward and γ·E[V̂ next] (section 5.6) |
