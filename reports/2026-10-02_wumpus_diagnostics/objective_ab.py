@@ -100,6 +100,31 @@
 #      data explain, (pool - buffer) / (pool - agent), means over seeds, plus the buffer arm against the oracle.
 #      Whatever the share, the data can move the latent by at most the pool - agent gap, a fraction of the
 #      25-35 points to the oracle latent; that bound is the main reading.
+#    - Result 2026-10-15 night (runs/wumpus/data_vs_objective/, seeds 0 / 1 / 2; 6400 updates each):
+#                      cell                  heading               probe danger error
+#        buffer        0.845 / 0.838 / 0.874  0.917 / 0.781 / 0.919  0.031 / 0.088 / 0.036
+#        pool          0.802 / 0.773 / 0.808  0.719 / 0.635 / 0.689  0.098 / 0.100 / 0.101
+#        agent best    0.761 / 0.751 / 0.740  0.646 / 0.645 / 0.616  0.098 / 0.101 / 0.104  (collections 85/90/80)
+#        agent latest  0.770 / 0.758 / 0.760  0.746 / 0.654 / 0.649  0.074 / 0.100 / 0.100  (6400 updates, as here)
+#        oracle+double 0.999 / 0.995 / 0.965  1.000 / 1.000 / 0.982  0.023 / 0.025 / 0.034  (best.pt)
+#      (pool seed 1 reproduces 2c's k5 seed 1 exactly.) The amended share is NEGATIVE: the agent's own buffer
+#      is BETTER data than the pool. By the original criteria this is TRAINING-LIMITED: the buffer arm is above
+#      the pool arm and 7-27 points above the agent at the same 6400 updates, with the same code (TrainingRun,
+#      train_step, _update_acting) and the same games. Heading on seeds 0 and 2 (0.92) approaches the oracle's.
+#      The remaining difference is the agent's data SCHEDULE (2f).
+#
+# 2f. Growing-buffer schedule (2026-10-15 night, after 2e): --buffer-schedule growing samples update u from the
+#    games the agent had then: collection c = (u - 1) // 64 + 1 sees c * 64 + ((c - 1) // 5) * 128 games
+#    (run.py: collect 64, 64 updates, then every 5th collection 128 stored greedy games), uniformly, as
+#    EpisodeBuffer.sample does. Everything else is 2e's buffer arm.
+#    - Pre-registered readout (before any run), cell and heading, means over seeds 0-2:
+#      * SCHEDULE (primacy bias, Nikishin et al. 2022: early updates on few games leave a latent that later
+#        data does not repair): the growing arm is within 5 points of agent latest AND >= 5 below the buffer
+#        arm on both -> next an offline reset arm (growing schedule with network resets), then a default-off
+#        reset option in the agent.
+#      * NOT THE SCHEDULE: the growing arm is within 5 points of the buffer arm on both -> the difference is
+#        elsewhere in the agent loop; diff TrainingRun.collect_and_train against this script.
+#      * Otherwise PARTIAL: report the share of the buffer - agent gap the schedule reproduces.
 #    - Result: (pending)
 #
 # 3. Usage:
@@ -266,8 +291,11 @@ def main() -> None:
                         help="Train on the first n games of each half of the pool (2n games; default: all).")
     parser.add_argument("--planning-head", action="store_true", help="Also score a decoupled planning head (section 2d).")
     parser.add_argument("--train-buffer", type=Path, default=None, help="Train on this run's replay buffer (2e).")
+    parser.add_argument("--buffer-schedule", choices=("uniform", "growing"), default="uniform",
+                        help="With --train-buffer: sample the whole buffer (2e) or the agent's growing buffer (2f).")
     parser.add_argument("--agent-reference", type=Path, default=None,
-                        help="Score this run's best.pt networks without training (2e).")
+                        help="Score this run's networks (--agent-checkpoint) without training (2e).")
+    parser.add_argument("--agent-checkpoint", default="best.pt", help="Checkpoint of --agent-reference (2e).")
     parser.add_argument("--save", type=Path, default=None, help="Write run.networks' states here after training.")
     parser.add_argument("--score-at", type=int, nargs="*", default=[],
                         help="Also score at these update counts (lines 'RESULT@<updates> name value').")
@@ -305,23 +333,31 @@ def main() -> None:
             raise ValueError(f"buffer episodes have {data['actions'].shape[1]} steps, the pool {length}.")
         fit_rows = torch.arange(size, device=device)
         del buf
+    if args.buffer_schedule == "growing" and (args.train_buffer is None or not cfg.training.store_eval_episodes):
+        raise ValueError("--buffer-schedule growing needs --train-buffer of a run that stored its greedy games.")
     if args.agent_reference is not None:                                   # section 2e
         if args.train_buffer is not None:
             raise ValueError("--agent-reference scores a trained run; it takes no training data.")
-        networks = load_checkpoint(args.agent_reference / "checkpoints" / "best.pt")["networks"]
+        networks = load_checkpoint(args.agent_reference / "checkpoints" / args.agent_checkpoint)["networks"]
         for name, net in run.networks.items():
             net.load_state_dict(networks[name])
         args.updates = 0
     print(f"arm representation={args.representation} horizon={args.horizon} seed={args.seed} "
           f"weight_decay={cfg.trainer.weight_decay}; {len(fit_rows)} training games"
           + (f" from the buffer of {args.train_buffer}" if args.train_buffer is not None else "")
-          + (f"; agent reference {args.agent_reference} best.pt" if args.agent_reference is not None else ""),
+          + (f"; agent reference {args.agent_reference} {args.agent_checkpoint}" if args.agent_reference is not None else ""),
           flush=True)
 
     t0 = time.time()
     generator = torch.Generator(device=device).manual_seed(args.seed)
     for update in range(1, args.updates + 1):
-        rows = fit_rows[torch.randint(0, len(fit_rows), (cfg.training.batch_size,), device=device, generator=generator)]
+        available = len(fit_rows)
+        if args.buffer_schedule == "growing":                              # section 2f
+            c = (update - 1) // cfg.training.updates_per_collection + 1
+            available = c * cfg.training.env_batch_size + ((c - 1) // cfg.training.eval_every) * cfg.training.eval_episodes
+            if available > len(fit_rows):
+                raise ValueError(f"update {update} needs {available} games, the buffer holds {len(fit_rows)}.")
+        rows = fit_rows[torch.randint(0, available, (cfg.training.batch_size,), device=device, generator=generator)]
         metrics = run.trainer.train_step(EpisodeBatch(data["actions"][rows], data["observations"][rows],
                                                       data["rewards"][rows], data["initial"][rows]))
         run._update_acting()
