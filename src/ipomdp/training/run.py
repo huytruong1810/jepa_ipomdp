@@ -193,7 +193,15 @@
 #        this becomes the Wumpus recipe; then the unfinished games (HANDOFF 6.3, macro actions).
 #      * FAIL: otherwise -> compare with the offline retrain (230.3 / 81.1 / 256.0): if the in-agent retrain
 #        is clearly worse, the agent's own later data or best.pt selection differs; report before more runs.
-#    - Result: (pending)
+#    - Result 2026-10-16 (runs/wumpus/u64_store_eval_eps_decoder_k5_double_retrain50_seed{0,1,2}; same 512 games):
+#      PASS on all three. 236.7 / 156.8 / 233.1 against the double runs' 163.8 / 81.7 / 168.0 (+72.9 / +75.1 /
+#      +65.1); deaths 4.1 / 9.0 / 5.9% -> 0.8 / 4.7 / 4.1%; unfinished 62-68% (was 65-70%). Mean 209 against 138
+#      (double) and 189 (current recipe, max value, same seeds: +51 / -9 / +18). best.pt at collections 100 / 55
+#      / 80, i.e. after a retrain or on its networks. Agent-history MLP probes: cell 0.91 / 0.92 / 0.86,
+#      heading 0.95 / 0.95 / 0.91. Between the retrains (collections 55-95) the 128-game evaluations were no
+#      better than the double runs' and deaths were higher (up to 25% on seed 0): the growing schedule after a
+#      retrain re-introduces the model errors the planner exploits; the retrain at the end repairs them.
+#      Next (pre-registered): seeds 3-4 and a 5-seed sweep (runs/sweeps/wumpus_retrain).
 # ==============================================================================
 
 from collections.abc import Callable
