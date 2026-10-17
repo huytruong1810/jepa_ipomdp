@@ -201,7 +201,10 @@
 #      heading 0.95 / 0.95 / 0.91. Between the retrains (collections 55-95) the 128-game evaluations were no
 #      better than the double runs' and deaths were higher (up to 25% on seed 0): the growing schedule after a
 #      retrain re-introduces the model errors the planner exploits; the retrain at the end repairs them.
-#      Next (pre-registered): seeds 3-4 and a 5-seed sweep (runs/sweeps/wumpus_retrain).
+#    - 5-seed sweep 2026-10-17 (runs/sweeps/wumpus_retrain): 200.2 +- 43.7 against the current recipe's 182.0 +-
+#      61.9 (runs/sweeps/wumpus_current); paired +51 / -9 / +18 / +68 / -37 = +18.2 +- 53.0, not significant.
+#      Deaths 3.1% (4.9%), unfinished 67% (66%); latent cell / heading on random histories 69 / 75% (57 / 58%).
+#      Kept as an option and as the base for the unfinished-games work; not a significant gain in return.
 # ==============================================================================
 
 from collections.abc import Callable
