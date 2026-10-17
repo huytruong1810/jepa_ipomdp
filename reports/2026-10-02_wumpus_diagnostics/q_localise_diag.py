@@ -45,7 +45,25 @@
 #    - Sanity (asserted): exact P sums to 1; exact P(GAME_OVER | turn, FORWARD) = 0 when the target is a
 #      provably safe cell (the selection guarantees it); the replay and the macro_reach.npz cross-checks.
 #
-# 4. Result: (pending)
+# 4. Result 2026-10-17 (runs/sweeps/wumpus_retrain seeds 0-4, best.pt, 512 games; replays = report.json and the
+#    state selection = macro_reach.npz on every seed; logs runs/wumpus/q_localise_seed{0..4}.log, chain
+#    runs/wumpus/q_localise_chain.sh; ~10 min per seed). **Readout: MODEL on 5 of 5 seeds.**
+#    | Seed | States | M     | EP    | EPR   | EPR - M | EP - M | TV(P_fwd) | P(glitter) learned / exact | R(FWD) err mean |
+#    | 0    | 1407   | 10.0% | 43.0% | 69.4% | +59     | +33    | 0.40      | 0.056 / 0.126              | -95             |
+#    | 1    | 1446   | 14.4% | 41.5% | 47.9% | +34     | +27    | 0.47      | 0.034 / 0.118              | -39             |
+#    | 2    | 1576   | 10.9% | 46.3% | 64.1% | +53     | +35    | 0.51      | 0.035 / 0.116              | -98             |
+#    | 3    | 1865   | 11.2% | 62.2% | 80.9% | +70     | +51    | 0.43      | 0.028 / 0.126              | -107            |
+#    | 4    | 2520   | 7.6%  | 57.7% | 68.3% | +61     | +50    | 0.50      | 0.042 / 0.123              | -42             |
+#    (Shares of Q_mac > Q2(chosen); unfinished games alone give the same picture.)
+#    - The observation head carries most of the error (EP - M is 56-85% of EPR - M). At the turned latent its
+#      P(o' | FORWARD) is far from exact (TV median 0.40-0.51) and it predicts glitter (the gold, the reason to
+#      enter a new cell) 2.3-4.5x too rarely: the information value of the step is missing from the backup.
+#    - The rest is the reward head after the imagined turn: R(FORWARD) is exact at the median but its mean is
+#      -39 to -107 (a minority of states carry a phantom death risk the exact belief rules out; learned
+#      P(death) mean 0.05-0.11 vs exact 0). Root rewards are exact (median error 0.00 for every action).
+#    - The learned value at the stepped-into latents is already 13-21 ABOVE the chosen children's on 4 of 5
+#      seeds (seed 1: -2): the value is not the blocker.
+#    - Caveat: a depth-2 offline ranking, not play (principle C3: only play counts). The next test is in play.
 # ==============================================================================
 
 import json

@@ -1,4 +1,4 @@
-# HANDOFF: JEPA I-POMDP (as of 2026-10-17 afternoon. The representation direction is finished: the agent's latent was limited by its growing-buffer training schedule (primacy bias), and a whole-buffer retrain (`training.retrain_every=50 training.retrain_updates=6400`) + `model.value_estimator=double` gives 200 ± 44 per game over 5 seeds (`runs/sweeps/wumpus_retrain`): +73 / +75 / +65 over the double value alone, but only +18 ± 53 paired over the 182 recipe (not significant); deaths 3.1%, latent cell/heading on random histories 69/75% (was 57/58%). ~67% of games still end unfinished. 2026-10-17 evening: the user chose the macro-action direction; its pre-registered reach check (`macro_reach_diag.py`) read VOID on 5 of 5 seeds, so the macro was not built. Nothing is running; the next direction is the user's call again)
+# HANDOFF: JEPA I-POMDP (as of 2026-10-17 afternoon. The representation direction is finished: the agent's latent was limited by its growing-buffer training schedule (primacy bias), and a whole-buffer retrain (`training.retrain_every=50 training.retrain_updates=6400`) + `model.value_estimator=double` gives 200 ± 44 per game over 5 seeds (`runs/sweeps/wumpus_retrain`): +73 / +75 / +65 over the double value alone, but only +18 ± 53 paired over the 182 recipe (not significant); deaths 3.1%, latent cell/heading on random histories 69/75% (was 57/58%). ~67% of games still end unfinished. 2026-10-17 evening: the user chose the macro-action direction; its pre-registered reach check (`macro_reach_diag.py`) read VOID on 5 of 5 seeds, so the macro was not built. The user then approved a model-vs-value localisation (`q_localise_diag.py`): **MODEL on 5 of 5 seeds**, the observation head misses the value of information of a new cell. Nothing is running; the method to build is the user's call)
 
 **The next session's job:** ask the user which direction comes next (a direction change; section 6.2 has the options, updated after the macro check). Until they answer, the only pre-authorised work is housekeeping: the slow suite (`uv run pytest -m slow`, ~45 min, not run since `privileged_belief_loss`; check `pgrep -fl main.py` and ipomcp load first).
 
@@ -22,6 +22,18 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
 - **The prize (section 5.8):** letting the heuristic's navigation rules override the planner gives 482 ± 39 (+300 ± 42 paired), three quarters of it from turning towards an adjacent safe cell and stepping in.
 - **Before 2026-10-14** (sections 5.6–5.9): every value-side remedy failed (time-aware value, n-step greedy returns, γ = 0.95, detached planning head, offline value targets, teacher values in play). An oracle-latent arm (`model.privileged_belief_loss`; cell 96–98%, heading 100% decodable) idled as much or more, so the value/planner was judged the bottleneck.
 - **2026-10-14:** no-op self-loops are a symptom (C1 closed); the heads are exact on no-ops (no phantom reward); the oracle networks' value exceeds 999, which no game can pay, on 36–58% of live steps, and two oracle seeds refuse the gold for it. That pointed to C2, maximisation bias in the backup.
+
+### 2026-10-17 evening (2): model vs value localisation, MODEL on 5 of 5 seeds
+
+The user asked for a direction with the strongest publication (combining SOTA theory in deep learning, decision theory and representation learning) and approved this screen. `q_localise_diag.py` (pre-registered; same states as the macro check): depth-2 expectimax at each declined state, swapping exact parts of the one-step model (layout-enumeration filter) for the learned ones, the learned value kept at the filter's latents. Share of states where TURN -> FORWARD beats the chosen action:
+
+| Seed | learned (M) | exact P (EP) | exact P and R (EPR) |
+|---|---|---|---|
+| 0-4 | 10 / 14 / 11 / 11 / 8% | 43 / 42 / 46 / 62 / 58% | 69 / 48 / 64 / 81 / 68% |
+
+- EPR - M = +34 to +70 points on every seed (MODEL needs >= +30 on 3 of 5). The observation head carries 56-85% of it. At the turned latent its P(o' | FORWARD) is far from exact (TV 0.40-0.51), and it predicts glitter 2.3-4.5x too rarely (0.03-0.06 vs 0.12): **the value of information of entering a new cell is missing from the backup.** The rest is a phantom death risk in the reward head after an imagined turn (mean R(FORWARD) error -39 to -107, median 0). Root rewards are exact, and the learned value at the stepped-into latents is already higher than at the chosen children (+13 to +21 on 4 seeds).
+- **Reading (C9):** the idling is a decision-relevant model error, not value bias or search. That calls for decision-aware / value-equivalent model learning (Grimm et al. 2020/2021; MuZero's principle): the observation head must be accurate where its errors flip decisions, not just on average under the agent's own (idling) data. Caveat: offline depth-2 ranking, not play (C3).
+- **Next (user's call):** (a) a privileged play bound: plan with the exact P and R and the learned value and filter, 512 paired games per seed (it would show whether fixing the model is worth the method); (b) a CPU split of the head error into "fit" vs "latent" (a fresh head on frozen latents at these states). Then the method.
 
 ### 2026-10-17 evening: the macro-action reach check (user's choice of direction), VOID
 
@@ -97,6 +109,8 @@ Stages:
 The user trusts the agent's research judgement (2026-10-10: "run the experiments you think will not waste meaningless compute and post-analysis"; 2026-10-12: "decide on the best direction forward without asking me to pick an option"). These are the beliefs that currently steer the work, strongest evidence first. Each is a conjecture with a stated test, not a result.
 
 **C7 (new 2026-10-16; confirmed). The agent's latent was limited by its training SCHEDULE, not its objective, data or architecture.** Offline with the same code: uniform training on the agent's own final buffer gives cell / heading 85 / 87%; the agent's growing-buffer schedule replayed offline gives 77 / 72% (the agent: 76 / 68%). Primacy bias (Nikishin et al. 2022): the first few dozen games are replayed hundreds of times and later data does not repair the latent. Budget-matched resets do not fix it (2g); retraining from scratch, long and uniformly on the whole buffer, does (2h and in-agent; run.py section 14). **Open sub-question:** the growing schedule after a mid-run retrain re-degrades the networks (collections 55-95); a schedule that stays near-uniform is untested.
+
+**C9 (new 2026-10-17 evening; offline, 5 of 5 seeds). The idling is a decision-relevant MODEL error: the observation head under-predicts what a new cell can reveal (glitter 2.3-4.5x too rare after turn + step), so the backup misses the value of information.** Exact P and R with the learned value flip the declined turn-then-step decision at 48-81% of states (learned: 8-14%); `q_localise_diag.py`. Test next: in play, then a decision-aware model objective.
 
 **C8 (new 2026-10-17; the lead for the next direction). With a good-enough latent and an unbiased value, the idling is a planner/value problem.** The retrain recipe has an 87-92% latent, a double value without impossible values and few deaths, yet ~67% of games end unfinished, the same as every recipe before it. The oracle + double arm (latent 97-100%) also stays at 68-70% unfinished. Neither more latent accuracy nor removing the maximisation bias touches the count of unfinished games; the navigation override (+300, section 5.8) shows the missing behaviour is "turn towards an adjacent safe cell and step in". Test next: planner-side changes that make that two-step behaviour cheap to find (macro actions), judged in play on the retrain recipe. **Tested 2026-10-17 (`macro_reach_diag.py`): VOID.** The search already finds the turn-then-step path and its value is 29-45 below the chosen action, so the idling is in the value's ranking of the stepped latent, not search coverage. Any remedy must change that ranking on the agent's own states (C3), and the value-target remedies of section 7 are what failed before.
 
@@ -787,11 +801,13 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 - `81dce02`, `ac180a2`: in-agent retrain + double PASS on 3 seeds; seeds 3-4 launched.
 - `57fb36f`: 5-seed sweep 200 ± 44 (paired +18 ± 53 vs 182, not significant); CLAUDE.md project paragraph.
 - `5c54df2`: HANDOFF rewrite for the next session.
-- `5506e2d`: `macro_reach_diag.py` pre-registered and launched; then its VOID result (5 of 5 seeds) and this update.
+- `5506e2d`, `3f6cb73`: `macro_reach_diag.py` pre-registered, VOID (5 of 5 seeds).
+- `569c1d7`: `q_localise_diag.py` pre-registered; then its MODEL result (5 of 5 seeds) and this update.
 
 ## 9. Files touched since `9a9b726` (all pushed)
 
 **Added or changed 2026-10-17 evening**
+- `reports/2026-10-02_wumpus_diagnostics/q_localise_diag.py` (new; result in header 4); `runs/wumpus/q_localise_chain.sh` (untracked); per-seed `analysis/q_localise.npz`.
 - `reports/2026-10-02_wumpus_diagnostics/macro_reach_diag.py` (new; result in header 4); `runs/wumpus/macro_reach_chain.sh` (untracked); per-seed `analysis/macro_reach.npz`.
 
 **Added or changed 2026-10-16/17**
