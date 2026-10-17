@@ -1,17 +1,19 @@
-# HANDOFF: JEPA I-POMDP (as of 2026-10-17 morning: the whole-buffer retrain + double value recipe is done over 5 seeds (`runs/sweeps/wumpus_retrain`): 200 ± 44 per game, paired +18 ± 53 over the 182 recipe (NOT significant; +51 / -9 / +18 / +68 / -37), deaths 3.1% vs 4.9%, worst seed 157 vs 107, latent cell/heading on random histories 69/75% vs 57/58%. Against double alone (the pre-registered comparison, 3 seeds) +73 / +75 / +65. Unfinished games stay ~67%: the representation fix is done and the idling is the remaining gap. Nothing running)
+# HANDOFF: JEPA I-POMDP (as of 2026-10-17 afternoon. The representation direction is finished: the agent's latent was limited by its growing-buffer training schedule (primacy bias), and a whole-buffer retrain (`training.retrain_every=50 training.retrain_updates=6400`) + `model.value_estimator=double` gives 200 ± 44 per game over 5 seeds (`runs/sweeps/wumpus_retrain`): +73 / +75 / +65 over the double value alone, but only +18 ± 53 paired over the 182 recipe (not significant); deaths 3.1%, latent cell/heading on random histories 69/75% (was 57/58%). ~67% of games still end unfinished. Nothing is running; the next direction is the user's call)
 
-**The next session's job:** the decision on what comes next is the user's (direction change). My recommendation, in order:
-1. **The unfinished games** (67% even with the better latent): turn-then-forward macro actions or another planner-side change on the retrain recipe (section 6.3). The navigation override's +300 (section 5.8) is still the prize; the representation is no longer the excuse.
-2. The mid-run degradation between retrains (collections 55-95 worse than the double runs, deaths up to 25%): a schedule that keeps training uniform (more frequent, cheaper retrains, or a growing-to-uniform sampling mix) may cut both the variance and the cost (each retrain costs ~1 h).
-3. The slow suite (`uv run pytest -m slow`, ~45 min) has not run since `privileged_belief_loss`; run it when the machine is free.
+**The next session's job:** ask the user which direction comes next (a direction change; section 6 has the options with my recommendation first). Until they answer, the only pre-authorised work is housekeeping: the slow suite (`uv run pytest -m slow`, ~45 min, not run since `privileged_belief_loss`; check `pgrep -fl main.py` and ipomcp load first).
 
-Section 1b holds the working conjectures and the research principles ("taste in research"), including the compute-efficiency rules (updated 2026-10-15). Section 7 lists what failed: do not repeat it.
+My recommendation, in order (section 6.2):
+1. **The unfinished games on the retrain recipe** (67%): planner-side, e.g. turn-then-forward macro actions. The navigation override's +300 (section 5.8) is the prize; the latent is no longer the excuse.
+2. **A retrain schedule without the mid-run degradation** (collections 55-95 were worse than the double runs, deaths up to 25%): cheaper, more frequent retrains or a growing-to-uniform sampling mix; may cut both variance and cost (each retrain ~1 h).
+
+Section 1b holds the working conjectures and the research principles ("taste in research"), including the compute-efficiency rules (updated 2026-10-17). Section 7 lists what failed: do not repeat it.
 
 Read `CLAUDE.md` first: it covers the architecture, commands and conventions. This file covers goals, the user's rules, the current state, every result that matters, the next steps, the dead ends and the files touched. Each module starts with a `DESIGN DECISIONS & THEORETICAL FOUNDATIONS` header with the evidence behind its design; read it before changing that module. Every diagnostic script in `reports/` explains its question, usage, pre-registered readout and result in its header. The user's auto-memory (`~/.claude/projects/-home-andyj1810-projects-jepa-ipomdp/memory/`) repeats the standing rules of section 2.
 
 ## 0. Where we are
 
 - **Canonical Tiger: done.** The learned planner matches the exact optimum over 5 seeds (gap −0.03 ± 0.06). A decoder baseline is indistinguishable from JEPA there.
+- **Wumpus, newest recipe (2026-10-17): the whole-buffer retrain + double value**, 200 ± 44 over 5 seeds (`runs/sweeps/wumpus_retrain`, section 5.3b). Same return as the 182 recipe within noise (paired +18 ± 53), but fewer deaths (3.1 vs 4.9%), a smaller seed spread (worst seed 157 vs 107) and a much better latent. It is the base for further work; both are cited until a significant gain.
 - **Single-hunter 4x4 Wumpus World: the current agent works but is far from the reference.**
   - The agent: decoder representation, 64 updates per collection, ε-uniform exploration, greedy evaluation games stored in the buffer (section 5.3 has the recipe).
   - **182 ± 62 per game over 5 seeds** (185, 166, 215, 107, 236; `runs/sweeps/wumpus_current/aggregate.json`). Wins 29.6 ± 2.7%, deaths 4.9 ± 7.8%, unfinished 65.5 ± 8.9%. Paired gap to the exact-belief heuristic (573): −391 ± 62.
@@ -41,7 +43,7 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
 5. **User decision (2026-10-15): the representation direction.** Bring the agent's own latent closer to the oracle latent **without privileged targets**, then train with `value_estimator=double`. Plan in section 6.2.
 6. Even oracle + double leaves ~68% of games unfinished (the heuristic makes 573), so the value fix is necessary but not sufficient.
 
-- **Nothing is running.** Everything is committed and pushed (through the commit that wrote this file). Fast suite 179 passed (2026-10-15). The slow suite last passed 7/7 at `f1e5bbf`; not run since `privileged_belief_loss` and `value_estimator` (both default off, fingerprinted). Run it when the machine is free (~45 min).
+- **Nothing is running** (2026-10-17). Everything is committed and pushed (through the commit that wrote this file). Fast suite 182 passed (2026-10-16). The slow suite last passed 7/7 at `f1e5bbf`; not run since `privileged_belief_loss` and `value_estimator` (both default off, fingerprinted). Run it when the machine is free (~45 min).
 
 ### 2026-10-15 night: R0, R0', C4 and the R1a head-swap screen (all `src/` untouched)
 
@@ -81,11 +83,17 @@ Stages:
 
 **Tension to keep in mind:** contribution (1) is the JEPA filter, but the working Wumpus agent uses the decoder representation, because JEPA learned the danger ahead worse in the offline A/B (section 5.5). With the fixed recipe JEPA plays as well as the decoder (2 seeds, section 5.3), so contribution (1) is viable on Wumpus; its latent is a little less position- and heading-aware.
 
+**Where Wumpus stands against the stage-3 goal (2026-10-17):** the latent can now be shown against the exact belief convincingly (agent-history probes cell 87%, heading 92%; random histories 69 / 75%). Playing well is not reached: 200 per game against the heuristic's 573, and ~67% of games end unfinished. The open problem is the planner/value's refusal to step into provably safe cells, not the representation.
+
 ## 1b. Working conjectures and research principles ("taste in research")
 
 The user trusts the agent's research judgement (2026-10-10: "run the experiments you think will not waste meaningless compute and post-analysis"; 2026-10-12: "decide on the best direction forward without asking me to pick an option"). These are the beliefs that currently steer the work, strongest evidence first. Each is a conjecture with a stated test, not a result.
 
-**C6 (new, 2026-10-15; the lead). The value bias and the model's accuracy are coupled.** The double value turns the oracle networks into the best agent so far (223) and makes the current agent worse (138 vs 189 on the same seeds; deaths up). On frozen latents the converged pair values exploit the current model's errors. Implication: fix the representation and heads first, then use the double value. **Sharpened 2026-10-15 night (R0', R1a):** what the planner exploits are the head's under-reported MODERATE risks, not confident "safe" errors, and swapping in fresh or ensembled heads on the same latent makes it worse (the planner finds their errors). Only the oracle latent's head resists. Next: section 6.2 options.
+**C7 (new 2026-10-16; confirmed). The agent's latent was limited by its training SCHEDULE, not its objective, data or architecture.** Offline with the same code: uniform training on the agent's own final buffer gives cell / heading 85 / 87%; the agent's growing-buffer schedule replayed offline gives 77 / 72% (the agent: 76 / 68%). Primacy bias (Nikishin et al. 2022): the first few dozen games are replayed hundreds of times and later data does not repair the latent. Budget-matched resets do not fix it (2g); retraining from scratch, long and uniformly on the whole buffer, does (2h and in-agent; run.py section 14). **Open sub-question:** the growing schedule after a mid-run retrain re-degrades the networks (collections 55-95); a schedule that stays near-uniform is untested.
+
+**C8 (new 2026-10-17; the lead for the next direction). With a good-enough latent and an unbiased value, the idling is a planner/value problem.** The retrain recipe has an 87-92% latent, a double value without impossible values and few deaths, yet ~67% of games end unfinished, the same as every recipe before it. The oracle + double arm (latent 97-100%) also stays at 68-70% unfinished. Neither more latent accuracy nor removing the maximisation bias touches the count of unfinished games; the navigation override (+300, section 5.8) shows the missing behaviour is "turn towards an adjacent safe cell and step in". Test next: planner-side changes that make that two-step behaviour cheap to find (macro actions), judged in play on the retrain recipe.
+
+**C6 (2026-10-15; resolved 2026-10-16). The value bias and the model's accuracy are coupled.** Confirmed from the other side: with the retrained latent the double value goes from -22 / -84 / -47 (vs max) to +73 / +75 / +65 (vs double alone), and deaths fall. The double value turns the oracle networks into the best agent so far (223) and makes the current agent worse (138 vs 189 on the same seeds; deaths up). On frozen latents the converged pair values exploit the current model's errors. Implication: fix the representation and heads first, then use the double value. **Sharpened 2026-10-15 night (R0', R1a):** what the planner exploits are the head's under-reported MODERATE risks, not confident "safe" errors, and swapping in fresh or ensembled heads on the same latent makes it worse (the planner finds their errors). Only the oracle latent's head resists. Next: section 6.2 options.
 
 **C2. Confirmed 2026-10-15 for the oracle networks: the value is flat and impossibly optimistic, sustained by the max over noisy children.** The plain max diverges on frozen latents. Double/clipped targets remove the impossible values in the screen and in training (V > 999: 36% → 1%; gold taken). For the current agent the bias is not the main problem (C6).
 - **The mechanism:** V̂ has no gradient towards progress. A flat optimistic V is self-consistent only if each step's backup supplies about (1−γ)V + 1 ≈ 8. Taking the max over 5 actions × observation branches of noisy child values supplies that (maximisation bias, van Hasselt 2010).
@@ -106,6 +114,11 @@ The user trusts the agent's research judgement (2026-10-10: "run the experiments
 **C4. The current agent's filter is not belief-consistent on uninformative actions.** (Measured 2026-10-15 night: real, 4-7x the oracle latent's drift, but it costs no cell/heading information; not an R1 arm. `noop_drift_cost.py`.) The exact belief is unchanged by a failed GRAB, but the latent moves by half its norm. It is untested as a cause. With the double value in place it is one candidate difference between the agent's latent and the oracle's (which is nearly idempotent on no-ops); a cheap CPU check on stored games can measure it on the double runs.
 
 **Principles that picked the experiments (keep using them):**
+- **Ask "data, objective, or training?" before changing an objective** (2026-10-16). Train the same objective offline on (a) a reference pool, (b) the agent's own buffer uniformly, (c) the agent's exact data schedule, with the same code and update count. It separated the three causes in ~3 GPU-hours, where months of objective changes had not; the answer (schedule) needed no new loss.
+- **When a fix is budget-matched, check what the FINAL network was trained on** (2g lesson). Matching total updates left the post-reset network with half the whole-buffer training of the reference arm, and more resets made it worse. Compare the final network's training, not the run's total.
+- **Screen the whole fix on frozen data before building it into the agent** (2h): train the would-be agent's networks offline on a real run's buffer, swap them into that run's planner, and play paired games. 2 GPU-hours told us the in-agent version would pass (it did: +73 / +75 / +65 vs the screen's +67 / -1 / +88).
+- **Watch the in-training evaluations between interventions,** not only the final readout: the retrain runs degraded between retrains (deaths up to 25%) although the final readout passed. A pass at the end can hide a fragile middle.
+- **Report the honest comparison as well as the pre-registered one:** the retrain recipe passes its pre-registered test (vs double alone) but is not significantly better than the best previous recipe (vs max value). Say both.
 - Cheapest informative test first: replay the trained networks with one piece swapped before any training run; train only when a frozen-network test passes.
 - Pre-register the readout in the script header before launching (thresholds, seeds, which networks), and read it out as written. If something learned before launch forces a change (e.g. a tolerance), write the change and its reason into the header before the runs.
 - Every replay must reproduce `analysis/report.json` exactly; scripts raise otherwise.
@@ -133,6 +146,9 @@ The user trusts the agent's research judgement (2026-10-10: "run the experiments
 - **Cap GPU memory per job when several share the GPU** (`torch.cuda.set_per_process_memory_fraction(f, torch.cuda.current_device())`; it needs an indexed device). Without a cap, three planner jobs held ~11.6 GB of allocator cache each, and WSL spilled into system memory (a refresh took 78 s instead of 4.7 s). `BeliefTreeSearch` keeps its last trees (`self.roots`): drop the planner after a big play. A 512-game, 50-simulation play peaks at ~5.4 GB; a Wumpus `main.py` at ~3.4 GB.
 - **Smoke-check every edit, even a one-liner,** before relaunching (a cap call without a device index failed 5 queued jobs at start-up, 2026-10-15).
 - **Order chains by information per GPU-hour.** Put the arms that decide the branch first, and confirmations and low-prior arms last, where they can be dropped.
+- **A 512-game, 50-simulation play needs > 4.8 GB of GPU memory** (2026-10-16): the 0.3 cap that suits 128-game screens OOMs. Run 512-game plays one at a time, uncapped (`retrain_play.py`).
+- **Save the networks of every offline training** (`objective_ab.py --save`): the 2h plays reused the saved retrained networks after the plays OOMed, with no retraining.
+- **Run a per-minute system log beside long jobs** (`nvidia-smi` temperature/memory/power, RAM, swap, load). The 2026-10-16 machine crash left no evidence because there was none.
 
 
 ## 2. Rules the user set (follow them)
@@ -184,13 +200,13 @@ The user trusts the agent's research judgement (2026-10-10: "run the experiments
 ## 3. Current state
 
 **Git**
-- **Everything is pushed** (2026-10-15). The working tree is clean. `runs/` is untracked: keep it.
-- **Nothing is running** (2026-10-15 19:06). The R0 chain, `runs/wumpus/head_shift_double_chain.sh`, was stopped on the user's request 3 minutes after launch; its two partial logs were deleted. Relaunch it as in the next-session job above.
+- **Everything is pushed** (2026-10-17, through the commit that wrote this file). The working tree is clean. `runs/` is untracked: keep it.
+- **Nothing is running** (2026-10-17). The last chain, `runs/wumpus/retrain_seeds34_chain.sh`, finished at 05:48 (seeds 3-4 + the 5-seed sweep). The machine crashed once on 2026-10-16 ~00:30 (cause unknown, not this project's memory); the chain was relaunched unchanged and finished.
 - Chains of 2026-10-14/15, all finished or stopped on purpose, with logs beside them: `c2_chain.sh` (self-loop v2), `fvi_chain.sh` then `fvi_queue.sh` (FVI screen; `fvi_queue.log` records the relaunches and the stop of current seed 2), `double_chain.sh` (training with `value_estimator=double`, both recipes, then `analyze.py`).
 - **Health checks for any chain:** `cat <chain>.log`; `tail -3 <run>.<diag>.log` (progress lines should advance); `ps -eo pid,etime,args | grep "^ *[0-9]* *[0-9:-]* [^ ]*python[^ ]* \(main.py\|reports/\)"`; `nvidia-smi`; `uptime` (ipomcp load). **Never `pkill -f`** a pattern in your own command line; kill by PID (chain shell, `xargs`, then the python jobs).
 
 **Tests**
-- The fast suite passes: 179 tests (2026-10-15; 7 new in `TestValuePair`), about 1.5 min on an idle machine (6 min under load).
+- The fast suite passes: 182 tests (2026-10-16; 3 new in `TestWholeBufferRetrain`), about 1.5 min on an idle machine (6 min under load).
 - **The slow suite passed 7/7 at `f1e5bbf` on 2026-10-11** (42.5 min; log `runs/slow_suite_f1e5bbf.log`). It covers every option added since 2026-10-05.
 - **Checkpoints from before `52ac3fc` cannot be resumed:** their buffer state has no `greedy` flags (no back-compat, by rule). They still load for analysis (`load_trained_run` reads networks only).
 - **The Tiger acceptance test now trains 6000 updates.** At 3000 the value gate (mean |V − V*| < 8) failed at 3–5 of 9 seeds. The two worst seeds drop to 5.3 and 1.1 at 6000. The seed table is in the test header; the logs are in `runs/tiger_acceptance_seeds/`.
@@ -237,6 +253,11 @@ The user trusts the agent's research judgement (2026-10-10: "run the experiments
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_double_seed{0,1,2}` | Current recipe + `value_estimator=double`, analysed, `.phantom_reward_diag.log`: failed (138) |
 | `runs/wumpus/smoke_double` | 6-collection small check of the double value (oracle recipe; clean) |
 | `runs/wumpus/double_chain.sh` (+ `.log`), `head_shift_double_chain.sh` (+ `.log`) | The double-value training chain (done); R0 (ready to relaunch) |
+| `runs/sweeps/wumpus_retrain/` | **The newest Wumpus recipe, 5 seeds** (symlinks to `runs/wumpus/u64_store_eval_eps_decoder_k5_double_retrain50_seed{0..4}` + `aggregate.json`, 200 ± 44); log `runs/sweeps/wumpus_retrain.sweep.log`. Re-aggregate with `uv run sweep.py wumpus_retrain --seeds 0,1,2,3,4 <the overrides in its sweep.json>` |
+| `runs/wumpus/u64_store_eval_eps_decoder_k5_double_retrain50_seed{0..4}` | Retrain recipe runs (seeds 0-2 at `d0364c6` via `retrain_chain.sh`, seeds 3-4 via `retrain_seeds34_chain.sh`), analysed, `TRAINED` markers |
+| `runs/wumpus/data_vs_objective/` | `objective_ab.py` 2e-2g logs: `pool_`, `buffer_`, `growing_`, `reset1_`, `reset3_seed*.log`; chains `data_vs_objective_chain.sh`, `schedule_chain.sh`, `reset_chain.sh` (+ `.log`), `reset_chain_sysmon.log` (system log of the relaunch) |
+| `runs/wumpus/agent_reference_probes.txt` | Agent references scored like the `objective_ab.py` arms |
+| `runs/wumpus/retrain_play/` | 2h: `retrained_seed*.pt` (networks retrained on each double run's whole buffer), `train_seed*.log`, `play_seed*.log`; chains `retrain_play_chain.sh` (training; its parallel plays OOMed) and `retrain_play_plays.sh` (plays one at a time) |
 
 **Reviewer pages**
 
@@ -349,6 +370,23 @@ A hand-written, deterministic policy on the exact belief. It is **not optimal** 
 
   - **Storing the greedy evaluation games is what matters.** Without them, deaths return: the head is not trained on the greedy planner's own risky FORWARDs (section 5.5).
   - **ε is not needed.** Neither arm changes the idling.
+
+### 5.3b The whole-buffer retrain recipe (2026-10-16/17; `training/run.py` section 14)
+
+**Recipe.** The 5.3 recipe plus `model.value_estimator=double training.retrain_every=50 training.retrain_updates=6400` (retrains after collections 50 and 100; ~6.5 h per seed, 3 in parallel). Trained at `d0364c6`.
+
+| Seed (512 games, best.pt) | 5.3 recipe | Double alone | **Retrain + double** | best.pt from | Deaths | Unfinished |
+|---|---|---|---|---|---|---|
+| 0 | 185.5 | 163.8 | **236.7** | collection 100 | 0.8% | 67.2% |
+| 1 | 166.0 | 81.7 | **156.8** | 55 | 4.7% | 67.8% |
+| 2 | 215.2 | 168.0 | **233.1** | 80 | 4.1% | 62.3% |
+| 3 | 107.0 | - | **174.7** | | 2.9% | 71.5% |
+| 4 | 236.2 | - | **199.7** | | 3.1% | 67.2% |
+| **Mean** | 182 ± 62 | 138 (3 seeds) | **200 ± 44** (std 35) | | 3.1 ± 1.9% | 67.2 ± 4.1% |
+
+- Paired against the 5.3 recipe: +51 / -9 / +18 / +68 / -37 = **+18 ± 53, not significant**. Against double alone (pre-registered): +73 / +75 / +65.
+- Latent (MLP probes): random histories cell 68.6%, heading 75.3% (5.3 recipe: 57.0 / 58.3%); agent histories 87.4 / 91.5% (82.3 / 85.8%).
+- Between the retrains (collections 55-95) the 128-game evaluations were no better than the double runs' and deaths reached 25% (seed 0); the growing schedule after a retrain brings the planner's model exploitation back. The final retrain repairs it.
 
 ### 5.4 Interpretability findings (current agent, seed 0)
 
@@ -560,40 +598,33 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 
 ## 6. Next steps
 
-**Direction (user decision 2026-10-15): representation.** Make the agent's own latent approach the oracle latent without privileged targets, then train with `model.value_estimator=double`. Experiments within this direction need no permission (section 2). Domain changes, project-stage changes and anything touching canonical Tiger do.
+**Direction (user decision 2026-10-15): representation. Finished 2026-10-17** (C7, section 5.3b). The next direction is the user's call (section 2: direction changes need the user). Experiments inside a chosen direction need no permission.
 
-### 6.1 Done 2026-10-15
-- **FVI screen** (`fvi_screen.py`, header 4): oracle networks pass, current agent fails (section 0).
-- **`model.value_estimator`** (`5dc41ce`): `ValuePair` (models/heads.py 2c), `WorldModelTrainer.pair_value_targets` (trainer.py 3e), run.py section 13 with both training results.
-- **Double-value training, both recipes** (section 0 table): oracle + double passes (223), current + double fails (138).
+### 6.1 Done 2026-10-15 to 10-17
+- **FVI screen** (`fvi_screen.py`, header 4): oracle networks pass, current agent fails.
+- **`model.value_estimator`** (`5dc41ce`; run.py section 13): oracle + double passes (223), current + double fails (138).
+- **R0, R0', C4, R1a** (2026-10-15 night): the head under-reports moderate risks; no-op drift costs no information; fresh/ensemble head swaps fail.
+- **Data vs objective vs schedule** (`objective_ab.py` 2e-2f): training-limited, the growing schedule (C7).
+- **Reset + catch-up** (2g): FAIL. **Retrain-and-play screen** (`retrain_play.py`, 2h): PASS.
+- **`training.retrain_every` / `retrain_updates`** (`d0364c6`; run.py section 14): in-agent PASS on 3 seeds, 5-seed sweep 200 ± 44 (section 5.3b).
 
-### 6.2 The representation plan
-
-**What is already known** (do not redo; sections 5.5, 5.7, 7):
-- The architecture is not the limit: the same GRU reaches ~100% cell/heading from exact targets, and a causal Transformer was no better (`supervised_filter.py`). The objective is the limit.
-- The decoder objective beats JEPA on the latent (heading +20 points, cell +7); longer multi-step horizons (k = 10, 20) do not help; more offline updates improve the latent but overfit the jointly trained observation head (held-out NLL up, confident "safe" misses up). Weight decay does not help; a detached, NLL-early-stopped head is not more conservative where it matters.
-- What the double-value planner exploits on the current agent are deaths: the observation head's confident "safe" errors (`head_shift.py`: calibrated in-sample, overconfident on fresh games).
-
-**Done 2026-10-15 night** (section 0, night): R0, R0' (branch M), C4 (not an arm), R1a head swaps (fail).
-
-**2026-10-16: the user chose option 1 (data vs objective); result: training-limited, the growing-buffer schedule (section 0, 2026-10-16). Reset + catch-up (2g) FAILED; whole-buffer retrain-and-play (2h) PASSED; in-agent retrain PASSED (run.py 14); 5-seed sweep 200 ± 44, paired +18 ± 53 over the 182 recipe (not significant).**
-
-**R1 options for the user (2026-10-15 night; my recommendation first):**
-1. **(Recommended) Data vs objective for dead reckoning, offline.** `objective_ab.py` on the cached pool reaches cell 77-81% / heading 63-84% at the agent's 6400 updates; the agent's `best.pt` filters reach only 59-61% / 58-66% on the same held-out pool. Train the same objective offline on the agent's own buffer (a `--train-buffer <run>` option) vs the pool, 3 seeds, same updates, scored on the held-out pool. If the buffer arm stays near 60%, the agent's own (idle-heavy) data limits dead reckoning: exploration/data arms (e.g. a share of random-action games in the buffer) come next. If it reaches ~80%, the in-agent training (value loss, co-adaptation, Polyak) limits it. ~1 h, no `src/` change.
-2. **Planner robustness to model error, in training:** a default-off jointly trained head ensemble whose disagreement penalises the value targets (MOPO-style), with the double value. Larger change (trainer, fingerprint, 3 x 3 h runs); R1a suggests same-recipe ensembles share their errors, so the prior is low.
-3. **Accept the ~223 bound and turn to the unfinished games** on the oracle + double networks (turn-then-forward macro actions, section 6.3), i.e. the remaining 68% that no representation fix has touched.
+### 6.2 Options for the user (2026-10-17; my recommendation first)
+1. **(Recommended) The unfinished games, planner-side, on the retrain recipe.** C8: neither the latent nor the value bias moves the ~67% unfinished. Start with the cheapest frozen-network test (principle: swap one piece, play paired): a turn-then-forward macro action (TURN_x followed by FORWARD as one search edge, primitives kept) in the planner of `runs/sweeps/wumpus_retrain/seed*` `best.pt`, 512 paired games; pre-register >= +50 on 3 of 5 with unfinished down. Only if it passes, train with it. The navigation override (+300) bounds the prize; check in the smoke run that the macro actually gets chosen (principle "check the intervention reaches the decision").
+2. **A retrain schedule that does not re-degrade** (C7 sub-question): cheaper, more frequent retrains (e.g. every 10 collections, 1600 updates) or a sampling mix that moves from growing to uniform. Offline first: `objective_ab.py` arms on the growing schedule, scored by probes and then played like 2h. Could cut variance and the ~2 h of retrain compute per run, but it does not address the unfinished games.
+3. **Planner robustness to model error** (MOPO-style ensemble penalty in the value targets): low prior after R1a (same-recipe ensembles share errors) and less needed now that deaths are 3%.
+4. **JEPA on the retrain recipe** (contribution 1): the decoder carries the Wumpus results; one JEPA seed pair on the retrain recipe would show whether the schedule fix also closes JEPA's latent gap. Cheap, but not on the critical path to playing well.
 
 ### 6.3 Other candidates (weaker or more expensive; reasons stated)
 - **A learned policy prior (AlphaZero-style).** A prior distilled from the search's own visits inherits the idling, and argmax-Q acting ignores the prior. Only worth it if acting follows visits or the prior comes from outside the search.
 - **Advantage learning (action-gap increasing operator, Bellemare et al. 2016).** The counterfactual test found the one-step estimates uncorrelated with the true advantage (section 5.8), so amplifying the gap amplifies noise.
-- **Turn-then-forward macro actions.** Worth revisiting on the oracle + double networks, whose value now has a gradient: about 68% of their games still end unfinished.
+- **Turn-then-forward macro actions.** Now option 6.2.1, on the retrain recipe.
 - **A privileged DAgger diagnostic** (teacher labels on the agent's own states) would bound what a value learned on the right states can do (C3). Diagnostic only; lower priority than (B).
 - **The remaining ~23% of the gap is risk decisions** (seed 3 keeps 13.5% deaths even with the navigation override). Not diagnosed.
 - If an arm is significant at 3 seeds, extend it to 5 with `sweep.py`.
 - Run the slow suite once the code settles (`uv run pytest -m slow`, ~45 min).
 
 ### 6.4 Ask the user before starting
-- **Reviewer page refresh**, only if the user wants a meeting. The 2026-10-07 page shows 3 seeds (189); the 5-seed numbers are in `runs/sweeps/wumpus_current`. Merge with `scripts/export.py add`, read the live page with the Artifact tool first, then republish to the same URL.
+- **Reviewer page refresh**, only if the user wants a meeting. The 2026-10-07 page shows 3 seeds (189); the 5-seed numbers are in `runs/sweeps/wumpus_current` and the retrain recipe's in `runs/sweeps/wumpus_retrain` (worth a row and the latent-probe comparison). Merge with `scripts/export.py add`, read the live page with the Artifact tool first, then republish to the same URL.
 - **Direction calls:** the hybrid JEPA + observation condition; a model-free recurrent Q-learner baseline; multi-agent Tiger (verify its tables against Gmytrasiewicz & Doshi first); I-POMDP levels via the S × M_j reduction. Cheap Tiger questions: an observation-head detach ablation in JEPA mode; Polyak momentum 0.98.
 
 ## 7. Failed paths and pitfalls: do not repeat
@@ -655,6 +686,11 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 - **Expanding a whole data set at once through `LearnedSearchModel.expand`** (N × A × O children; 20,000 states → 6.4 M rows) runs out of GPU memory. Chunk it (`value_chain_diag.py`, `one_step`).
 - **`echo "... $(date ...) exit $?"`** logs the exit status of `date`, not of the job, so crashed runs looked successful once. Capture `status=$?` first.
 
+**Training schedule and representation (2026-10-16)**
+- **Budget-matched resets with a catch-up** (`objective_ab.py` 2g; one reset at 3200 + 3200, or three at 1600 / 3200 / 4800 + 1600): cell / heading 80 / 76% and 77 / 68% against 85 / 87% for uniform whole-buffer training. The final network is under-trained on the full buffer; more resets are worse. Retrain from scratch, long and uniformly, instead (run.py section 14).
+- **New objectives to fix the latent** before checking the schedule: the objective was never the limit (C7). Check data vs objective vs schedule first.
+- **A retrain seed derived from `cfg.seed`** broke checkpoint-driven resume (the resume test caught it); every random stream must come from the checkpoint (`retrain_seed` is saved).
+
 **Value targets (2026-10-15)**
 - **The double value on the agent's own latent** (`value_estimator=double`, current recipe): −22 / −84 / −47, deaths up. The frozen-latent screen predicted it. Only combine it with a better representation (C6).
 - **Fitted value iteration with the plain max through the learned model** diverges (to 10^4–10^5) on frozen latents. Never use it as a value target.
@@ -671,6 +707,9 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 - **Scratchpad files vanish with the session.** Keep anything reproducible in `reports/` or `runs/`.
 - **An unchunked CPU `expand` of 16,000 latents** (≈ 2.6M children, ~10+ GB) set off Claude Code's memory reaper, alongside ipomcp's 16 workers (2026-10-14). Chunk.
 - **Long chains without progress lines:** a 10× slowdown went unnoticed for hours. Print a decision or refresh counter with timestamps.
+- **A 0.3 GPU memory cap on 512-game plays** OOMs (2026-10-16, 2h first plays); the cap suits 128-game screens only.
+- **A `tail -f` monitor over a glob** does not see log files created later (the 3-reset arms); poll with `grep` over the glob instead.
+- **Three chained arms without a system log:** the 2026-10-16 machine crash at ~00:30 left nothing to diagnose. Run a per-minute system log (section 1b).
 
 ## 8. History (commit, then the gist)
 
@@ -732,7 +771,22 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 - `ddedd5d`: R1a `head_swap_screen.py` and the HANDOFF update.
 - `af4fbee`, `684ffa6`, `13060d6`: `objective_ab.py` 2e (`--train-buffer`, `--agent-reference`, `--agent-checkpoint`), 2f (`--buffer-schedule growing`), 2g (`--reset-at`, `--catch-up`), their pre-registrations and results; this HANDOFF update.
 
+**Pushed 2026-10-16/17**
+- `fd11f1a`: HANDOFF, data vs objective -> training-limited; reset screen launched (it died with the machine; relaunched unchanged at 13:10).
+- `7511997`, `aa5ee65`: 2g reset + catch-up FAIL; `retrain_play.py` (2h) pre-registered; crash note.
+- `d0364c6`: `training.retrain_every` / `retrain_updates` (run.py section 14; Tiger fingerprint identical, 182 tests); 2h PASS; in-agent test pre-registered.
+- `81dce02`, `ac180a2`: in-agent retrain + double PASS on 3 seeds; seeds 3-4 launched.
+- `57fb36f`: 5-seed sweep 200 ± 44 (paired +18 ± 53 vs 182, not significant); CLAUDE.md project paragraph.
+- This HANDOFF rewrite for the next session.
+
 ## 9. Files touched since `9a9b726` (all pushed)
+
+**Added or changed 2026-10-16/17**
+- `src/ipomdp/training/run.py`: section 14 (whole-buffer retrain: `RunConfig.retrain_every` / `retrain_updates`, `TrainingRun._retrain()`, `retrain_seed` checkpointed only when enabled, the `retrained` metric only when enabled; pre-registration, 3-seed and 5-seed results); `training/seeding.py` (`RunStream.RETRAIN = 9`); `experiments/runs.py` (`build_run_config`); `conf/config.yaml` (`training.retrain_every: 0`, `training.retrain_updates: 0`, back-filled into all 70 saved run configs).
+- Tests: `TestWholeBufferRetrain` in `tests/test_training_run.py` (partial settings raise, off logs nothing; networks and Adam reset then catch-up; bit-exact resume across a retrain); `retrain_every` / `retrain_updates` in the test configs of `test_training_run.py` and `test_wumpus.py`.
+- `reports/2026-10-02_wumpus_diagnostics/objective_ab.py` (2e `--train-buffer`, `--agent-reference`, `--agent-checkpoint`; 2f `--buffer-schedule growing`; 2g `--reset-at`, `--catch-up`; results), `retrain_play.py` (new; 2h, pre-registration and result).
+- `runs/wumpus/reset_chain.sh`, `retrain_play_chain.sh`, `retrain_play_plays.sh`, `retrain_chain.sh`, `retrain_seeds34_chain.sh` (untracked).
+- `HANDOFF.md`, `CLAUDE.md` (project paragraph), memory files.
 
 **Added or changed 2026-10-15 night** (diagnostics only)
 - `reports/2026-10-02_wumpus_diagnostics/head_shift.py` (items 4, 5; optional 4th argument: another checkpoint's networks), `noop_drift_diag.py`, `noop_drift_cost.py`, `head_swap_screen.py` (new).
