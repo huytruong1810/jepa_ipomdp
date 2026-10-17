@@ -45,7 +45,23 @@
 #      seed; pass >= +50 on 3 of 5 with unfinished down and deaths up by at most 2 points).
 #    - In between: the macro play screen on seeds 0-1 only, as a smoke.
 #
-# 4. Result: (pending)
+# 4. Result 2026-10-17 (runs/sweeps/wumpus_retrain seeds 0-4, best.pt, 512 games each; every planner replay
+#    reproduces report.json; logs runs/wumpus/macro_reach_seed{0..4}.log, chain runs/wumpus/macro_reach_chain.sh;
+#    ~9 min per seed with ipomcp at load ~10): **VOID on 5 of 5 seeds.**
+#    | Seed | Declined d=2 states | q_mac > q_chosen | gap median | leaf-only q1_mac > q1_chosen | q_turn - q_chosen median | turn children expanded |
+#    | 0    | 1407                | 0.000            | -32.5      | 0.109                        | -10.0                    | 99.7%                  |
+#    | 1    | 1446                | 0.000            | -44.6      | 0.153                        | -13.4                    | 100%                   |
+#    | 2    | 1576                | 0.000            | -39.1      | 0.119                        | -8.4                     | 100%                   |
+#    | 3    | 1865                | 0.000            | -38.1      | 0.136                        | -8.3                     | 100%                   |
+#    | 4    | 2520                | 0.000            | -28.7      | 0.089                        | -14.7                    | 100%                   |
+#    - Distance-3 states are the same (0.000 on every seed). Unfinished and won games do not differ.
+#    - The turn child is expanded at essentially every declined state, so the tree already holds the
+#      TURN -> FORWARD path and values it 29-45 below the chosen action (median). Even the leaf-only
+#      one-step values prefer the macro only 9-15% of the time. The search does not miss the safe step:
+#      the model's value of the turned-and-stepped latent ranks it below the no-op/turn alternatives
+#      (the chosen actions are mostly SHOOT/GRAB no-ops and FORWARD elsewhere).
+#    - Readout as pre-registered: the macro is not built and the play screen is not run. C8 sharpens: with a
+#      good latent and a double value, the idling is the VALUE's ranking, not search coverage.
 # ==============================================================================
 
 import json
