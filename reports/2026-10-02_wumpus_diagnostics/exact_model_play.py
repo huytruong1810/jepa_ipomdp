@@ -79,6 +79,11 @@
 #    - Half of the games still end unfinished with the exact model, so the value (or the 50-simulation search)
 #      bounds the remaining gap to the heuristic (~165).
 #    - EP (exact P, learned R) splits the observation head from the reward head: see 4b.
+# 4b. EP (exact P, learned rewards), same games: 408.4 / 252.5 / 355.2 / 388.6 / 381.5 (mean 357.2), paired
+#    +171.7 +- 30.9 / +95.7 +- 32.5 / +122.0 +- 31.5 / +213.9 +- 36.6 / +181.8 +- 35.3 (mean +157); deaths 0 on
+#    every seed; unfinished 50-65%. The observation head carries ~75% of the model's cost in play (EP / EPR =
+#    157 / 208), the reward head (phantom death risk after imagined turns, q_localise_diag.py) the rest, as the
+#    offline depth-2 split said (56-85%).
 # ==============================================================================
 
 import json
