@@ -1,10 +1,13 @@
-# HANDOFF: JEPA I-POMDP (as of 2026-10-17 afternoon. The representation direction is finished: the agent's latent was limited by its growing-buffer training schedule (primacy bias), and a whole-buffer retrain (`training.retrain_every=50 training.retrain_updates=6400`) + `model.value_estimator=double` gives 200 ± 44 per game over 5 seeds (`runs/sweeps/wumpus_retrain`): +73 / +75 / +65 over the double value alone, but only +18 ± 53 paired over the 182 recipe (not significant); deaths 3.1%, latent cell/heading on random histories 69/75% (was 57/58%). ~67% of games still end unfinished. 2026-10-17 evening: the user chose the macro-action direction; its pre-registered reach check (`macro_reach_diag.py`) read VOID on 5 of 5 seeds, so the macro was not built. The user then approved a model-vs-value localisation (`q_localise_diag.py`): **MODEL on 5 of 5 seeds**, the observation head misses the value of information of a new cell. Nothing is running; the method to build is the user's call)
+# HANDOFF: JEPA I-POMDP (as of 2026-10-18. Wumpus recipe: whole-buffer retrain + double value, 200 ± 44 per game over 5 seeds (`runs/sweeps/wumpus_retrain`; heuristic 573); ~67% of games end unfinished. 2026-10-17 evening: macro actions VOID (`macro_reach_diag.py`), then the model-vs-value localisation (`q_localise_diag.py`) read **MODEL on 5 of 5 seeds**: the learned observation head misses the value of information of entering a new cell (glitter predicted 2.3-4.5x too rarely). The lead is decision-aware / value-equivalent model learning. Nothing is running)
 
-**The next session's job:** ask the user which direction comes next (a direction change; section 6.2 has the options, updated after the macro check). Until they answer, the only pre-authorised work is housekeeping: the slow suite (`uv run pytest -m slow`, ~45 min, not run since `privileged_belief_loss`; check `pgrep -fl main.py` and ipomcp load first).
+**The user's goal for the paper (2026-10-17):** "combine state-of-the-art theories into the algorithm to have the strongest publication in deep learning and decision theory and representation learning". Every next step should be tied to a theory and tested by a pre-registered screen; score-chasing by trial and error is out (two weeks of it did not close the gap).
 
-My recommendation, in order (section 6.2):
-1. ~~Turn-then-forward macro actions~~: **VOID** (2026-10-17, section 0). In the expectimax tree the turn child is already expanded at every declined state and the tree values TURN -> FORWARD 29-45 below the chosen action. No planner-side change that reuses the same value can reach the decision; the remedy has to change the value's ranking.
-2. **A retrain schedule without the mid-run degradation** (collections 55-95 were worse than the double runs, deaths up to 25%): cheaper, more frequent retrains or a growing-to-uniform sampling mix; may cut both variance and cost (each retrain ~1 h).
+**The next session's job (section 6.2 has the full plan, in order):**
+1. **Step A, fit vs latent (pre-authorised, CPU-scale, ~1 h).** On the `q_localise_diag.py` states: can the frozen latent (turned child) predict the exact P(o' | FORWARD) / P(glitter) with a fresh probe? Separates "the head is mis-fitted" (objective/weighting) from "the latent lacks it" (representation).
+2. **Step B, privileged play bound (pre-authorised: the user was offered it on 2026-10-17 and then asked for this handoff; confirm in one line before launching).** Plan with the exact one-step model (P and R from the layout-enumeration filter at every tree node) and the learned value and filter, 512 paired games per seed. Pass: >= +100 on 3 of 5 seeds with unfinished down. It decides whether a model fix is worth building (offline rankings have failed in play before, C3).
+3. **Step C, the method (the user's call after A and B):** a decision-aware observation/reward objective (value-equivalent loss, Grimm et al. 2020/2021; VaGraM, Voelcker et al. 2022), default off, Tiger bit-identical, trained on the retrain + double recipe.
+- Housekeeping, pre-authorised whenever the machine is free: the slow suite (`uv run pytest -m slow`, ~45 min; not run since `privileged_belief_loss`).
+- Check first: `ps -eo pid,args | grep "[p]ython"`, `uptime` (ipomcp load), `nvidia-smi`. On 2026-10-18 the machine was idle (load 0.1).
 
 Section 1b holds the working conjectures and the research principles ("taste in research"), including the compute-efficiency rules (updated 2026-10-17). Section 7 lists what failed: do not repeat it.
 
@@ -102,7 +105,13 @@ Stages:
 
 **Tension to keep in mind:** contribution (1) is the JEPA filter, but the working Wumpus agent uses the decoder representation, because JEPA learned the danger ahead worse in the offline A/B (section 5.5). With the fixed recipe JEPA plays as well as the decoder (2 seeds, section 5.3), so contribution (1) is viable on Wumpus; its latent is a little less position- and heading-aware.
 
-**Where Wumpus stands against the stage-3 goal (2026-10-17):** the latent can now be shown against the exact belief convincingly (agent-history probes cell 87%, heading 92%; random histories 69 / 75%). Playing well is not reached: 200 per game against the heuristic's 573, and ~67% of games end unfinished. The open problem is the planner/value's refusal to step into provably safe cells, not the representation.
+**Where Wumpus stands against the stage-3 goal (2026-10-18):** the latent can now be shown against the exact belief convincingly (agent-history probes cell 87%, heading 92%; random histories 69 / 75%). Playing well is not reached: 200 per game against the heuristic's 573, and ~67% of games end unfinished. The open problem is localised (C9): the learned observation (and, less, reward) head is wrong exactly where it decides whether to enter a new cell; the value and the search are not the blocker.
+
+**Publication framing (2026-10-17, my proposal to the user; not yet agreed in detail).** Three theory-backed findings plus a method:
+- Representation learning: a JEPA belief filter that matches the exact optimum on Tiger, with span-Hölder error bounds against the exact belief (contribution 3).
+- Two biases that compound in learned belief-space planning: maximisation bias (van Hasselt 2010; double estimation only helps once the model is accurate, C2/C6) and primacy bias (Nikishin et al. 2022; the growing-buffer schedule caps the latent, whole-buffer retraining lifts it, C7).
+- Decision theory: exact-component localisation (exact P, R swapped in at the planner's own states) shows the residual failure is a lost value of information in the model, not value bias or search (C9).
+- The method to build (Step C): decision-aware / value-equivalent model learning for belief-space planning.
 
 ## 1b. Working conjectures and research principles ("taste in research")
 
@@ -135,6 +144,10 @@ The user trusts the agent's research judgement (2026-10-10: "run the experiments
 **C4. The current agent's filter is not belief-consistent on uninformative actions.** (Measured 2026-10-15 night: real, 4-7x the oracle latent's drift, but it costs no cell/heading information; not an R1 arm. `noop_drift_cost.py`.) The exact belief is unchanged by a failed GRAB, but the latent moves by half its norm. It is untested as a cause. With the double value in place it is one candidate difference between the agent's latent and the oracle's (which is nearly idempotent on no-ops); a cheap CPU check on stored games can measure it on the double runs.
 
 **Principles that picked the experiments (keep using them):**
+- **Tie every step to a theory and to the paper** (user, 2026-10-17). Before proposing an experiment, say which theory it tests and which branch of the readout leads to which method.
+- **Localise with exact components before building a remedy** (2026-10-17). Where an exact model exists, swap exact parts (P, R, terminal flags) into the learned Q at the planner's own declined states, keeping the rest learned. One CPU-scale screen (`q_localise_diag.py`, ~50 min for 5 seeds) located what two weeks of value remedies had not.
+- **Before adding a search edge or option, check whether the tree already dominates it** (2026-10-17). In expectimax, an expanded child's value is max over its actions, so a macro scored by the same model is never above its first action (`macro_reach_diag.py`: void, ~45 min instead of a 5-seed play screen plus training).
+- **Distrust a recommendation you would not bet on** (2026-10-17): I proposed re-screening the old value remedies, then said I did not believe in it when asked. State confidence honestly up front.
 - **Ask "data, objective, or training?" before changing an objective** (2026-10-16). Train the same objective offline on (a) a reference pool, (b) the agent's own buffer uniformly, (c) the agent's exact data schedule, with the same code and update count. It separated the three causes in ~3 GPU-hours, where months of objective changes had not; the answer (schedule) needed no new loss.
 - **When a fix is budget-matched, check what the FINAL network was trained on** (2g lesson). Matching total updates left the post-reset network with half the whole-buffer training of the reference arm, and more resets made it worse. Compare the final network's training, not the run's total.
 - **Screen the whole fix on frozen data before building it into the agent** (2h): train the would-be agent's networks offline on a real run's buffer, swap them into that run's planner, and play paired games. 2 GPU-hours told us the in-agent version would pass (it did: +73 / +75 / +65 vs the screen's +67 / -1 / +88).
@@ -221,8 +234,8 @@ The user trusts the agent's research judgement (2026-10-10: "run the experiments
 ## 3. Current state
 
 **Git**
-- **Everything is pushed** (2026-10-17, through the commit that wrote this file). The working tree is clean. `runs/` is untracked: keep it.
-- **Nothing is running** (2026-10-17). The last chain, `runs/wumpus/retrain_seeds34_chain.sh`, finished at 05:48 (seeds 3-4 + the 5-seed sweep). The machine crashed once on 2026-10-16 ~00:30 (cause unknown, not this project's memory); the chain was relaunched unchanged and finished.
+- **Everything is pushed** (2026-10-18, through the commit that wrote this file). The working tree is clean. `runs/` is untracked: keep it.
+- **Nothing is running** (2026-10-18; machine idle). The last chains, `runs/wumpus/macro_reach_chain.sh` and `q_localise_chain.sh`, finished on 2026-10-17 (logs `runs/wumpus/{macro_reach,q_localise}_seed{0..4}.log`). Before them `retrain_seeds34_chain.sh` finished at 05:48 (seeds 3-4 + the 5-seed sweep). The machine crashed once on 2026-10-16 ~00:30 (cause unknown, not this project's memory); the chain was relaunched unchanged and finished.
 - Chains of 2026-10-14/15, all finished or stopped on purpose, with logs beside them: `c2_chain.sh` (self-loop v2), `fvi_chain.sh` then `fvi_queue.sh` (FVI screen; `fvi_queue.log` records the relaunches and the stop of current seed 2), `double_chain.sh` (training with `value_estimator=double`, both recipes, then `analyze.py`).
 - **Health checks for any chain:** `cat <chain>.log`; `tail -3 <run>.<diag>.log` (progress lines should advance); `ps -eo pid,etime,args | grep "^ *[0-9]* *[0-9:-]* [^ ]*python[^ ]* \(main.py\|reports/\)"`; `nvidia-smi`; `uptime` (ipomcp load). **Never `pkill -f`** a pattern in your own command line; kill by PID (chain shell, `xargs`, then the python jobs).
 
@@ -619,7 +632,7 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 
 ## 6. Next steps
 
-**Direction (user decision 2026-10-15): representation. Finished 2026-10-17** (C7, section 5.3b). The next direction is the user's call (section 2: direction changes need the user). Experiments inside a chosen direction need no permission.
+**Direction (2026-10-17, user: "go ahead" on the localisation; then "plan next steps and start fresh"): the unfinished games through decision-aware model learning, towards the strongest publication.** Experiments inside it need no permission (pre-register, cheapest first); the method itself (Step C) and any change to canonical Tiger need the user.
 
 ### 6.1 Done 2026-10-15 to 10-17
 - **FVI screen** (`fvi_screen.py`, header 4): oracle networks pass, current agent fails.
@@ -628,18 +641,34 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 - **Data vs objective vs schedule** (`objective_ab.py` 2e-2f): training-limited, the growing schedule (C7).
 - **Reset + catch-up** (2g): FAIL. **Retrain-and-play screen** (`retrain_play.py`, 2h): PASS.
 - **`training.retrain_every` / `retrain_updates`** (`d0364c6`; run.py section 14): in-agent PASS on 3 seeds, 5-seed sweep 200 ± 44 (section 5.3b).
+- **Macro reach check** (`macro_reach_diag.py`): VOID on 5 of 5. **Model-vs-value localisation** (`q_localise_diag.py`): MODEL on 5 of 5 (C9).
 
-### 6.2 Options for the user (2026-10-17; my recommendation first)
-0. **Macro actions (was option 1): VOID, see section 0 (2026-10-17 evening).** Option 1 below is kept as history. What is left on the unfinished games is value-side, on the retrain recipe (the old value remedies were all tested on the 182 recipe with the max backup, before C6/C7): e.g. re-screening the time-aware or n-step value on the retrain + double recipe, or a progress-aware value target. Frozen-network screens first, as always.
-1. ~~(Recommended) The unfinished games, planner-side, on the retrain recipe.~~ C8: neither the latent nor the value bias moves the ~67% unfinished. Start with the cheapest frozen-network test (principle: swap one piece, play paired): a turn-then-forward macro action (TURN_x followed by FORWARD as one search edge, primitives kept) in the planner of `runs/sweeps/wumpus_retrain/seed*` `best.pt`, 512 paired games; pre-register >= +50 on 3 of 5 with unfinished down. Only if it passes, train with it. The navigation override (+300) bounds the prize; check in the smoke run that the macro actually gets chosen (principle "check the intervention reaches the decision").
-2. **A retrain schedule that does not re-degrade** (C7 sub-question): cheaper, more frequent retrains (e.g. every 10 collections, 1600 updates) or a sampling mix that moves from growing to uniform. Offline first: `objective_ab.py` arms on the growing schedule, scored by probes and then played like 2h. Could cut variance and the ~2 h of retrain compute per run, but it does not address the unfinished games.
-3. **Planner robustness to model error** (MOPO-style ensemble penalty in the value targets): low prior after R1a (same-recipe ensembles share errors) and less needed now that deaths are 3%.
-4. **JEPA on the retrain recipe** (contribution 1): the decoder carries the Wumpus results; one JEPA seed pair on the retrain recipe would show whether the schedule fix also closes JEPA's latent gap. Cheap, but not on the critical path to playing well.
+### 6.2 The plan (in order; 2026-10-18)
+
+**Step A: fit vs latent (CPU-scale; pre-authorised).** Question: is the observation head's error at the turned latent a fitting/objective problem or missing information in the latent?
+- Data: the `q_localise_diag.py` states (re-select them exactly as there; the count must equal `analysis/q_localise.npz`), plus the run's replay buffer (`latest.pt`; slot layout in section 1b) for training.
+- Arms, on the frozen acting latents of `best.pt`: (i) the joint head (as in q_localise); (ii) a fresh observation head trained on the buffer, early-stopped on held-out NLL (`head_shift.py` / `head_swap_screen.py` have the fitting code); (iii) an MLP probe from the turned latent to the EXACT P(o' | FORWARD) (soft targets from the exact filter on buffer states; `belief_probe.py` patterns).
+- Readout (pre-register in the header): TV to exact and P(glitter) ratio at the declined states. (iii) close to exact while (i)/(ii) are not -> FIT/OBJECTIVE (the CE objective under the agent's own data does not put accuracy where decisions need it: supports Step C directly). (iii) also far -> LATENT (the turned latent lacks "is the cell ahead new and could it hold the gold"; then the representation objective must change, e.g. a self-predictive/value-equivalent latent term).
+- Reminder (R1a, section 7): a fresh head that looks better offline can play worse; Step A only localises, it does not pick a head.
+
+**Step B: privileged play bound (GPU, ~20 min per 512-game play when the machine is free).** Does the exact one-step model with the learned value and filter actually stop the idling in play?
+- New diagnostic search model in `reports/` (no `src/` change): the state is [z, node id]; the model keeps, per node, the exact belief (consistent-layout mask (L,) = 16,380 bools, and the hunter's own state), stored lazily as (parent id, a, o) and materialised on expansion (`mask_child = mask_parent & (obs == o)`). `expand` batches `WumpusWorld.step_rules` over (N, L) hypotheses per action (chunk N to ~64 roots: 64 x 5 x 16,380 entries), returns exact R(b, a) = mean reward, exact P(o | b, a) by scatter-add, children latents from the learned filter with the true branch observation, learned V at the children, and V = 0 at exact terminal children. `q_localise_diag.py`'s `exact_outcomes` is the reference implementation to test against (assert equality on its states).
+- Arms: learned planner (must reproduce report.json), EPR (exact P and R), EP (exact P, learned R). Same seeds, 512 paired games, `best.pt` of `runs/sweeps/wumpus_retrain/seed0-4`, one play at a time, uncapped (> 4.8 GB), progress lines, per-minute system log.
+- Pre-registered pass: EPR >= +100 paired on 3 of 5 seeds with unfinished down and deaths up by at most 2 points. EP vs EPR splits observation head vs reward head. FAIL -> the offline ranking does not survive play (C3 again); stop and report before any method.
+- Smoke first: 32 games, check that the learned arm reproduces the planner's actions bit for bit when the exact swaps are disabled, and that EPR changes the action mix (FORWARD into new cells up).
+
+**Step C: the method (user's call after A and B).** Candidates, strongest theory first:
+1. **Value-equivalent observation loss** (Grimm et al. 2020, 2021 "proper value equivalence"; MuZero's principle): train P_hat(o' | z, a) so that sum_o P_hat(o) V_bar(tau(z, a, o)) matches V_bar(z_{t+1}) of the real next latent (target value head, gradient into the observation head only, beside the CE term). Default off (`model.value_equivalent_observation`), Tiger fingerprint-identical.
+2. **Decision-aware weighting of the observation CE** (VaGraM, Voelcker et al. 2022): weight each transition's CE by the value spread across its observation branches, so errors that change decisions cost more.
+3. If Step A says LATENT: a latent-side term instead (self-predictive representations, Ni et al. 2024: the ZP condition plus reward/value prediction is what makes the latent sufficient for Q*), on the JEPA arm as well (contribution 1).
+- Judge in training on the retrain + double recipe, 3 seeds first, paired with `runs/sweeps/wumpus_retrain` on the same 512 analysis games; pre-register >= +50 on 2 of 3 with unfinished down; then 5 seeds with `sweep.py`.
+
+**Also open (lower priority):** a retrain schedule that does not re-degrade between retrains (C7 sub-question; collections 55-95 had deaths up to 25%); JEPA on the retrain recipe (contribution 1, one seed pair); the remaining ~23% of the gap is risk decisions (not diagnosed).
 
 ### 6.3 Other candidates (weaker or more expensive; reasons stated)
 - **A learned policy prior (AlphaZero-style).** A prior distilled from the search's own visits inherits the idling, and argmax-Q acting ignores the prior. Only worth it if acting follows visits or the prior comes from outside the search.
 - **Advantage learning (action-gap increasing operator, Bellemare et al. 2016).** The counterfactual test found the one-step estimates uncorrelated with the true advantage (section 5.8), so amplifying the gap amplifies noise.
-- **Turn-then-forward macro actions.** Now option 6.2.1, on the retrain recipe.
+- **Re-screening the old value remedies (time-aware, n-step) on the retrain recipe:** low prior; C9 puts the error in the model, not the value. I proposed it on 2026-10-17 and withdrew it.
 - **A privileged DAgger diagnostic** (teacher labels on the agent's own states) would bound what a value learned on the right states can do (C3). Diagnostic only; lower priority than (B).
 - **The remaining ~23% of the gap is risk decisions** (seed 3 keeps 13.5% deaths even with the navigation override). Not diagnosed.
 - If an arm is significant at 3 seeds, extend it to 5 with `sweep.py`.
@@ -693,6 +722,7 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 - **More simulations on Wumpus** (200 vs 50): no gain.
 
 **Analysis and methodology**
+- **Proposing planner-side or value-side remedies before localising the error:** two weeks of value remedies (section 5.6-5.9) and the macro (VOID) missed that the observation head was wrong where it mattered. Localise first with exact-component swaps where an exact model exists (`q_localise_diag.py`).
 - **Inferring a head error from an action-mix shift without checking the head:** the "phantom GRAB reward" guess of 2026-10-14 was wrong (the heads are exact). Measure the head directly on stored states first (`phantom_reward_diag.py`, 45 s on the CPU).
 - **Judging calibration on the replay buffer:** it is in-sample. Always check fresh games (`head_shift.py` does both). This mistake was made once (the first `head_shift.py` reading).
 - **`cfg.seed + offset` seeds** couple runs. Use `stream_seed`.
@@ -802,7 +832,8 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 - `57fb36f`: 5-seed sweep 200 ± 44 (paired +18 ± 53 vs 182, not significant); CLAUDE.md project paragraph.
 - `5c54df2`: HANDOFF rewrite for the next session.
 - `5506e2d`, `3f6cb73`: `macro_reach_diag.py` pre-registered, VOID (5 of 5 seeds).
-- `569c1d7`: `q_localise_diag.py` pre-registered; then its MODEL result (5 of 5 seeds) and this update.
+- `569c1d7`, `db73bc7`: `q_localise_diag.py` pre-registered, MODEL (5 of 5 seeds), C9.
+- 2026-10-18: HANDOFF rewrite for the next session (plan Steps A-C, publication framing, new principles).
 
 ## 9. Files touched since `9a9b726` (all pushed)
 
