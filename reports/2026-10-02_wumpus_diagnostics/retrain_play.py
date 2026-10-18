@@ -54,6 +54,10 @@
 #      The SHOOT-heavy idling of the baseline (57% of live actions on seeds 1-2) largely disappears; unfinished
 #      games stay ~64-76%, so the idling problem is reduced in kind, not in count.
 #    - Per 3: a default-off whole-buffer retrain step in the agent, then 3 seeds paired with the double runs.
+#
+# 5. Several saved network sets (2026-10-18, objective_ab.py 2i; usage: <run dir> <saved .pt> [<saved .pt> ...]
+#    [<games>]): each is played on the same games and reported against best.pt and, paired per game, against
+#    the FIRST saved set (the screen's control arm). Per-game returns go to <saved>.returns.npy.
 # ==============================================================================
 
 import json
@@ -72,12 +76,16 @@ from ipomdp.experiments.wumpus import WumpusAnalysisSettings
 from ipomdp.planning import BeliefTreeSearch
 from ipomdp.training import discounted_returns, play_episodes, stream_seed
 
-run_dir, saved = Path(sys.argv[1]), Path(sys.argv[2])
+run_dir = Path(sys.argv[1])
+saved_sets = [Path(a) for a in sys.argv[2:] if a.endswith(".pt")]
+rest = [a for a in sys.argv[2:] if not a.endswith(".pt")]
+if not saved_sets or len(rest) > 1:
+    raise ValueError("usage: <run dir> <saved .pt> [<saved .pt> ...] [<games>]")
 dev = torch.device("cuda")
 # No per-process memory cap: a 512-game search needs > 4.8 GB (the 0.3 cap of head_swap_screen.py OOMed);
 # the plays run one at a time (runs/wumpus/retrain_play_plays.sh).
 settings = WumpusAnalysisSettings()
-n = int(sys.argv[3]) if len(sys.argv) > 3 else settings.episodes
+n = int(rest[0]) if rest else settings.episodes
 trained = load_trained_run(run_dir, dev)
 world, run, cfg = trained.setup.domain, trained.run, trained.cfg
 if cfg.model.value_estimator != "double":
@@ -118,7 +126,7 @@ def play():
     return episodes
 
 
-def report(name: str, episodes, base: torch.Tensor | None) -> torch.Tensor:
+def report(name: str, episodes, base: torch.Tensor | None, control: torch.Tensor | None = None) -> torch.Tensor:
     returns = discounted_returns(episodes.rewards, GAMMA).double()
     out = {k: round(float(v), 4) for k, v in game_outcomes(episodes.rewards).items()}
     ended = (episodes.rewards.abs() >= 998).long().cumsum(1)
@@ -129,11 +137,15 @@ def report(name: str, episodes, base: torch.Tensor | None) -> torch.Tensor:
     if base is not None:
         d = returns - base
         line += f"  paired gain {d.mean():+7.1f} +- {1.96 * d.std() / np.sqrt(n):5.1f}"
+    if control is not None:
+        d = returns - control
+        line += f"  vs control {d.mean():+7.1f} +- {1.96 * d.std() / np.sqrt(n):5.1f}"
     print(line + f"\n      live action mix {mix}", flush=True)
     return returns
 
 
-print(f"== {run_dir.name} best.pt (collection {trained.checkpoint_collection}) vs {saved}, {n} games", flush=True)
+print(f"== {run_dir.name} best.pt (collection {trained.checkpoint_collection}) vs {[str(p) for p in saved_sets]}, "
+      f"{n} games", flush=True)
 episodes = play()
 base = report("best.pt", episodes, None)
 if n == settings.episodes:
@@ -144,10 +156,14 @@ if n == settings.episodes:
             raise RuntimeError(f"Replay is not faithful: {key} {float(out[key])} vs report.json {reported[key]}.")
     print("  replay reproduces report.json", flush=True)
 
-states = torch.load(saved, map_location=dev)
-if set(states) != set(run.networks):
-    raise ValueError(f"saved networks {sorted(states)} do not match the run's {sorted(run.networks)}.")
-for name, net in run.networks.items():
-    net.load_state_dict(states[name])
-report("retrained", play(), base)
+control = None
+for saved in saved_sets:
+    states = torch.load(saved, map_location=dev)
+    if set(states) != set(run.networks):
+        raise ValueError(f"saved networks {sorted(states)} do not match the run's {sorted(run.networks)}.")
+    for name, net in run.networks.items():
+        net.load_state_dict(states[name])
+    returns = report(saved.stem, play(), base, control)
+    np.save(saved.with_suffix(".returns.npy"), returns.cpu().numpy())
+    control = returns if control is None else control
 print("DONE", flush=True)

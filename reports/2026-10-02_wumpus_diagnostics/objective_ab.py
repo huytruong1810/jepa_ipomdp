@@ -159,6 +159,32 @@
 #      only to the extent the final network is trained long and uniformly on the full buffer, i.e. it
 #      approaches the buffer arm itself. A reset schedule is NOT added to the agent; next is 2h.
 #
+# 2i. Value-equivalent observation term, retrain screen (2026-10-18, HANDOFF 6.2 Step C; user: "go with your
+#     recommendation" = the latent-side decision-aware objective):
+#    - Question: does model.value_equivalent_weight (trainer.py 2f: the observation head's predicted next value
+#      must match the realised one, gradients into the filter) make the retrain recipe's networks play better,
+#      on the same games, than the same retrain without it? Theory: value equivalence (Grimm et al. 2020/2021),
+#      decision-aware model learning (VaGraM, Voelcker et al. 2022). Motivation: exact_model_play.py (the exact
+#      one-step model is worth +208 per game) and obs_fit_vs_latent.py (the missing information is not
+#      decodable from the latent).
+#    - Why a retrain screen first (section 1b of HANDOFF, "screen the whole fix on frozen data"): the recipe's
+#      final networks ARE a whole-buffer retrain (training.retrain_every), so retraining offline on a run's
+#      final buffer is the in-agent condition minus its later data; 2h predicted the in-agent result.
+#    - --set (OmegaConf dotlist) applies config overrides to the run's own config before build_training_run.
+#    - Arms (runs/sweeps/wumpus_retrain seeds 0-2, each run's own .hydra config, --representation decoder --horizon
+#      5 --seed <s> --train-buffer <run>, 6400 updates, --save): control (w = 0), VE25 (w = 25), VE100 (w = 100).
+#      Doses from a smoke measurement on seed 0's best.pt networks and buffer (6 batches): at w = 1 the term's
+#      gradient into the filter is 1-2% of the other terms' (RMS residual ~32 value units), so w = 25 makes it
+#      ~25-50% and w = 100 about equal. Played with retrain_play.py (section 5) on the 512 analysis games,
+#      paired per game with the control arm; the probe lines score each retrained latent (cell / heading).
+#    - Pre-registered readout (written before any run):
+#      * PASS for an arm: paired gain over control >= +50 on >= 2 of 3 seeds, with the unfinished rate down and
+#        the death rate up by at most 2 points on those seeds. If both pass, the larger mean gain is taken.
+#        -> train the retrain + double recipe with that weight in the agent, 3 seeds paired with
+#        runs/sweeps/wumpus_retrain (pre-registered there), then 5 seeds.
+#      * FAIL: neither passes -> report per seed (with the probe accuracies, to see whether the term hurt the
+#        latent) and take the next variant (multi-step value equivalence, a reward term) to the user.
+#
 # 3. Usage:
 #    uv run python reports/2026-10-02_wumpus_diagnostics/objective_ab.py --representation jepa \
 #        --horizon 5 --seed 1 --pool-cache runs/wumpus/supervised_filter/pools.pt
@@ -332,6 +358,8 @@ def main() -> None:
                         help="Score this run's networks (--agent-checkpoint) without training (2e).")
     parser.add_argument("--agent-checkpoint", default="best.pt", help="Checkpoint of --agent-reference (2e).")
     parser.add_argument("--save", type=Path, default=None, help="Write run.networks' states here after training.")
+    parser.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE",
+                        help="Config overrides (OmegaConf dotlist), e.g. model.value_equivalent_weight=1.0 (2i).")
     parser.add_argument("--score-at", type=int, nargs="*", default=[],
                         help="Also score at these update counts (lines 'RESULT@<updates> name value').")
     args = parser.parse_args()
@@ -341,6 +369,11 @@ def main() -> None:
     cfg.model.representation, cfg.model.observation_horizon, cfg.seed = args.representation, args.horizon, args.seed
     if args.weight_decay is not None:
         cfg.trainer.weight_decay = args.weight_decay
+    for item in args.set:
+        key = item.split("=", 1)[0]
+        if OmegaConf.select(cfg, key) is None:
+            raise KeyError(f"--set {item}: {key} is not in the config.")
+    cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(args.set))
     setup, run = build_training_run(cfg, device)
     world = setup.domain
     num_a, num_o = world.num_actions, world.num_observations
