@@ -61,7 +61,24 @@
 #    - q_localise_diag.py's EP/EPR used V = 0 at exact terminal children; at its states (safe targets) that only
 #      touches GRAB children, so its reading is unaffected in kind but not re-checked.
 #
-# 4. Result: (to be filled after the runs)
+# 4. Result 2026-10-18 (runs/sweeps/wumpus_retrain seeds 0-4, best.pt, 512 paired games; every learned replay =
+#    report.json; logs runs/wumpus/exact_play_{learned,EPR,EP}_seed{0..4}.log, chain runs/wumpus/exact_play_chain.sh,
+#    system log exact_play_sysmon.log; EPR ~22-38 min per seed). **Readout: PASS on 5 of 5 seeds.**
+#    | Seed | learned | EPR   | paired gain    | win          | death       | unfinished    |
+#    | 0    | 236.7   | 460.4 | +223.7 +- 34.5 | 32.0 -> 55.3% | 0.8 -> 0.0% | 67.2 -> 44.7% |
+#    | 1    | 156.8   | 321.7 | +164.9 +- 37.0 | 27.5 -> 43.4% | 4.7 -> 0.0% | 67.8 -> 56.6% |
+#    | 2    | 233.1   | 400.3 | +167.2 +- 37.7 | 33.6 -> 47.9% | 4.1 -> 0.0% | 62.3 -> 52.1% |
+#    | 3    | 174.7   | 433.7 | +259.0 +- 38.2 | 25.6 -> 51.6% | 2.9 -> 0.0% | 71.5 -> 48.4% |
+#    | 4    | 199.7   | 423.8 | +224.1 +- 38.9 | 29.7 -> 50.8% | 3.1 -> 0.0% | 67.2 -> 49.2% |
+#    | Mean | 200.2   | 408.0 | +207.8 +- 48 (t, 5 seeds) |   |             | 67.2 -> 50.2% |
+#    - With the exact one-step model (P, R) and the agent's OWN value and filter inside the unchanged search, the
+#      agent doubles its score (heuristic: 573) and never dies. C9 survives play (unlike the teacher-value and
+#      Q/A-head arms of C3): the learned one-step model, not the value or the search, is what limits the agent,
+#      worth ~+200 per game. The value learned with the agent's own model is good enough to plan with once the
+#      model is exact, provided its own terminal values are kept (3a).
+#    - Half of the games still end unfinished with the exact model, so the value (or the 50-simulation search)
+#      bounds the remaining gap to the heuristic (~165).
+#    - EP (exact P, learned R) splits the observation head from the reward head: see 4b.
 # ==============================================================================
 
 import json
