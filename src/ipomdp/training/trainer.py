@@ -135,6 +135,32 @@
 #    - With the time-aware value or n-step grounding it raises (not combined; fail loudly). The
 #      default (a single ValueHead, canonical Tiger) leaves every computation unchanged.
 #
+# 2f. Optional Value-Equivalent Observation Term (value_equivalent_weight = w > 0; model.value_equivalent_weight, 2026-10-18):
+#      ValueEquiv   w * mean_t ( ( sum_o P(o | z_t, a_t) * sg V-bar(tau(z_t, a_t, o))  -  sg V-bar(z_{t+1}) ) / max|R| )^2
+#                   gradients through P INTO the filter (decoder representation only)
+#    - Why (reports/2026-10-02_wumpus_diagnostics/q_localise_diag.py, obs_fit_vs_latent.py, exact_model_play.py):
+#      on Wumpus the planner idles because the observation head under-predicts what a new cell can reveal
+#      (glitter 2.3-4.5x too rarely), so the backup misses the value of information; with the exact one-step model
+#      the agent's own value and filter play 408 instead of 200 (5 of 5 seeds). No head fitted on the frozen
+#      latent recovers the exact prediction: the information is missing from the LATENT, not only the head.
+#      Cross-entropy weights every observation alike; what the planner needs is that the model's predicted
+#      next value is right, which puts weight on the rare, decision-relevant outcomes (a gold cell is worth ~1000).
+#    - Theory: value equivalence (Grimm et al. 2020, 2021): a model is value-equivalent for a value V if its
+#      Bellman backup of V equals the true one. On real transitions E[V-bar(z_{t+1}) | z_t, a_t] is the true
+#      expected next value, so the term is the (squared, per-sample unbiased up to noise) VE residual for V-bar
+#      at the data action, the decision-aware model loss of VaGraM (Voelcker et al. 2022) in its simplest form.
+#      Letting it shape the filter is the latent-side variant: the latent must carry what the next observation
+#      is worth (cf. self-predictive / value-predictive sufficiency, Ni et al. 2024).
+#    - Collapse guard: both the branch values and the target are detached (sg) and come from the EMA target value
+#      head, so the only way to lower the term is to move P(o | z_t, a_t), i.e. the observation head and, through
+#      its input, the filter. Equalising the branch values (the collapse of section 2's value-into-filter study)
+#      is not available to it. Since tau(z_t, a_t, o_{t+1}) = z_{t+1}, both sides are read from the value
+#      targets' own expansion (section 3), at no extra cost; with a value pair the children carry the pair's
+#      combined value, the one the planner backs up.
+#    - Scale: divided by max|R| (= value_bound * (1 - gamma)) so w is in units of "one maximal reward squared".
+#    - Decoder only, single horizon-free value, no planning head (raises otherwise). w = 0 (the default and
+#      canonical Tiger) computes nothing new and leaves training unchanged.
+#
 # 2e. Optional Privileged Exact-Belief Term (privileged; model.privileged_belief_loss, user decision 2026-10-11):
 #      Privileged   CE(cell) + CE(heading) + BCE(hazards, danger ahead) of a readout of z_0..z_T,
 #                   live steps only; gradients INTO the filter (training/privileged.py)
@@ -214,6 +240,8 @@ class WorldModelTrainer:
         nstep_mix: float = 0.0,
         planning_observation_head: ObservationHead | None = None,
         privileged: PrivilegedBeliefLoss | None = None,
+        value_equivalent_weight: float = 0.0,
+        value_equivalent_scale: float = 1.0,
     ):
         """
         Args:
@@ -226,6 +254,7 @@ class WorldModelTrainer:
             planning_observation_head: The detached planning head (section 3d), or None.
             privileged: The privileged exact-belief term (section 2e), or None.
             value_head: A ValuePair selects the double or clipped-double targets (section 3e).
+            value_equivalent_weight, value_equivalent_scale: w and max|R| of the value-equivalent term (section 2f).
         """
         if nstep < 0 or not 0.0 <= nstep_mix <= 1.0 or (nstep > 0 and nstep_mix == 0.0):
             raise ValueError(f"need nstep >= 0 and nstep_mix in (0, 1] when nstep > 0; got {nstep}, {nstep_mix}.")
@@ -235,6 +264,14 @@ class WorldModelTrainer:
             raise ValueError("a detached planning head needs the decoder representation (section 3d).")
         if isinstance(value_head, ValuePair) and (horizon is not None or nstep > 0):
             raise ValueError("a value pair is not combined with the time-aware value or n-step grounding (section 3e).")
+        if value_equivalent_weight < 0.0 or value_equivalent_scale <= 0.0:
+            raise ValueError(f"need value_equivalent_weight >= 0 and scale > 0; got {value_equivalent_weight}, "
+                             f"{value_equivalent_scale}.")
+        if value_equivalent_weight > 0.0 and (jepa is not None or horizon is not None or planning_observation_head is not None):
+            raise ValueError("the value-equivalent term needs the decoder representation, no horizon and no planning head "
+                             "(section 2f).")
+        self.value_equivalent_weight = value_equivalent_weight
+        self.value_equivalent_scale = value_equivalent_scale
         self.belief_filter = belief_filter
         self.jepa = jepa
         self.representation = Representation.DECODER if jepa is None else Representation.JEPA
@@ -284,10 +321,15 @@ class WorldModelTrainer:
         Returns:
             max_a [R + gamma sum_o P(o) V-bar(tau)], shape (N,), float32.
         """
+        return self._value_targets_and_children(latents)[0]
+
+    @torch.no_grad()
+    def _value_targets_and_children(self, latents: Tensor) -> tuple[Tensor, Tensor]:
+        """value_targets plus the expansion's child values V-bar(tau(z, a, o)), (N, A, O) (section 2f reads them)."""
         with torch.autocast(self.device.type, enabled=False):
             expansion = self.target_model.expand(latents.float())
             q = expansion.rewards + self.discount * (expansion.observation_probs * expansion.next_values).sum(-1)
-        return q.max(dim=-1).values
+        return q.max(dim=-1).values, expansion.next_values
 
     @torch.no_grad()
     def pair_value_targets(self, latents: Tensor) -> tuple[Tensor, Tensor]:
@@ -300,17 +342,22 @@ class WorldModelTrainer:
         Returns:
             The targets of head A and of head B, each (N,), float32.
         """
+        return self._pair_value_targets_and_children(latents)[:2]
+
+    @torch.no_grad()
+    def _pair_value_targets_and_children(self, latents: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        """pair_value_targets plus the expansion's child values (the pair's combined value), (N, A, O)."""
         with torch.autocast(self.device.type, enabled=False):
             expansion = self.target_model.expand(latents.float())
             backup = lambda v: expansion.rewards + self.discount * (expansion.observation_probs * v).sum(-1)  # noqa: E731
             if self.value_head.estimator is ValueEstimator.CLIPPED_DOUBLE:
                 target = backup(expansion.next_values).max(dim=-1).values          # next_values = min(A, B)
-                return target, target
+                return target, target, expansion.next_values
             children = expansion.next_states.flatten(0, 2)
             va, vb = (v.view_as(expansion.next_values) for v in self.target_value_head.head_values(children, self.twohot))
             qa, qb = backup(va), backup(vb)
         return (qb.gather(1, qa.argmax(-1, keepdim=True)).squeeze(1),
-                qa.gather(1, qb.argmax(-1, keepdim=True)).squeeze(1))
+                qa.gather(1, qb.argmax(-1, keepdim=True)).squeeze(1), expansion.next_values)
 
     @torch.no_grad()
     def nstep_returns(self, states: Tensor, rewards: Tensor) -> Tensor:
@@ -367,12 +414,12 @@ class WorldModelTrainer:
             all_latents = latents.reshape(batch * (steps + 1), -1)
             if isinstance(self.value_head, ValuePair):                                    # section 3e
                 head_a = (torch.arange(batch, device=self.device) % 2 == 0).repeat_interleave(steps + 1)
-                target_a, target_b = self.pair_value_targets(all_latents.detach())
+                target_a, target_b, child_values = self._pair_value_targets_and_children(all_latents.detach())
                 targets_value = torch.where(head_a, target_a, target_b)
                 value_logits = torch.where(head_a.unsqueeze(-1), self.value_head.a(all_latents.detach()),
                                            self.value_head.b(all_latents.detach()))
             elif self.horizon is None:
-                targets_value = self.value_targets(all_latents.detach())
+                targets_value, child_values = self._value_targets_and_children(all_latents.detach())
                 value_logits = self.value_head(all_latents.detach())
             else:
                 if steps != self.horizon:
@@ -388,8 +435,18 @@ class WorldModelTrainer:
 
             # The decoder baseline's representation term; a detached planning-model fit otherwise.
             decoded = current if self.representation is Representation.DECODER else current.detach()
-            losses["observation"] = F.cross_entropy(self.observation_head(decoded, action_flat).float(),
-                                                    episodes.observations.reshape(-1))
+            observation_logits = self.observation_head(decoded, action_flat).float()
+            losses["observation"] = F.cross_entropy(observation_logits, episodes.observations.reshape(-1))
+
+            if self.value_equivalent_weight > 0.0:                                       # section 2f
+                branches = child_values.view(batch, steps + 1, self.num_actions, self.num_observations)[:, :-1]
+                branches = branches.reshape(batch * steps, self.num_actions, self.num_observations)
+                branches = branches.gather(1, episodes.actions.reshape(-1, 1, 1).expand(-1, 1, self.num_observations))
+                branches = branches.squeeze(1).float()                                   # V-bar(tau(z_t, a_t, o)), (BT, O)
+                realised = branches.gather(1, episodes.observations.reshape(-1, 1)).squeeze(1)   # V-bar(z_{t+1})
+                predicted = (F.softmax(observation_logits, dim=-1) * branches).sum(-1)
+                losses["value_equivalent"] = self.value_equivalent_weight * (
+                    ((predicted - realised) / self.value_equivalent_scale) ** 2).mean()
 
             if self.planning_observation_head is not None:                               # section 3d
                 losses["planning_observation"] = F.cross_entropy(

@@ -207,3 +207,47 @@ class TestDecoderBaseline:
         trainer.optimizer.step = lambda: None  # inspect the gradients, keep the weights
         trainer.train_step(EpisodeBatch(batch.actions, batch.observations, torch.zeros_like(batch.rewards), None))
         assert sum(float(p.grad.abs().sum()) for p in trainer.belief_filter.parameters()) > 0.0
+
+
+class TestValueEquivalentTerm:
+    """Section 2f of training/trainer.py: (sum_o P(o) V-bar(tau(z, a, o)) - V-bar(z')) / max|R|, squared."""
+
+    @staticmethod
+    def _decoder(weight: float, scale: float = 100.0) -> WorldModelTrainer:
+        torch.manual_seed(0)
+        belief_filter = BeliefFilter(A, O, D, H, 1)
+        return WorldModelTrainer(belief_filter, None, ValueHead(D, H, 1, 255), RewardHead(D, A, H, 1, 255),
+                                 ObservationHead(D, A, O, H, 1), TwoHotSymlog(255, 2000.0), A, O, discount=0.95,
+                                 config=CONFIG, device=CPU, value_equivalent_weight=weight, value_equivalent_scale=scale)
+
+    def test_off_by_default(self):
+        assert "loss_value_equivalent" not in _trainer(representation=Representation.DECODER).train_step(_episodes(4, 0))
+
+    def test_needs_the_decoder_and_a_valid_weight(self):
+        torch.manual_seed(0)
+        belief_filter = BeliefFilter(A, O, D, H, 1)
+        with pytest.raises(ValueError):
+            WorldModelTrainer(belief_filter, RecurrentJEPA(belief_filter, LatentPredictor(D, A, H, 1), 0.99),
+                              ValueHead(D, H, 1, 255), RewardHead(D, A, H, 1, 255), ObservationHead(D, A, O, H, 1),
+                              TwoHotSymlog(255, 2000.0), A, O, discount=0.95, config=CONFIG, device=CPU,
+                              value_equivalent_weight=1.0)
+        with pytest.raises(ValueError):
+            self._decoder(-1.0)
+
+    def test_matches_the_value_equivalence_residual_by_hand(self):
+        trainer = self._decoder(2.0)
+        with torch.no_grad():                         # a non-trivial V-bar (the projection is zero-initialised)
+            for p in trainer.target_value_head.parameters():
+                p.normal_(0.0, 0.5)
+        batch = _episodes(4, 0)
+        with torch.no_grad():
+            a1 = torch.nn.functional.one_hot(batch.actions, A).float()
+            latents = trainer.belief_filter.unroll(a1, torch.nn.functional.one_hot(batch.observations, O).float(), None)
+            z = latents[:, :-1].reshape(-1, D)
+            children = trainer.target_model.expand(z).next_values                   # (BT, A, O)
+            branch = children[torch.arange(len(z)), batch.actions.reshape(-1)]      # (BT, O)
+            realised = branch[torch.arange(len(z)), batch.observations.reshape(-1)]
+            probs = torch.softmax(trainer.observation_head(z, a1.reshape(-1, A)), -1)
+            expected = 2.0 * ((((probs * branch).sum(-1) - realised) / 100.0) ** 2).mean()
+        assert float(expected) > 0.0
+        assert trainer.train_step(batch)["loss_value_equivalent"] == pytest.approx(float(expected), rel=1e-4)

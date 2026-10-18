@@ -205,6 +205,15 @@
 #      61.9 (runs/sweeps/wumpus_current); paired +51 / -9 / +18 / +68 / -37 = +18.2 +- 53.0, not significant.
 #      Deaths 3.1% (4.9%), unfinished 67% (66%); latent cell / heading on random histories 69 / 75% (57 / 58%).
 #      Kept as an option and as the base for the unfinished-games work; not a significant gain in return.
+#
+# 15. Value-Equivalent Observation Term (2026-10-18; trainer.py 2f):
+#    - cfg.value_equivalent_weight = w > 0 adds w * ((sum_o P(o | z_t, a_t) V-bar(tau(z_t, a_t, o)) - V-bar(z_{t+1}))
+#      / max|R|)^2 to the loss, with gradients through the observation head into the filter (decoder only).
+#      max|R| = value_bound * (1 - gamma) is passed to the trainer.
+#    - Motivation: the learned one-step model, not the value or the search, limits the Wumpus agent
+#      (exact_model_play.py: the exact model with the agent's own value plays 408 vs 200, 5 of 5 seeds), and the
+#      missing information is not decodable from the frozen latent (obs_fit_vs_latent.py: LATENT).
+#    - w = 0 (the default, canonical Tiger) computes nothing new.
 # ==============================================================================
 
 from collections.abc import Callable
@@ -304,6 +313,7 @@ class RunConfig:
     value_estimator: ValueEstimator   # max (default) | double | clipped_double value targets (section 13)
     retrain_every: int                # whole-buffer retrain every N collections (section 14); 0 = off
     retrain_updates: int              # uniform updates on the whole buffer after each retrain
+    value_equivalent_weight: float    # value-equivalent observation term (section 15); 0 = off
 
 
 class TrainingRun:
@@ -350,7 +360,8 @@ class TrainingRun:
         self.trainer = WorldModelTrainer(self.belief_filter, self.jepa, self.value_head, self.reward_head, self.observation_head,
                                          self.codec, num_a, num_o, domain.discount, cfg.trainer, device,
                                          self.multistep_predictor, horizon, cfg.value_nstep, cfg.value_nstep_mix,
-                                         self.planning_observation_head, self.privileged)
+                                         self.planning_observation_head, self.privileged, cfg.value_equivalent_weight,
+                                         domain.value_bound * (1.0 - domain.discount))
 
         # Polyak-averaged copies the agent acts with (section 4).
         self.acting_filter = frozen_copy(self.belief_filter)
