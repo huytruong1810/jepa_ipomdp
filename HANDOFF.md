@@ -7,7 +7,7 @@
 - Housekeeping, pre-authorised whenever the machine is free: the slow suite (`uv run pytest -m slow`, ~45 min; not run since `privileged_belief_loss`).
 - Check first: `ps -eo pid,args | grep "[p]ython"`, `uptime` (ipomcp load), `nvidia-smi`.
 
-Section 1b holds the working conjectures and the research principles ("taste in research"), including the compute-efficiency rules (updated 2026-10-17). Section 7 lists what failed: do not repeat it.
+Section 1c is the publication-gap list (self-critique, 2026-10-18): read it before planning experiments. Section 1b holds the working conjectures and the research principles ("taste in research"), including the compute-efficiency rules (updated 2026-10-17). Section 7 lists what failed: do not repeat it.
 
 Read `CLAUDE.md` first: it covers the architecture, commands and conventions. This file covers goals, the user's rules, the current state, every result that matters, the next steps, the dead ends and the files touched. Each module starts with a `DESIGN DECISIONS & THEORETICAL FOUNDATIONS` header with the evidence behind its design; read it before changing that module. Every diagnostic script in `reports/` explains its question, usage, pre-registered readout and result in its header. The user's auto-memory (`~/.claude/projects/-home-andyj1810-projects-jepa-ipomdp/memory/`) repeats the standing rules of section 2.
 
@@ -196,6 +196,56 @@ The user trusts the agent's research judgement (2026-10-10: "run the experiments
 - **Save the networks of every offline training** (`objective_ab.py --save`): the 2h plays reused the saved retrained networks after the plays OOMed, with no retraining.
 - **Run a per-minute system log beside long jobs** (`nvidia-smi` temperature/memory/power, RAM, swap, load). The 2026-10-16 machine crash left no evidence because there was none.
 
+
+## 1c. Publication-gap list (self-critique, 2026-10-18; the user asked for it to steer towards a publishable paper)
+
+Verdict: not yet a top-venue paper. The method results are weak and from one real domain. The strongest asset is the **diagnostic methodology**: exact-component localisation inside a learned belief-space planner, pre-registered and paired, at the planner's own decision points. The chain of findings it produced (maximisation bias -> primacy bias -> missing value of information in the model) is the novel content. Gaps, worst first:
+
+1. **The headline results do not support the stated contributions.**
+   - Contribution (1), the JEPA filter: it ties the decoder on Tiger and loses on Wumpus; every Wumpus result uses the decoder. Either make JEPA work on the real domain or drop it from the title.
+   - Tiger (two states) is a sanity check, not evidence.
+   - On Wumpus the agent makes 35% of a NON-optimal heuristic (200 vs 573), and the best recipe is not significantly better than the previous one (+18 ± 53). The big numbers (408, 482, 223) are privileged arms, not agents.
+   - With the exact one-step model, half the games are still unfinished, and the learned value is co-adapted with the model: it needs its own non-zero values at game-over latents to grab the gold (`exact_model_play.py` 3a). This weakens "the value is fine, only the model is wrong".
+2. **Evaluation hygiene: the most serious methodological gap.**
+   - Development and reporting share seeds and games: every screen, threshold and design choice was read on the same training seeds (0-4) and the same 512 analysis games. That is test-set reuse; pre-registration protects each readout, not the selection across ~30 readouts.
+     - Fix: freeze the protocol, then report headline numbers on untouched training seeds (e.g. 5-9) and fresh game seeds.
+   - Multiple comparisons: many screens, several arms each, "2 of 3" / "3 of 5" pass rules at n = 3.
+     - Fix: 10 seeds for headline claims; IQM with stratified-bootstrap intervals (Agarwal et al. 2021, rliable); confirmatory vs exploratory results separated.
+   - Protocol changes after smoke runs (Step B's terminal values): documented, but keep them rare and principled.
+3. **No baselines.** Expected by reviewers:
+   - model-free recurrent RL (R2D2/DRQN or PPO-LSTM) at matched environment steps;
+   - DreamerV3;
+   - MuZero / Stochastic MuZero-style value-equivalent latent models (Step C is their principle applied to observation branching);
+   - self-predictive representations (Ni et al. 2024);
+   - an exact-simulator online planner (POMCP/DESPOT with the true Wumpus model) as a real upper reference instead of the hand-written heuristic.
+4. **Scope and generality.**
+   - Two tiny hand-built domains. Need 3+ POMDPs with exact filters and graded difficulty: RockSample(7,8)/(11,11) (exact belief, SARSOP references; also makes the alpha-vector bounds meaningful beyond Tiger), larger Wumpus boards or battleship/minesweeper-style domains, and a POPGym or memory task for contact with deep RL.
+   - Planning and the value targets enumerate all |O| = 49 observations; large or continuous observation spaces need a sampled-branching (progressive widening) variant shown to match.
+   - Cost: 6.5 h per seed on a 4x4 grid; report wall-clock and scaling.
+5. **Interpretability (contribution 3) is thin.**
+   - The span-Hölder bound is a one-line Lipschitz lemma, instantiated only on Tiger; its worst-case form is likely vacuous on harder domains.
+   - Probes need control tasks / selectivity (Hewitt & Liang 2019) and capacity vs accuracy, beyond the untrained-GRU baseline.
+   - The stronger contribution: tie probe error to decision loss on the planner's own states. Steps A and B already gesture at it ("not decodable, and worth +208 in play"); formalise which belief features are decision-relevant and whether the latent has them.
+6. **The theory is borrowed; sharpen it.**
+   - Maximisation bias (van Hasselt), primacy bias (Nikishin), value equivalence (Grimm) and VaGraM are known; "observed in belief-space planning" is a finding, not a theory contribution.
+   - Candidate result: in a belief-tree backup, observation-model error enters weighted by the spread of child values (errors in value of information are amplified where branches differ), and the value-equivalent objective bounds that term. That ties Step C to a proposition.
+   - C6 (bias correction helps only with an accurate model) rests on 3 seeds and one domain. Make it a controlled experiment: interpolate exact and learned P with weight alpha, and plot the double-vs-max gain against alpha.
+7. **Missing ablations.**
+   - The recipe stacks decoder, k = 5, epsilon, stored greedy games, Polyak acting copies, double value, retrain and VE. A paper needs one leave-one-out table on held-out seeds.
+   - Search design choices (expectimax vs mean backup, observation pruning, simulation count) need the same.
+
+**Framings.**
+- **Preferred:** a diagnostic paper with the method it motivates. Working title: "Where do learned belief-space planners fail? Exact-component localisation in POMDPs with tractable filters."
+  - The protocol, applied to two agent families (ours plus a MuZero- or Dreamer-style one) on 3-4 exact-filter domains.
+  - The value-equivalent observation objective as the fix it points to, validated on held-out seeds against baselines.
+  - It plays to the real strength, and the negative results become content.
+- **Alternative:** a method paper on decision-aware latent models for belief-tree search. Needs a large significant VE gain on several domains, beating DreamerV3, MuZero and model-free baselines; a higher bar with no evidence for it yet.
+
+**Concrete next steps, cheapest first** (after the VE retrain screen, `objective_ab.py` 2i, reads out):
+- freeze an evaluation protocol with held-out training seeds and game seeds;
+- add an exact-simulator POMCP reference and a model-free recurrent baseline on Wumpus;
+- add RockSample as a second real domain;
+- choose the framing from the VE result.
 
 ## 2. Rules the user set (follow them)
 
