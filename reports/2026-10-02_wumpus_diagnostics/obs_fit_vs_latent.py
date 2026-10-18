@@ -52,7 +52,31 @@
 #    - Caveat (R1a, HANDOFF 7): a fresh head that looks better offline can play worse (the planner selects its
 #      errors). This screen only localises the error; it does not pick a head for play.
 #
-# 4. Result: (to be filled after the runs)
+# 4. Result 2026-10-18 (runs/sweeps/wumpus_retrain seeds 0-4, best.pt; replays = report.json, states =
+#    macro_reach.npz, arm (i) = q_localise.npz on every seed; logs runs/wumpus/obs_fit_seed{0..4}.log, chain
+#    runs/wumpus/obs_fit_chain.sh; ~10-13 min per seed; results <run>/analysis/obs_fit_vs_latent.json).
+#    **Readout: LATENT (arm (iv) far on 4 of 5 seeds; seed 0 between).** Median TV / glitter ratio / decision share:
+#    | Seed | (i) joint          | (ii) fresh-hard    | (iii) fresh-soft   | (iv) all-soft      | saved M / EP |
+#    | 0    | 0.40 / 0.44 / 10%  | 0.38 / 0.52 / 10%  | 0.37 / 0.55 / 15%  | 0.30 / 0.62 / 19%  | 10 / 43%     |
+#    | 1    | 0.47 / 0.29 / 14%  | 0.32 / 0.48 / 17%  | 0.29 / 0.53 / 24%  | 0.27 / 0.49 / 26%  | 14 / 42%     |
+#    | 2    | 0.51 / 0.30 / 11%  | 0.55 / 0.56 / 21%  | 0.42 / 0.61 / 25%  | 0.34 / 0.51 / 23%  | 11 / 46%     |
+#    | 3    | 0.43 / 0.22 / 11%  | 0.44 / 0.45 / 24%  | 0.41 / 0.51 / 29%  | 0.40 / 0.53 / 34%  | 11 / 62%     |
+#    | 4    | 0.50 / 0.34 / 8%   | 0.48 / 0.45 / 21%  | 0.46 / 0.56 / 32%  | 0.31 / 0.53 / 27%  | 8 / 58%      |
+#    - Margins are thin on two seeds: seed 1's (iv) is far by the glitter ratio alone (0.49 < 0.5), seed 4's by
+#      TV 0.313 (>= 0.30). No arm is close on any seed; the FIT branch (iv close or its share >= EP - 10) fails
+#      on 5 of 5.
+#    - Not all of the error is in the latent. Each step away from the joint head helps on every seed: a fresh
+#      head on the same objective (ii) already lifts the glitter ratio from 0.22-0.44 to 0.45-0.56, exact
+#      targets (iii) and all actions (iv) a little more, and the decision share rises from 8-14% to 19-34%.
+#      Even so, (iv) recovers well under half of the EP - M gap (EP 42-62%). About half of the glitter
+#      under-prediction is fit/schedule (joint vs fresh), and the remainder (ratio ~0.5, TV ~0.3) is not
+#      decodable from the frozen latent by this head.
+#    - Implication for Step C (HANDOFF 6.2): an observation-head-only objective (value-equivalent loss, VaGraM
+#      weighting) cannot close this on the current latent; the latent itself must carry "what the cell ahead can
+#      reveal" (a latent-side term: self-predictive / value-equivalent representation learning, candidate 3),
+#      possibly with a decision-aware head on top. Caveat: decodability is measured with the agent's head
+#      architecture and early stopping on the agent's own buffer, so "not decodable" means "not by this probe
+#      from these data".
 # ==============================================================================
 
 import json
