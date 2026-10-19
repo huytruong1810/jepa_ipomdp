@@ -154,6 +154,29 @@ class TestRobustStatistics:
         with pytest.raises(ValueError):
             aggregate_games([row(4), row(5)])
 
+    def test_exact_planner_rows_are_paired_and_checked(self):
+        rng = np.random.default_rng(2)
+        heuristic = rng.choice([999.0, -40.0, -1001.0], size=32)
+        games = []
+        for _ in range(3):
+            learned = rng.choice([999.0, -40.0, -1001.0], size=32)
+            row = {"reference_risk0.4.return": heuristic, "reference_risk0.4.won": heuristic > 0,
+                   "reference_risk0.4.died": heuristic < -500}
+            for agent in ("learned_planner", "random"):
+                row.update({f"{agent}.return": learned, f"{agent}.won": learned > 0, f"{agent}.died": learned < -500})
+            games.append(row)
+        exact = {"exact_planner.return": heuristic + 1.0, "exact_planner.won": heuristic > 0,
+                 "exact_planner.died": heuristic < -500, "reference_risk0.4.return": heuristic.copy(),
+                 "analysis_seed": np.int64(0)}
+        statistics = aggregate_games(games, exact)
+        gap = statistics["gap/exact_planner - reference_risk0.4"]
+        assert gap.mean == pytest.approx(1.0) and gap.ci95 == pytest.approx((1.0, 1.0))
+        assert statistics["gap/learned_planner - exact_planner"].mean == pytest.approx(
+            np.mean([g["learned_planner.return"] for g in games]) - heuristic.mean() - 1.0)
+        exact["reference_risk0.4.return"] = heuristic[::-1].copy()
+        with pytest.raises(ValueError):
+            aggregate_games(games, exact)
+
 
 class TestSweepCondition:
     """sweep.py, sections 3-4: a sweep directory is one condition; continuing must not raise."""

@@ -53,6 +53,21 @@
 #      leaf upper bound of DESPOT (Somani et al. 2013): optimistic about information beyond the
 #      leaf, while every risk INSIDE the tree is evaluated exactly. It is computed exactly per
 #      branch by a bincount over consistent layouts (no sampling), so it is deterministic.
+#      Smoke: 50 simulations 335 +- 38 (win 45%, deaths 0%, unfinished 55%, 11 s per
+#      decision); 200 simulations 424 +- 41 (win 56%, deaths 2.3%, unfinished 41%, 45 s);
+#      1000 simulations 476 +- 41 (win 61%, deaths 2.3%, unfinished 37%, 193 s per decision of
+#      128 roots). Paired gap to the heuristic: -208 +- 37, -120 +- 28, -68 +- 25; 1000 minus
+#      200 sims paired: +51 +- 14. The QMDP-style optimism about post-leaf information is what
+#      keeps it below the heuristic: it undervalues the risk of walking into unexplored cells
+#      it could have sensed first, and leaves more games unfinished.
+#    - FROZEN REFERENCE CONFIGURATION (choice rule of the smoke script, written before the
+#      runs: the cheapest configuration within one standard error of the best return seen,
+#      subject to a 512-game play of at most ~12 h): leaf="full_info", 1000 simulations,
+#      rollouts=0, c_puct 1.25, observation prune 1e-3, greedy argmax Q. 200 simulations
+#      (424) lies outside one standard error (41) of the best (476), and 1000 simulations
+#      on 512 roots costs ~4 x 193 s x 50 decisions ~ 11 h (linear in roots, an upper
+#      estimate), inside the budget. This is fixed for every held-out play
+#      (reports/2026-10-19_eval_protocol/PROTOCOL.md).
 #    - "zero": every leaf 0. 50 simulations: 145 per game, 0% deaths, 80% unfinished, FORWARD
 #      on 92% of live steps (walking into walls: a safe bump costs only -1 and an unexpanded
 #      continuation is worth 0, the same as exploring).

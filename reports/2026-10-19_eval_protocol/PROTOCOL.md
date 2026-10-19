@@ -22,7 +22,7 @@ Every Wumpus screen, threshold and design choice up to 2026-10-18 was read on tr
 - **References:**
   - Uniform random play.
   - The exact-belief heuristic at risk 0.4, the threshold frozen from the development set.
-  - The exact-belief online planner (`ExactWumpusSearchModel`, HANDOFF §6). Its simulation count and rollout count are fixed on **development** games, in its module header, before any held-out play.
+  - The exact-belief online planner (`ExactWumpusSearchModel`, HANDOFF §6). Its simulation count and rollout count are fixed on **development** games, in its module header, before any held-out play. Fixed 2026-10-19 04:20, before any held-out play, by the smoke's pre-written choice rule: full_info leaves, 1000 simulations, no rollouts (476 ± 41 on 128 development games, against 424 ± 41 at 200 and 544 for the heuristic on the same games). It plays once per analysis seed (`exact_planner_play.py`) and enters the aggregate through `sweep.py --exact-planner-games`.
 - **Games:** 512 per agent, one simulator stream per analysis seed, so every agent plays the same layouts (paired).
 - **Statistics** (`src/ipomdp/experiments/aggregate.py`, sections 2, 3 and 6):
   1. The mean over seeds with a Student-t 95% interval.

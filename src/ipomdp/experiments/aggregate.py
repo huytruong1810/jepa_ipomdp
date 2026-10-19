@@ -59,6 +59,14 @@
 #      layouts, experiments/wumpus.py section 2), which keeps the pairing.
 #    - The bootstrap streams are fixed (BOOTSTRAP_SEED) so an aggregate is reproducible; 10,000
 #      resamples put the Monte-Carlo error of a 95% bound well below the reported precision.
+#    - The exact-belief planner (planning/wumpus_exact_model.py) is a reference played ONCE per
+#      analysis seed (reports/2026-10-19_eval_protocol/exact_planner_play.py), not per training
+#      seed. aggregate_games(..., exact_planner=rows) pairs its per-game rows with every seed's
+#      games.npz and adds EXACT_PLANNER_GAME_METRICS. In the hierarchical bootstrap its return
+#      is the same row for every resampled seed, so its interval holds evaluation noise only,
+#      and the paired gap holds both. Pairing is verified, not assumed: the planner file carries
+#      the heuristic's per-game returns on the same rows, which must equal every seed's
+#      reference_risk0.4.return exactly (the heuristic is deterministic given the layout).
 # ==============================================================================
 
 from dataclasses import dataclass
@@ -200,13 +208,37 @@ def hierarchical_bootstrap(per_seed: np.ndarray, chunk: int = 500) -> Hierarchic
     return HierarchicalStatistic(seeds, games, float(per_seed.mean()), (float(low), float(high)))
 
 
-def aggregate_games(games: list[dict[str, np.ndarray]]) -> dict[str, HierarchicalStatistic]:
-    """Section 6: one games.npz (as a dict of arrays) per seed of a Wumpus sweep."""
+# Added when the exact-planner reference rows are given (section 6); "exact_planner.*" come from its games.npz.
+EXACT_PLANNER_GAME_METRICS = {
+    "return/exact_planner": lambda g: g["exact_planner.return"],
+    "win_rate/exact_planner": lambda g: g["exact_planner.won"].astype(np.float64),
+    "death_rate/exact_planner": lambda g: g["exact_planner.died"].astype(np.float64),
+    "unfinished_rate/exact_planner": lambda g: (~g["exact_planner.won"] & ~g["exact_planner.died"]).astype(np.float64),
+    "gap/learned_planner - exact_planner": lambda g: g["learned_planner.return"] - g["exact_planner.return"],
+    "gap/exact_planner - reference_risk0.4": lambda g: g["exact_planner.return"] - g["reference_risk0.4.return"],
+}
+
+
+def aggregate_games(games: list[dict[str, np.ndarray]],
+                    exact_planner: dict[str, np.ndarray] | None = None) -> dict[str, HierarchicalStatistic]:
+    """
+    Section 6: one games.npz (as a dict of arrays) per seed of a Wumpus sweep, and optionally the
+    exact planner's games.npz of the same analysis seed (paired game by game; checked here).
+    """
     lengths = {len(seed_games["learned_planner.return"]) for seed_games in games}
     if len(lengths) != 1:
         raise ValueError(f"Every seed must be analysed on the same number of games, got {sorted(lengths)}.")
+    metrics = dict(WUMPUS_GAME_METRICS)
+    if exact_planner is not None:
+        for index, seed_games in enumerate(games):
+            if not np.array_equal(seed_games["reference_risk0.4.return"], exact_planner["reference_risk0.4.return"]):
+                raise ValueError(f"Seed entry {index} was not played on the exact planner's games: the heuristic's "
+                                 "per-game returns differ (another analysis seed or game count).")
+        games = [{**seed_games, **{k: v for k, v in exact_planner.items() if k.startswith("exact_planner.")}}
+                 for seed_games in games]
+        metrics.update(EXACT_PLANNER_GAME_METRICS)
     return {name: hierarchical_bootstrap(np.stack([metric(seed_games) for seed_games in games]))
-            for name, metric in WUMPUS_GAME_METRICS.items()}
+            for name, metric in metrics.items()}
 
 
 def _lookup(report: dict, path: tuple[str, ...]) -> float:
