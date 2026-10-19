@@ -41,10 +41,18 @@
 #    - Runs trained elsewhere join a sweep by symlinking their directory as seed<k> with the
 #      trained marker: a seed whose analysis/report.json exists is aggregated as is. The recorded
 #      overrides must then be the ones those runs were trained with.
+#
+# 5. Held-Out Evaluation (2026-10-19; reports/2026-10-19_eval_protocol/PROTOCOL.md):
+#    - --analysis-output (Wumpus) names the directory each seed's analysis is written to and read
+#      from (experiments/wumpus.py, section 3), so a sweep over symlinked development runs can be
+#      re-analysed on a held-out game seed without touching their development reports.
+#    - Wumpus aggregates add the hierarchical bootstrap over seeds and games
+#      (experiments/aggregate.py, section 6), read from every seed's games.npz. A Wumpus seed
+#      analysed before games.npz existed raises: re-analyse it into a new output directory.
 # ==============================================================================
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 from pathlib import Path
 import subprocess
@@ -55,7 +63,10 @@ import torch
 
 from omegaconf import OmegaConf
 
-from ipomdp.experiments import AnalysisSettings, WumpusAnalysisSettings, aggregate_reports, analyze_run, analyze_wumpus_run
+import numpy as np
+
+from ipomdp.experiments import (AnalysisSettings, WumpusAnalysisSettings, aggregate_games, aggregate_reports, analyze_run,
+                                analyze_wumpus_run)
 
 REPO = Path(__file__).resolve().parent
 TRAINED_MARKER = "TRAINED"
@@ -104,6 +115,8 @@ def main() -> None:
                         help=f"Tiger only (default {defaults.solver_tolerance}).")
     parser.add_argument("--mlp-probe-steps", type=int, default=defaults.mlp_probe_steps)
     parser.add_argument("--analysis-seed", type=int, default=defaults.seed)
+    parser.add_argument("--analysis-output", default=None,
+                        help="Wumpus only: analysis directory under each seed (section 5; default analysis).")
     parser.add_argument("overrides", nargs="*", help="Hydra overrides passed to every main.py run.")
     args = parser.parse_intermixed_args()
     for override in args.overrides:
@@ -117,8 +130,14 @@ def main() -> None:
         if args.solver_tolerance is not None:
             raise ValueError("--solver-tolerance applies to Tiger only: Wumpus World has no exact solver.")
         settings = WumpusAnalysisSettings(args.episodes, args.mlp_probe_steps, args.analysis_seed)
+        if args.analysis_output is not None:
+            settings = replace(settings, output=args.analysis_output)
+        output = settings.output
         analyze = analyze_wumpus_run
     else:
+        if args.analysis_output is not None:
+            raise ValueError("--analysis-output applies to Wumpus World only.")
+        output = "analysis"
         tolerance = defaults.solver_tolerance if args.solver_tolerance is None else args.solver_tolerance
         settings = AnalysisSettings(args.episodes, tolerance, args.mlp_probe_steps, args.analysis_seed)
         analyze = analyze_run
@@ -129,7 +148,7 @@ def main() -> None:
     reports = []
     for seed in args.seeds:
         seed_dir = sweep_dir / f"seed{seed}"
-        report_path = seed_dir / "analysis" / "report.json"
+        report_path = seed_dir / output / "report.json"
         if not report_path.exists():
             if seed_dir.exists() and not (seed_dir / TRAINED_MARKER).exists():
                 raise RuntimeError(f"{seed_dir} holds an interrupted training run (module header, section 3).")
@@ -141,15 +160,30 @@ def main() -> None:
 
     statistics = aggregate_reports(reports, domain)
     reference = ({"optimal_value_b0": reports[0]["optimal_value_b0"]} if domain == "tiger" else {})
+    hierarchical = {}
+    if domain == "wumpus":
+        games = []
+        for seed in args.seeds:
+            with np.load(sweep_dir / f"seed{seed}" / output / "games.npz") as rows:
+                games.append(dict(rows))
+        hierarchical = aggregate_games(games)
     aggregate = {"domain": domain, "seeds": args.seeds, **reference,
-                 "metrics": {name: asdict(stat) for name, stat in statistics.items()}}
-    (sweep_dir / "aggregate.json").write_text(json.dumps(aggregate, indent=2))
+                 "metrics": {name: asdict(stat) for name, stat in statistics.items()},
+                 "hierarchical": {name: asdict(stat) for name, stat in hierarchical.items()}}
+    # One aggregate per analysis directory, so a held-out aggregate never replaces the development one.
+    aggregate_path = sweep_dir / f"aggregate{'' if output == 'analysis' else '_' + output}.json"
+    aggregate_path.write_text(json.dumps(aggregate, indent=2))
     print(f"\n{args.name} ({domain}): {len(args.seeds)} seeds {args.seeds}"
           + (f", V*(b0) = {reference['optimal_value_b0']:.3f}" if reference else ""))
-    print(f"  {'metric':<36} {'mean':>10} {'95% CI':>10} {'std':>10}")
+    print(f"  {'metric':<40} {'mean':>10} {'t 95% CI':>10} {'std':>10} {'IQM':>10} {'IQM 95% bootstrap':>22}")
     for name, stat in statistics.items():
-        print(f"  {name:<36} {stat.mean:10.4f} {stat.ci95:>10.4f} {stat.std:10.4f}")
-    print(f"aggregate: {sweep_dir / 'aggregate.json'}")
+        print(f"  {name:<40} {stat.mean:10.4f} {stat.ci95:>10.4f} {stat.std:10.4f} {stat.iqm:10.4f} "
+              f"[{stat.iqm_ci95[0]:9.4f}, {stat.iqm_ci95[1]:9.4f}]")
+    if hierarchical:
+        print(f"  hierarchical bootstrap (seeds, then games): {'mean':>10} {'95% interval':>22}")
+        for name, stat in hierarchical.items():
+            print(f"  {name:<40} {stat.mean:10.4f} [{stat.ci95[0]:9.4f}, {stat.ci95[1]:9.4f}]")
+    print(f"aggregate: {aggregate_path}")
 
 
 if __name__ == "__main__":

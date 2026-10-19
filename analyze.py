@@ -22,6 +22,7 @@
 # ==============================================================================
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 
 from omegaconf import OmegaConf
@@ -72,18 +73,26 @@ def main() -> None:
                         help="Certified ||V* - V_n|| bound.")
     parser.add_argument("--mlp-probe-steps", type=int, default=defaults.mlp_probe_steps)
     parser.add_argument("--seed", type=int, default=defaults.seed)
+    parser.add_argument("--analysis-output", default=None,
+                        help="Wumpus only: output directory under the run (default analysis; "
+                             "experiments/wumpus.py, section 3).")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     domain = OmegaConf.load(args.run_dir / ".hydra" / "config.yaml").env.name
     if domain == "wumpus":
-        report = analyze_wumpus_run(args.run_dir, WumpusAnalysisSettings(args.episodes, args.mlp_probe_steps, args.seed),
-                                    device)
-        print_wumpus_summary(report)
+        settings = WumpusAnalysisSettings(args.episodes, args.mlp_probe_steps, args.seed)
+        if args.analysis_output is not None:
+            settings = replace(settings, output=args.analysis_output)
+        print_wumpus_summary(analyze_wumpus_run(args.run_dir, settings, device))
+        output = settings.output
     else:
+        if args.analysis_output is not None:
+            raise ValueError("--analysis-output applies to Wumpus World runs only.")
         settings = AnalysisSettings(args.episodes, args.solver_tolerance, args.mlp_probe_steps, args.seed)
         print_summary(analyze_run(args.run_dir, settings, device))
-    print(f"report: {args.run_dir / 'analysis' / 'report.json'}")
+        output = "analysis"
+    print(f"report: {args.run_dir / output / 'report.json'}")
 
 
 if __name__ == "__main__":

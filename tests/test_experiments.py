@@ -8,8 +8,11 @@ from omegaconf import OmegaConf
 import pytest
 import torch
 
-from ipomdp.experiments import (TIGER_GAPS, TIGER_METRICS, WUMPUS_GAPS, WUMPUS_METRICS, aggregate_reports, build_run_config, build_training_run,
-                                load_trained_run, seed_statistic)
+import numpy as np
+
+from ipomdp.experiments import (TIGER_GAPS, TIGER_METRICS, WUMPUS_GAME_METRICS, WUMPUS_GAPS, WUMPUS_METRICS, aggregate_games,
+                                aggregate_reports, build_run_config, build_training_run, hierarchical_bootstrap,
+                                interquartile_mean, load_trained_run, seed_statistic)
 from ipomdp.training import save_checkpoint
 
 CPU = torch.device("cpu")
@@ -99,6 +102,57 @@ class TestSeedAggregation:
         statistics = aggregate_reports([report(100.0), report(200.0), report(300.0)], "wumpus")
         assert set(WUMPUS_GAPS) <= statistics.keys()
         assert statistics["gap/learned_planner - reference_risk0.4"].mean == pytest.approx(-373.0)
+
+
+class TestRobustStatistics:
+    """aggregate.py, section 6: IQM over seeds and the hierarchical bootstrap over seeds and games."""
+
+    def test_interquartile_mean_cuts_a_quarter_from_each_end(self):
+        assert float(interquartile_mean(np.array([-1000.0, 1.0, 2.0, 3.0, 1000.0]))) == pytest.approx(2.0)
+        assert float(interquartile_mean(np.arange(8.0))) == pytest.approx(3.5)        # mean of 2..5
+
+    def test_iqm_interval_contains_the_iqm_and_ignores_an_outlier_seed(self):
+        stat = seed_statistic([200.0, 190.0, 210.0, 205.0, -800.0])
+        assert stat.iqm == pytest.approx(198.333333, rel=1e-6)
+        assert stat.iqm_ci95[0] <= stat.iqm <= stat.iqm_ci95[1]
+        # The outlier drags the mean to 1 but not the IQM. At n = 5 a resample can hold it twice, so
+        # the IQM interval still reaches down; it must stay narrower than the Student-t interval.
+        assert stat.mean == pytest.approx(1.0)
+        assert stat.iqm_ci95[1] - stat.iqm_ci95[0] < 2.0 * stat.ci95
+
+    def test_hierarchical_interval_covers_the_true_mean(self):
+        # 5 seeds with a seed effect (sd 30) and game noise (sd 400, 512 games): the 95% interval
+        # must cover the true mean in about 95% of 40 independent replications.
+        rng = np.random.default_rng(0)
+        covered = 0
+        for _ in range(40):
+            seeds = 100.0 + 30.0 * rng.standard_normal((5, 1))
+            stat = hierarchical_bootstrap(seeds + 400.0 * rng.standard_normal((5, 512)), chunk=1000)
+            covered += stat.ci95[0] <= 100.0 <= stat.ci95[1]
+        # Binomial(40, 0.95) has sd 1.4; the percentile bootstrap at 5 seeds under-covers a little.
+        assert covered >= 40 * 0.95 - 5 * 1.4 * 1.5
+
+    def test_identical_agents_have_a_zero_paired_gap(self):
+        rng = np.random.default_rng(1)
+        games = []
+        for _ in range(3):
+            returns = rng.choice([999.0, -40.0, -1001.0], size=64)
+            won, died = returns > 0, returns < -500
+            row = {}
+            for agent in ("learned_planner", "random", "reference_risk0.4"):
+                row.update({f"{agent}.return": returns, f"{agent}.won": won, f"{agent}.died": died})
+            games.append(row)
+        statistics = aggregate_games(games)
+        assert set(WUMPUS_GAME_METRICS) == statistics.keys()
+        gap = statistics["gap/learned_planner - reference_risk0.4"]
+        assert gap.mean == 0.0 and gap.ci95 == (0.0, 0.0)
+        rates = [statistics[f"{k}_rate/learned_planner"].mean for k in ("win", "death", "unfinished")]
+        assert sum(rates) == pytest.approx(1.0)
+
+    def test_unequal_game_counts_raise(self):
+        row = lambda n: {"learned_planner.return": np.zeros(n)}  # noqa: E731
+        with pytest.raises(ValueError):
+            aggregate_games([row(4), row(5)])
 
 
 class TestSweepCondition:

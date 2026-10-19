@@ -365,6 +365,21 @@ class WumpusSimulator:
         return StepOutput(observation=observation, reward=reward, truncated=self._elapsed >= self.max_steps)
 
 
+def game_outcome_flags(rewards: Tensor) -> tuple[Tensor, Tensor]:
+    """
+    Per-game (won, died) bool flags of played windows, read from their rewards (section 1).
+
+    Args:
+        rewards: r_0..r_{T-1} of shape (B, T); a win pays +999, a death -1001, nothing else exceeds |10|.
+
+    Returns:
+        won, died of shape (B,); a game with neither flag was still running when the window ended.
+        game_outcomes and the per-game analysis rows (experiments/wumpus.py) both read these, so the
+        rates and the rows can never disagree.
+    """
+    return (rewards > 0.0).any(dim=1), (rewards < DEATH_REWARD / 2).any(dim=1)
+
+
 def game_outcomes(rewards: Tensor) -> dict[str, float]:
     """
     Win, death and unfinished rates of played windows, read from their rewards (section 1).
@@ -377,7 +392,7 @@ def game_outcomes(rewards: Tensor) -> dict[str, float]:
         mean_win_step (steps until the winning grab, over won games; NaN if none was won).
     """
     win = rewards > 0.0
-    won, died = win.any(dim=1), (rewards < DEATH_REWARD / 2).any(dim=1)
+    won, died = game_outcome_flags(rewards)
     win_step = win.float().argmax(dim=1) + 1
     return {"win_rate": float(won.double().mean()), "death_rate": float(died.double().mean()),
             "unfinished_rate": float((~won & ~died).double().mean()),
@@ -486,4 +501,4 @@ class WumpusBeliefTracker:
 
 
 __all__ = ["GAME_OVER", "NUM_CELLS", "Heading", "Percept", "WumpusAction", "WumpusBeliefTracker", "WumpusMarginals",
-           "WumpusSimulator", "WumpusState", "WumpusWorld", "game_outcomes"]
+           "WumpusSimulator", "WumpusState", "WumpusWorld", "game_outcome_flags", "game_outcomes"]

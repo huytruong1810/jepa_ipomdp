@@ -16,10 +16,21 @@
 #      random-policy histories (broad coverage, but short: a random hunter dies quickly) and on
 #      the agent's own histories (the beliefs its decisions depend on).
 #
-# 2. Outputs (under <run>/analysis/):
+# 2. Outputs (under <run>/<settings.output>/, default analysis/):
 #      report.json       returns, outcomes, probe reports
+#      games.npz         per-game rows of every agent: "<agent>.return" (discounted, float64),
+#                        "<agent>.won", "<agent>.died" (bool), all (episodes,), game i the same
+#                        layout for every agent (one simulator stream)
 #      belief_maps.png   exact vs decoded hazard maps along the longest held-out agent game
 #      latent_pca.png    agent latents coloured by hunter cell and by remaining uncertainty
+#
+# 3. Evaluation Protocol (2026-10-19; reports/2026-10-19_eval_protocol/PROTOCOL.md):
+#    - Development and held-out evaluations differ only in the analysis seed and the output
+#      directory. The default (seed 12345, analysis/) is the development set every screen up to
+#      2026-10-18 read; the held-out protocol writes analysis_heldout/ with a seed no screen has
+#      read, so re-analysing a development run never overwrites its development report.
+#    - The per-game rows (games.npz) are what the hierarchical bootstrap of aggregate.py
+#      (section 6) resamples: seeds, then games within a seed, paired across agents game by game.
 # ==============================================================================
 
 from dataclasses import asdict, dataclass
@@ -27,10 +38,11 @@ import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 
 from ..agents import PlanningAgent, UniformRandomAgent, WumpusReferenceAgent
-from ..domain import WumpusSimulator, WumpusWorld, game_outcomes
+from ..domain import WumpusSimulator, WumpusWorld, game_outcome_flags, game_outcomes
 from ..interpretability import (build_wumpus_dataset, evaluate_wumpus_probe, fit_linear_wumpus_probe,
                                 fit_mlp_wumpus_probe, plot_belief_maps, plot_latent_pca)
 from ..planning import BeliefTreeSearch
@@ -45,6 +57,7 @@ class WumpusAnalysisSettings:
         episodes: Games per return estimate and per probe data set (split in halves for fit / held-out).
         mlp_probe_steps: Adam steps of each MLP probe fit.
         seed: Base seed of the analysis streams (training/seeding.py); never a training stream.
+        output: Directory name under the run for every output (section 3).
         reference_risk_thresholds: Risk thresholds of the reference agents (agents/wumpus_reference.py,
             section 2d): 0 never gambles, 1 always does.
     """
@@ -53,6 +66,7 @@ class WumpusAnalysisSettings:
     mlp_probe_steps: int = 3000
     seed: int = 12345
     reference_risk_thresholds: tuple[float, ...] = (0.0, 0.4, 1.0)
+    output: str = "analysis"
 
 
 def _halves(episodes: EpisodeBatch) -> tuple[EpisodeBatch, EpisodeBatch]:
@@ -70,8 +84,15 @@ def _summary(episodes: EpisodeBatch, discount: float) -> dict[str, float]:
             **game_outcomes(episodes.rewards)}
 
 
+def _game_rows(name: str, episodes: EpisodeBatch, discount: float) -> dict[str, np.ndarray]:
+    """games.npz rows of one agent (section 2)."""
+    won, died = game_outcome_flags(episodes.rewards)
+    return {f"{name}.return": discounted_returns(episodes.rewards, discount).cpu().numpy(),
+            f"{name}.won": won.cpu().numpy(), f"{name}.died": died.cpu().numpy()}
+
+
 def analyze_wumpus_run(run_dir: Path, settings: WumpusAnalysisSettings, device: torch.device) -> dict:
-    """Section 1 on a run's best.pt; writes <run>/analysis/ (section 2) and returns the report."""
+    """Section 1 on a run's best.pt; writes <run>/<settings.output>/ (section 2) and returns the report."""
     trained = load_trained_run(run_dir, device)
     world, run, cfg = trained.setup.domain, trained.run, trained.cfg
     if not isinstance(world, WumpusWorld):
@@ -94,11 +115,14 @@ def analyze_wumpus_run(run_dir: Path, settings: WumpusAnalysisSettings, device: 
                     "returns": {"learned_planner": _summary(agent_episodes, world.discount),
                                 "random": _summary(random_episodes, world.discount)},
                     "probes": {}}
+    games = {**_game_rows("learned_planner", agent_episodes, world.discount),
+             **_game_rows("random", random_episodes, world.discount)}
     for threshold in settings.reference_risk_thresholds:
         reference_episodes, _ = play_episodes(simulator(), WumpusReferenceAgent(world, n, threshold))
         report["returns"][f"reference_risk{threshold:g}"] = _summary(reference_episodes, world.discount)
+        games.update(_game_rows(f"reference_risk{threshold:g}", reference_episodes, world.discount))
 
-    out = run_dir / "analysis"
+    out = run_dir / settings.output
     out.mkdir(exist_ok=True)
     for source, episodes in (("random", random_episodes), ("agent", agent_episodes)):
         fit_episodes, held_episodes = _halves(episodes)
@@ -116,5 +140,6 @@ def analyze_wumpus_run(run_dir: Path, settings: WumpusAnalysisSettings, device: 
             figure.savefig(out / "latent_pca.png")
             plt.close(figure)
 
+    np.savez(out / "games.npz", **games)
     (out / "report.json").write_text(json.dumps(report, indent=2, default=str))
     return report

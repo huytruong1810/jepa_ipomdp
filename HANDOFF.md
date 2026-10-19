@@ -257,6 +257,8 @@ Verdict: not yet a top-venue paper. The method results are weak and from one rea
   - It plays to the real strength, and the negative results become content.
 - **Alternative:** a method paper on decision-aware latent models for belief-tree search. Needs a large significant VE gain on several domains, beating DreamerV3, MuZero and model-free baselines; a higher bar with no evidence for it yet.
 
+**Frozen evaluation protocol (registered 2026-10-19, before any held-out read): `reports/2026-10-19_eval_protocol/PROTOCOL.md`.** Development = training seeds 0-4 and analysis seed 12345 (everything so far; exploratory only). Held-out = training seeds 5-9 (then 10-14 if needed) and analysis seed 20261019, written to `analysis_heldout/`; confirmatory claims C-a (performance against random, heuristic and the exact-belief planner) and C-b (probes), each read once. The cited interval is the hierarchical bootstrap over seeds and games (`aggregate.py` section 6); the mean ± t and IQM with a bootstrap CI are reported beside it. New method claims must be registered there before their held-out runs.
+
 **Concrete next steps, cheapest first** (after the VE retrain screen, `objective_ab.py` 2i, reads out):
 - freeze an evaluation protocol with held-out training seeds and game seeds;
 - add an exact-simulator POMCP reference and a model-free recurrent baseline on Wumpus;

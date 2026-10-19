@@ -21,7 +21,7 @@ from .solver import (
 )
 from .tiger import TigerAction, TigerObservation, TigerState, build_tiger_pomdp
 from .wumpus import (WumpusAction, WumpusBeliefTracker, WumpusMarginals, WumpusSimulator, WumpusState, WumpusWorld,
-                     game_outcomes)
+                     game_outcome_flags, game_outcomes)
 
 __all__ = [
     "EXACT_PRUNE_EPSILON",
@@ -43,6 +43,7 @@ __all__ = [
     "backup",
     "belief_update",
     "build_tiger_pomdp",
+    "game_outcome_flags",
     "game_outcomes",
     "initial_beliefs",
     "observation_distribution",

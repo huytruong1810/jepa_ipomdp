@@ -41,12 +41,34 @@
 #    - DOMAIN_METRICS selects the table. The Wumpus gaps to cite are planner - reference and
 #      planner - random, paired within seed for the same reason as in section 3: every seed's
 #      analysis plays the same 512 layouts, so the reference's return is identical across seeds.
+#
+# 6. Robust and Hierarchical Statistics (2026-10-19; reports/2026-10-19_eval_protocol/PROTOCOL.md):
+#    - The Student-t interval assumes roughly normal seed values; with 5-10 seeds one bad seed
+#      dominates it. Every SeedStatistic therefore also carries the interquartile mean over seeds
+#      (scipy trim_mean with 25% cut from each end: at n = 5 the mean of the middle 3) and a
+#      percentile-bootstrap 95% interval over seeds, the robust aggregate recommended by Agarwal
+#      et al. (2021, "Deep RL at the edge of the statistical precipice", rliable). Implemented here
+#      (about ten lines) rather than adding rliable as a dependency.
+#    - The IQM is taken over SEED-level values, never over games: a Wumpus game pays about +900
+#      (win), -40 (unfinished) or -1000 (death), so a game-level IQM would cut away the wins and
+#      deaths, which are the outcomes that matter.
+#    - The Student-t and IQM intervals condition on the evaluation games (section 3). The
+#      hierarchical bootstrap (Wumpus, from each seed's games.npz) resamples seeds and then games
+#      within each resampled seed, so its interval holds BOTH training and evaluation noise; for
+#      paired gaps it resamples per-game differences (every agent of a seed plays the same
+#      layouts, experiments/wumpus.py section 2), which keeps the pairing.
+#    - The bootstrap streams are fixed (BOOTSTRAP_SEED) so an aggregate is reproducible; 10,000
+#      resamples put the Monte-Carlo error of a 95% bound well below the reported precision.
 # ==============================================================================
 
 from dataclasses import dataclass
 import math
 
+import numpy as np
 from scipy import stats
+
+BOOTSTRAP_RESAMPLES = 10_000
+BOOTSTRAP_SEED = 20261019
 
 # Metric name -> path into a Tiger report.json (runs.py, section 4).
 TIGER_METRICS: dict[str, tuple[str, ...]] = {
@@ -99,25 +121,92 @@ DOMAIN_METRICS: dict[str, tuple[dict[str, tuple[str, ...]], dict[str, tuple[str,
 }
 
 
+# Wumpus per-game metrics (section 6): name -> function of one seed's games.npz rows -> (games,) float64.
+WUMPUS_GAME_METRICS = {
+    "return/learned_planner": lambda g: g["learned_planner.return"],
+    "return/reference_risk0.4": lambda g: g["reference_risk0.4.return"],
+    "return/random": lambda g: g["random.return"],
+    "win_rate/learned_planner": lambda g: g["learned_planner.won"].astype(np.float64),
+    "death_rate/learned_planner": lambda g: g["learned_planner.died"].astype(np.float64),
+    "unfinished_rate/learned_planner": lambda g: (~g["learned_planner.won"] & ~g["learned_planner.died"]).astype(np.float64),
+    "gap/learned_planner - reference_risk0.4": lambda g: g["learned_planner.return"] - g["reference_risk0.4.return"],
+    "gap/learned_planner - random": lambda g: g["learned_planner.return"] - g["random.return"],
+}
+
+
 @dataclass(frozen=True)
 class SeedStatistic:
-    """Mean, sample standard deviation and 95% Student-t half-width over n seeds."""
+    """
+    Over n seeds: mean, sample standard deviation and 95% Student-t half-width (section 2), and the
+    interquartile mean with its percentile-bootstrap 95% interval (section 6).
+    """
 
     n: int
     mean: float
     std: float
     ci95: float
+    iqm: float
+    iqm_ci95: tuple[float, float]
     values: list[float]
 
 
+@dataclass(frozen=True)
+class HierarchicalStatistic:
+    """Mean over seeds x games with a 95% interval from resampling seeds, then games (section 6)."""
+
+    seeds: int
+    games: int
+    mean: float
+    ci95: tuple[float, float]
+
+
+def interquartile_mean(values: np.ndarray, axis: int = -1) -> np.ndarray:
+    """Mean of the middle 50% along `axis` (scipy trim_mean, 25% cut from each end; section 6)."""
+    return stats.trim_mean(values, 0.25, axis=axis)
+
+
 def seed_statistic(values: list[float]) -> SeedStatistic:
-    """Section 2."""
+    """Sections 2 and 6."""
     n = len(values)
     if n < 2:
         raise ValueError(f"A confidence interval over seeds needs at least 2 seeds, got {n}.")
     mean = sum(values) / n
     std = math.sqrt(sum((v - mean) ** 2 for v in values) / (n - 1))
-    return SeedStatistic(n, mean, std, float(stats.t.ppf(0.975, n - 1)) * std / math.sqrt(n), list(values))
+    array = np.asarray(values, dtype=np.float64)
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    resampled = interquartile_mean(array[rng.integers(0, n, size=(BOOTSTRAP_RESAMPLES, n))])
+    low, high = np.quantile(resampled, [0.025, 0.975])
+    return SeedStatistic(n, mean, std, float(stats.t.ppf(0.975, n - 1)) * std / math.sqrt(n),
+                         float(interquartile_mean(array)), (float(low), float(high)), list(values))
+
+
+def hierarchical_bootstrap(per_seed: np.ndarray, chunk: int = 500) -> HierarchicalStatistic:
+    """
+    Section 6: per_seed (seeds, games) per-game values (or paired per-game differences). Each
+    resample draws seeds with replacement, then games with replacement within every drawn seed;
+    the statistic is the grand mean. Chunked so the index tensor stays ~10 MB.
+    """
+    seeds, games = per_seed.shape
+    if seeds < 2:
+        raise ValueError(f"A hierarchical bootstrap over seeds needs at least 2 seeds, got {seeds}.")
+    rng = np.random.default_rng(BOOTSTRAP_SEED)
+    means = []
+    for start in range(0, BOOTSTRAP_RESAMPLES, chunk):
+        size = min(chunk, BOOTSTRAP_RESAMPLES - start)
+        seed_draw = rng.integers(0, seeds, size=(size, seeds))
+        game_draw = rng.integers(0, games, size=(size, seeds, games))
+        means.append(per_seed[seed_draw[:, :, None], game_draw].mean(axis=(1, 2)))
+    low, high = np.quantile(np.concatenate(means), [0.025, 0.975])
+    return HierarchicalStatistic(seeds, games, float(per_seed.mean()), (float(low), float(high)))
+
+
+def aggregate_games(games: list[dict[str, np.ndarray]]) -> dict[str, HierarchicalStatistic]:
+    """Section 6: one games.npz (as a dict of arrays) per seed of a Wumpus sweep."""
+    lengths = {len(seed_games["learned_planner.return"]) for seed_games in games}
+    if len(lengths) != 1:
+        raise ValueError(f"Every seed must be analysed on the same number of games, got {sorted(lengths)}.")
+    return {name: hierarchical_bootstrap(np.stack([metric(seed_games) for seed_games in games]))
+            for name, metric in WUMPUS_GAME_METRICS.items()}
 
 
 def _lookup(report: dict, path: tuple[str, ...]) -> float:
