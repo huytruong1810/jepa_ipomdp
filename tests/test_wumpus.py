@@ -478,3 +478,94 @@ class TestConfigurableDiscount:
             build_training_run(self._cfg(None), CPU)
         with pytest.raises(ValueError):
             WumpusWorld(CPU, 1.0)
+
+
+class TestExactSearchModel:
+    """planning/wumpus_exact_model.py: exact R and P per node, the window, rollout leaves and a sane search."""
+
+    @staticmethod
+    def _reference(world, mask: torch.Tensor, own: dict, action: int) -> tuple[float, torch.Tensor]:
+        """Per-node brute force: E[r] and P(o) over the consistent layouts of one node."""
+        layouts = mask.nonzero().squeeze(1)
+        k = layouts.shape[0]
+        state = WumpusState(layouts, *(torch.full((k,), int(own[f]), dtype=dtype) for f, dtype in
+                                       (("cell", torch.int64), ("heading", torch.int64), ("arrow", torch.bool),
+                                        ("alive", torch.bool), ("done", torch.bool))))
+        _, obs, reward = world.step_rules(state, torch.full((k,), action, dtype=torch.int64))
+        return float(reward.double().mean()), torch.bincount(obs, minlength=world.num_observations).double() / k
+
+    def test_exact_rewards_and_probabilities_match_a_per_node_reference(self, world):
+        from ipomdp.planning.wumpus_exact_model import ExactWumpusSearchModel
+        first, actions, observations, _ = _random_play(world, 6, 5, seed=3)
+        model = ExactWumpusSearchModel(world, 6, num_simulations=4, max_steps=50, rollouts=0, seed=0)
+        states = model.initial_states(6, first)
+        for t in range(5):
+            states = model.update(states, actions[:, t], observations[:, t])
+        root = model.expand(states)
+        # One level deeper: the most likely observation after FORWARD in every game (a lazy child).
+        best = root.observation_probs[:, A.FORWARD].argmax(1)
+        children = root.next_states[torch.arange(6), A.FORWARD, best]
+        child = model.expand(children)
+        for ids, expansion in ((states[:, 0], root), (children[:, 0], child)):
+            masks = model._unpack(model.bank[model.bank_row[ids]])
+            for row, node in enumerate(ids.tolist()):
+                own = {f: model.own[f][node] for f in ("cell", "heading", "arrow", "alive", "done")}
+                for a in range(world.num_actions):
+                    reward, probs = self._reference(world, masks[row], own, a)
+                    assert float(expansion.rewards[row, a]) == pytest.approx(reward, abs=1e-12)
+                    assert torch.allclose(expansion.observation_probs[row, a], probs, atol=1e-12)
+        assert torch.equal(model._unpack(model._pack(model.root_consistent)), model.root_consistent)
+
+    def test_the_window_ends_the_search(self, world):
+        from ipomdp.planning.wumpus_exact_model import ExactWumpusSearchModel
+        first, _, _, _ = _random_play(world, 4, 1, seed=4)
+        model = ExactWumpusSearchModel(world, 4, num_simulations=4, max_steps=1, rollouts=8, seed=0)
+        root = model.expand(model.initial_states(4, first))
+        assert bool((root.next_values == 0.0).all())                     # children have 0 steps left
+        leaf = model.expand(root.next_states[torch.arange(4), A.TURN_LEFT, first])   # a turn keeps the percepts
+        assert bool((leaf.rewards == 0.0).all()) and bool((leaf.next_values == 0.0).all())
+
+    def test_one_step_rollouts_estimate_the_default_policy_reward(self, world):
+        # With max_steps = 2, children have 1 step left, so a rollout is one default-policy action:
+        # its exact value is the mean over consistent layouts of the mean reward over allowed actions.
+        from ipomdp.planning.wumpus_exact_model import ExactWumpusSearchModel
+        first, _, _, _ = _random_play(world, 2, 1, seed=5)
+        model = ExactWumpusSearchModel(world, 2, num_simulations=4, max_steps=2, rollouts=4000, seed=1)
+        root = model.expand(model.initial_states(2, first))
+        for row in range(2):
+            o = int(root.observation_probs[row, A.FORWARD].argmax())
+            node = int(root.next_states[row, A.FORWARD, o])
+            if bool(model.own["done"][node]):
+                continue
+            parent_mask = model._unpack(model.bank[model.bank_row[torch.tensor([row])]])[0]
+            own = {f: model.own[f][row] for f in ("cell", "heading", "arrow", "alive", "done")}
+            layouts = parent_mask.nonzero().squeeze(1)
+            state = WumpusState(layouts, *(torch.full_like(layouts, int(own[f])).to(dtype) for f, dtype in
+                                           (("cell", torch.int64), ("heading", torch.int64), ("arrow", torch.bool),
+                                            ("alive", torch.bool), ("done", torch.bool))))
+            nxt, obs, _ = world.step_rules(state, torch.full_like(layouts, int(A.FORWARD)))
+            nxt = WumpusState(*(getattr(nxt, f)[obs == o] for f in ("layout", "cell", "heading", "arrow",
+                                                                    "wumpus_alive", "done")))
+            per_action = torch.stack([world.step_rules(nxt, torch.full_like(nxt.layout, a))[2].double()
+                                      for a in range(world.num_actions)], 1)
+            allowed = torch.ones_like(per_action, dtype=torch.bool)
+            allowed[:, A.GRAB] = world.gold[nxt.layout] == nxt.cell
+            allowed[:, A.SHOOT] = nxt.arrow
+            policy_reward = (per_action * allowed).sum(1) / allowed.sum(1)
+            exact = float(policy_reward.mean())
+            spread = float(per_action[allowed].std())
+            assert float(root.next_values[row, A.FORWARD, o]) == pytest.approx(exact, abs=5 * spread / 4000 ** 0.5 + 1e-9)
+
+    def test_grabs_visible_gold(self, world):
+        from ipomdp.planning import BeliefTreeSearch
+        from ipomdp.planning.wumpus_exact_model import ExactWumpusSearchModel
+        layout = _layout(world, (10, 11), wumpus=15, gold=4)          # gold straight ahead of the start (North)
+        state = world.initial_state(torch.tensor([layout]))
+        model = ExactWumpusSearchModel(world, 1, num_simulations=10, max_steps=50, rollouts=4, seed=0)
+        states = model.initial_states(1, world.initial_observation(state))
+        state, observation, _ = world.step_rules(state, torch.tensor([int(A.FORWARD)]))
+        states = model.update(states, torch.tensor([int(A.FORWARD)]), observation)
+        assert int(observation) & Percept.GLITTER
+        policy = BeliefTreeSearch(model, 10, 1.25, 0.3, dirichlet_epsilon=0.0, seed=0,
+                                  observation_prune=1e-3).search(states, temperature=0.0)
+        assert int(policy.argmax()) == A.GRAB
