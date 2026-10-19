@@ -1,17 +1,13 @@
-# HANDOFF: JEPA I-POMDP (as of 2026-10-18. Wumpus recipe: whole-buffer retrain + double value, 200 ± 44 per game over 5 seeds (`runs/sweeps/wumpus_retrain`; heuristic 573); ~67% of games end unfinished. 2026-10-18: Step A (`obs_fit_vs_latent.py`) read **LATENT** (no head on the frozen latent recovers the exact P(o' | FORWARD) at the declined states), Step B (`exact_model_play.py`) **PASS on 5 of 5**: the exact one-step model with the agent's own value and filter plays 408 vs 200 (paired +208 ± 48, deaths 0, unfinished 67 -> 50%). Step C, a value-equivalent observation term (`model.value_equivalent_weight`, default off), FAILED its retrain screen (`objective_ab.py` 2i: no arm >= +50 over control on any seed; w = 100 damages the latent). Next variant is the user's call; section 1c lists the publication gaps. Nothing is running)
+# HANDOFF: JEPA I-POMDP (as of 2026-10-19. **Phase: algorithm design and improvement (user decision 2026-10-19).** Wumpus recipe (whole-buffer retrain + double value): 200 ± 44 per game on development seeds (`runs/sweeps/wumpus_retrain`). The performance ladder on development games: random -420, R2D2-lite (model-free, matched budget) ~90, **ours ~200**, ours with the EXACT one-step model 408, exact-belief planner (1000 sims) ~476, heuristic 573. The open problem is the learned model: it costs ~+200 per game and the missing information is in the latent (Steps A/B, 2026-10-18). The value-equivalent observation term failed (Step C). Publication groundwork done 2026-10-19: frozen protocol, exact-planner reference, R2D2-lite baseline; the confirmatory held-out runs are still going (section 0, 2026-10-19). Second domain (RockSample) SHELVED until the method works)
 
 **The user's goal for the paper (2026-10-17):** "combine state-of-the-art theories into the algorithm to have the strongest publication in deep learning and decision theory and representation learning". Every next step should be tied to a theory and tested by a pre-registered screen; score-chasing by trial and error is out (two weeks of it did not close the gap).
 
-**The next session's job (fresh session; nothing is running, everything is pushed):**
-1. **Ask the user which direction to take** (one question, recommended option first). The user moved to a new session before choosing:
-   - **(a) Recommended: the publication groundwork of section 1c**, needed by every framing and independent of Step C. Suggested order, cheapest first:
-     1. Freeze an evaluation protocol: held-out training seeds (e.g. 5-9) and a fresh analysis game seed that no screen has read, the IQM / stratified-bootstrap statistics (rliable), and a confirmatory-vs-exploratory register (append it to section 1c).
-     2. An exact-simulator online planner on Wumpus as the real upper reference: POMCP over `WumpusSimulator` / `step_rules`, with particles drawn from the layout-enumeration belief (`WumpusBeliefTracker`). `exact_model_play.py`'s hybrid model is a related piece: the exact one-step model inside our own search.
-     3. A model-free recurrent baseline (R2D2/DRQN or PPO-LSTM) at matched environment steps.
-     4. RockSample(7,8) as a second real domain (a `FinitePOMDP`-style exact model, exact Bayes filter and SARSOP/alpha-vector references; check that the solver scales or use published values).
-   - **(b) A reward-aware (Q-equivalent) model term** (section 0, 2026-10-18 evening, mechanism hypothesis), screened like `objective_ab.py` 2i but on 5 seeds (n = 3 resolves only effects above ~+50).
-2. Housekeeping, pre-authorised whenever the machine is free: the slow suite (`uv run pytest -m slow`, ~45 min). It has not run since `privileged_belief_loss`; three default-off options have been added since (`value_estimator`, `retrain_every`, `value_equivalent_weight`).
-3. Check first: `ps -eo pid,args | grep "[p]ython"`, `uptime` (ipomcp load; on 2026-10-18 it ran a 6-worker job at load ~15), `nvidia-smi`.
+**The next session's job (algorithm design; everything is pushed; held-out jobs may still be running):**
+1. **Read section 1b first, especially "Algorithm-design phase (2026-10-19)"**: it is the taste that should pick the experiments. Then section 6.2 (the plan) and section 7 (failed paths).
+2. **Start with Step D of section 6.2** (feature-level localisation of the latent gap at the declined states; CPU, pre-authorised). Its readout picks the method branch (D1 shift / D2 objective / D3 representation). Pre-register the readout in the script header before running.
+3. **Background duty: the confirmatory readout.** When `runs/sweeps/wumpus_retrain_heldout` has all 5 seeds (`runs/wumpus/heldout_chain.log`) and `runs/references/wumpus_exact_planner/seed20261019/games.npz` exists (`runs/references/exact_play_20261019.log`; resumable per chunk if interrupted: rerun `uv run reports/2026-10-19_eval_protocol/exact_planner_play.py 20261019`), re-run the held-out sweep command (in `runs/wumpus/heldout_chain.sh`) with `--exact-planner-games runs/references/wumpus_exact_planner/seed20261019/games.npz --baseline-runs runs/baselines/r2d2_heldout`. Read C-a/C-b/C-c ONCE, record them in PROTOCOL.md and section 0. It is the honest anchor for the current method; it does not change the design direction.
+4. **Algorithm work is judged on the DEVELOPMENT set only** (training seeds 0-4, analysis seed 12345; paired, hierarchical bootstrap from `games.npz`). A method claim is registered in PROTOCOL.md before it ever touches the held-out set (seeds 5-9 / analysis seed 20261019, or fresh seeds 10-14 for a second claim).
+5. Check first: `ps -eo pid,args | grep "[p]ython"`, `uptime` (ipomcp load), `nvidia-smi`. At most 3 GPU planner jobs.
 
 Section 1c is the publication-gap list (self-critique, 2026-10-18): read it before planning experiments. Section 1b holds the working conjectures and the research principles ("taste in research"), including the compute-efficiency rules (updated 2026-10-17). Section 7 lists what failed: do not repeat it.
 
@@ -29,6 +25,11 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
 - **The prize (section 5.8):** letting the heuristic's navigation rules override the planner gives 482 ± 39 (+300 ± 42 paired), three quarters of it from turning towards an adjacent safe cell and stepping in.
 - **Before 2026-10-14** (sections 5.6–5.9): every value-side remedy failed (time-aware value, n-step greedy returns, γ = 0.95, detached planning head, offline value targets, teacher values in play). An oracle-latent arm (`model.privileged_belief_loss`; cell 96–98%, heading 100% decodable) idled as much or more, so the value/planner was judged the bottleneck.
 - **2026-10-14:** no-op self-loops are a symptom (C1 closed); the heads are exact on no-ops (no phantom reward); the oracle networks' value exceeds 999, which no game can pay, on 36–58% of live steps, and two oracle seeds refuse the gold for it. That pointed to C2, maximisation bias in the backup.
+
+### 2026-10-19 (later): back to algorithm design (user decision)
+
+- I asked whether to plan RockSample (groundwork item 4). The user asked why we were adding a domain and whether the current design and results were good. My answer: no. Tiger is solved but a toy. On Wumpus the agent makes ~35% of the heuristic and the learned model costs ~+200 per game (Step B), and a second domain would only replicate that weakness. **User: "let's go back to algorithm design and improvement."** RockSample is shelved until the method works; the groundwork (protocol, exact planner, R2D2-lite) becomes the test bench.
+- Lesson (now in section 1b): do not carry a plan item forward without re-checking that the core result justifies it.
 
 ### 2026-10-19: publication groundwork (user's choice; HANDOFF 1c items 1-2)
 
@@ -161,6 +162,30 @@ Stages:
 
 The user trusts the agent's research judgement (2026-10-10: "run the experiments you think will not waste meaningless compute and post-analysis"; 2026-10-12: "decide on the best direction forward without asking me to pick an option"). These are the beliefs that currently steer the work, strongest evidence first. Each is a conjecture with a stated test, not a result.
 
+### Algorithm-design phase (2026-10-19): what I believe and how I would pick experiments
+
+**Where the problem is (my reading, strongest evidence first).**
+- **The bottleneck is the learned one-step model, and inside it the latent.** The exact one-step model with the agent's OWN value and filter plays 408 vs 200 (+208 ± 48, 5 of 5 seeds, deaths 0); exact P alone gives +157 (Step B). No head on the frozen latent recovers the exact P(o' | FORWARD) at the declined states (Step A, LATENT). That +208 is the **known headroom**, the budget any model-side method competes for.
+- **The value and search are second-order for now.** With the exact model, half the games are still unfinished and ~165 remain to the heuristic. The exact planner itself (true rules and belief, 1000 sims) only reaches ~476, so the last stretch is hard for any search. Do not work on value or search until the model gap is mostly closed.
+- **The specific failure is a rare, high-value outcome: glitter in a newly entered cell is predicted 2.3-4.5x too rarely.** Likelihood (CE) training underweights rare outcomes, and the agent's own data rarely shows "turn, then step into a new cell" from the states where it declines. That is a feedback loop: idle -> no such data -> the model says new cells are dull -> no value of information -> idle. It is the model-learning version of objective mismatch (Lambert et al. 2020) and of C3's compounding error. **Untested conjecture: this loop, not capacity, is why the latent lacks the information.**
+- **Partly known:** "safe unvisited cell directly ahead" and "cells visited" decode well from the latent on agent states (section 5.6: 93-97%, off by 0.15-0.37), yet the exact P(glitter) at the TURNED (imagined) latents does not. So either the turned latents are off the filter's training support, or the composition into P(o') is what fails. Step D (section 6.2) separates these. I would not build a method before it reads out.
+
+**How I would choose experiments in this phase.**
+- **Localise, then remedy. Every candidate method states which part of the +208 it targets and is screened first where the error lives.** Cheapest is the declined-state metrics of `q_localise_diag.py` (TV to the exact P(o' | FORWARD), the glitter ratio, and the share of states where TURN -> FORWARD wins): a method that does not move these at the declined states will not move play. Next is an offline whole-buffer retrain (`objective_ab.py` pattern, saved networks) with 512 paired games (`retrain_play.py`). Only then train in-agent on 3 and 5 seeds.
+- **Anchor every result on the ladder**: random -420, R2D2-lite ~90, ours ~200, exact one-step model + own value 408, exact planner ~476, heuristic 573. Report where a method lands and what fraction of the +208 it recovers.
+- **Theory first, one mechanism per arm.** Each arm names the theory it tests (self-predictive sufficiency, value equivalence, decision-aware weighting, coverage) and the readout branch that would refute it. No stacking of untested pieces.
+- **Effects below ~+50 need 5 seeds or a paired control per seed** (control retrains alone vary -39 to +58). Use the hierarchical bootstrap on `games.npz` for every development comparison; it is already wired into `sweep.py`.
+- **Keep the development / held-out wall.** All design reads use the development set. A method claim goes into PROTOCOL.md before its held-out run, and each held-out readout is read once.
+- **Do not widen scope before the core result works** (2026-10-19). I carried the "second domain" item forward from an approved plan without asking whether the main result justified it; the user caught it. A plan item is re-justified against the current results before it starts.
+- **The privileged and exact pieces stay diagnostics.** The exact planner and the exact one-step model bound what is possible; the method must learn everything from the agent's own percepts and rewards.
+- **Architecture is a legitimate lever but has to earn it** (user standing rule: architecture must never be the bottleneck). A supervised GRU reaches ~100% on cell and heading, and an untuned causal Transformer was no better (section 7). Run an architecture A/B only if Step D says the information is missing from the latent everywhere, not just at turned latents.
+
+**Method candidates, in the order I would try them (after Step D picks the branch).**
+1. **Self-predictive latent on the retrain recipe (Ni et al. 2024; the ZP condition plus reward/value prediction makes the latent sufficient for Q\*).** This is JEPA's latent self-prediction, so a positive result also rescues contribution 1. JEPA on the retrain recipe has never been run, and the old JEPA loss on Wumpus came before the schedule fix (C7). Cheap: one offline retrain arm per seed.
+2. **Decision-aware weighting of the observation likelihood (VaGraM, Voelcker et al. 2022):** weight each transition's CE by the value spread across its observation branches, so the rare glitter branch with a +999 continuation costs what it is worth. It fits the rare-outcome mechanism directly and, unlike Step C, uses the value at the CHILD latents where gold value lives.
+3. **Q-equivalent observation term:** Step C's untested successor. It matches r + γV over branches instead of V alone, so outcomes paid through the reward (death, gold) are seen.
+4. **Coverage of decision-relevant counterfactuals:** collect data where the planner declines (e.g. optimism or information-gain bonuses at planning time, or ε on the declined action pair), so the model sees what entering new cells reveals. This targets the feedback loop rather than the objective.
+
 **C7 (new 2026-10-16; confirmed). The agent's latent was limited by its training SCHEDULE, not its objective, data or architecture.** Offline with the same code: uniform training on the agent's own final buffer gives cell / heading 85 / 87%; the agent's growing-buffer schedule replayed offline gives 77 / 72% (the agent: 76 / 68%). Primacy bias (Nikishin et al. 2022): the first few dozen games are replayed hundreds of times and later data does not repair the latent. Budget-matched resets do not fix it (2g); retraining from scratch, long and uniformly on the whole buffer, does (2h and in-agent; run.py section 14). **Open sub-question:** the growing schedule after a mid-run retrain re-degrades the networks (collections 55-95); a schedule that stays near-uniform is untested.
 
 **C9 (new 2026-10-17 evening; offline, 5 of 5 seeds). The idling is a decision-relevant MODEL error: the observation head under-predicts what a new cell can reveal (glitter 2.3-4.5x too rare after turn + step), so the backup misses the value of information.** Exact P and R with the learned value flip the declined turn-then-step decision at 48-81% of states (learned: 8-14%); `q_localise_diag.py`. **Confirmed in play 2026-10-18** (`exact_model_play.py`: +208 per game, deaths 0, 5 of 5 seeds) and **localised to the latent** (`obs_fit_vs_latent.py`: no head on the frozen latent recovers it). A next-value-equivalent term failed (6.2 Step C, 2026-10-18 evening); a reward-aware (Q-equivalent) variant is untested.
@@ -278,11 +303,7 @@ Verdict: not yet a top-venue paper. The method results are weak and from one rea
 
 **Frozen evaluation protocol (registered 2026-10-19, before any held-out read): `reports/2026-10-19_eval_protocol/PROTOCOL.md`.** Development = training seeds 0-4 and analysis seed 12345 (everything so far; exploratory only). Held-out = training seeds 5-9 (then 10-14 if needed) and analysis seed 20261019, written to `analysis_heldout/`; confirmatory claims C-a (performance against random, heuristic and the exact-belief planner) and C-b (probes), each read once. The cited interval is the hierarchical bootstrap over seeds and games (`aggregate.py` section 6); the mean ± t and IQM with a bootstrap CI are reported beside it. New method claims must be registered there before their held-out runs.
 
-**Concrete next steps, cheapest first** (after the VE retrain screen, `objective_ab.py` 2i, reads out):
-- freeze an evaluation protocol with held-out training seeds and game seeds;
-- add an exact-simulator POMCP reference and a model-free recurrent baseline on Wumpus;
-- add RockSample as a second real domain;
-- choose the framing from the VE result.
+**Status 2026-10-19:** gaps 2 (protocol) and part of 3 (exact-planner reference, R2D2-lite) are done; the held-out readout is pending. Gap 1 (weak method results) is now the priority (algorithm phase, sections 1b and 6.2). Gap 4 (a second domain) waits for a working method.
 
 ## 2. Rules the user set (follow them)
 
@@ -734,7 +755,7 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 
 ## 6. Next steps
 
-**Direction (2026-10-17, user: "go ahead" on the localisation; then "plan next steps and start fresh"): the unfinished games through decision-aware model learning, towards the strongest publication.** Experiments inside it need no permission (pre-register, cheapest first); the method itself (Step C) and any change to canonical Tiger need the user.
+**Direction (2026-10-19, user: "let's go back to algorithm design and improvement"): close the learned-model gap (the +208 of Step B) with a theory-tied method, judged on the development set and confirmed on held-out seeds. Second domain shelved.** Earlier direction (2026-10-17): the unfinished games through decision-aware model learning. Experiments inside it need no permission (pre-register, cheapest first); the method itself (Step C) and any change to canonical Tiger need the user.
 
 ### 6.1 Done 2026-10-15 to 10-17
 - **FVI screen** (`fvi_screen.py`, header 4): oracle networks pass, current agent fails.
@@ -747,7 +768,17 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 - **Step A** (`obs_fit_vs_latent.py`): LATENT. **Step B** (`exact_model_play.py`): PASS on 5 of 5 (408 vs 200; EP 357) (2026-10-18).
 - **Step C, value-equivalent observation term** (`model.value_equivalent_weight`; `objective_ab.py` 2i retrain screen): FAIL (2026-10-18 evening).
 
-### 6.2 The plan (in order; 2026-10-18)
+### 6.2 The plan (2026-10-19, algorithm phase)
+
+**Step D: feature-level localisation of the latent gap (next; CPU, pre-authorised).** Question: at the declined states, which factor of the exact P(o' | b, FORWARD) is missing from the turned latent, and is it missing only there?
+- States and latents: exactly those of `q_localise_diag.py` (re-select as there; the count must equal `analysis/q_localise.npz`), on `runs/sweeps/wumpus_retrain/seed0-4` `best.pt`. Use the turned latent (after TURN with the branch observation), as in Step A.
+- Targets from the exact filter (`WumpusBeliefTracker`): the factors that make up P(o' | b, FORWARD): cell ahead is a wall; cell ahead is new; P(gold in the cell ahead); P(pit), P(live wumpus) in the cell ahead; and P(glitter) itself.
+- Fit MLP probes on ordinary buffer states (the run's replay buffer; `obs_fit_vs_latent.py` has the data plumbing), then evaluate them (a) on held-out buffer states, (b) on the declined turned latents.
+- Pre-register (example thresholds; fix them in the header before running): a factor decodable on buffer states (accuracy or calibration close to the exact) but far at the turned latents -> **D1 SHIFT** (imagined latents off the filter's support; the remedy is coverage, candidate 4, or training the model on its own branches). Decodable at both, while P(glitter) is wrong -> **D2 OBJECTIVE/COMPOSITION** (candidates 2-3). Not decodable on buffer states either -> **D3 REPRESENTATION** (candidate 1, then an architecture A/B).
+
+**Then:** the method candidate the branch points to (section 1b list), screened at the declined states first, then by an offline retrain with paired play, then in-agent on 3 and 5 development seeds. Register the claim in PROTOCOL.md and confirm on held-out seeds 10-14 (5-9 are spent on the current recipe's claims).
+
+### 6.2a The 2026-10-18 plan (Steps A-C; done)
 
 **Step A: fit vs latent. DONE 2026-10-18: LATENT (section 0).** Question: is the observation head's error at the turned latent a fitting/objective problem or missing information in the latent?
 - Data: the `q_localise_diag.py` states (re-select them exactly as there; the count must equal `analysis/q_localise.npz`), plus the run's replay buffer (`latest.pt`; slot layout in section 1b) for training.
@@ -780,7 +811,7 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 
 ### 6.4 Ask the user before starting
 - **Reviewer page refresh**, only if the user wants a meeting. The 2026-10-07 page shows 3 seeds (189); the 5-seed numbers are in `runs/sweeps/wumpus_current` and the retrain recipe's in `runs/sweeps/wumpus_retrain` (worth a row and the latent-probe comparison). Merge with `scripts/export.py add`, read the live page with the Artifact tool first, then republish to the same URL.
-- **Direction calls:** the hybrid JEPA + observation condition; a model-free recurrent Q-learner baseline; multi-agent Tiger (verify its tables against Gmytrasiewicz & Doshi first); I-POMDP levels via the S × M_j reduction. Cheap Tiger questions: an observation-head detach ablation in JEPA mode; Polyak momentum 0.98.
+- **Direction calls:** the hybrid JEPA + observation condition; a second domain (RockSample(7,8); shelved 2026-10-19 until the method works); multi-agent Tiger (verify its tables against Gmytrasiewicz & Doshi first); I-POMDP levels via the S × M_j reduction. Cheap Tiger questions: an observation-head detach ablation in JEPA mode; Polyak momentum 0.98.
 
 ## 7. Failed paths and pitfalls: do not repeat
 
