@@ -26,6 +26,13 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
 - **Before 2026-10-14** (sections 5.6–5.9): every value-side remedy failed (time-aware value, n-step greedy returns, γ = 0.95, detached planning head, offline value targets, teacher values in play). An oracle-latent arm (`model.privileged_belief_loss`; cell 96–98%, heading 100% decodable) idled as much or more, so the value/planner was judged the bottleneck.
 - **2026-10-14:** no-op self-loops are a symptom (C1 closed); the heads are exact on no-ops (no phantom reward); the oracle networks' value exceeds 999, which no game can pay, on 36–58% of live steps, and two oracle seeds refuse the gold for it. That pointed to C2, maximisation bias in the backup.
 
+### 2026-10-19 (evening): coverage screen running (user's choice after Step D)
+
+- **User chose the coverage branch** (D1) over the self-predictive latent (D3) and a combined screen.
+- `coverage_games.py` (header: question, method, **pre-registered readout**): a privileged UPPER BOUND on coverage. In the cover arm, 2048 extra games per seed have the heuristic's turn played at every declined distance-2 state, then FORWARD forced; the control arm plays the same seeds with the planner only. Both arms retrain from scratch on the buffer plus their extra games (`objective_ab.py` 2j `--extra-games`), then (i) `feature_localise.py --networks` (decision share M, joint-head glitter ratio, probes at the same declined states; `compare` mode) and (ii) `retrain_play.py` paired cover vs control.
+- Readout: MECHANISM = glitter ratio >= +0.15 and decision share >= +10 points on >= 4 of 5 seeds; PLAY = mean paired >= +50 with the t interval over seeds above 0, unfinished down on >= 4 of 5, deaths up at most 2 points.
+- Chain `runs/wumpus/coverage_chain.sh` (launched 14:22 at `ae39722`; log `runs/wumpus/coverage/chain.log`, sysmon beside it, readout `runs/wumpus/coverage/compare.log` and `play_seed*.log`). Smokes passed: 32-game cover arm (50 overrides), 20-update retrain with extra games, and `--networks` with best.pt's own networks reproducing the base run exactly.
+
 ### 2026-10-19 (afternoon): Step D, feature-level localisation: MIXED, mostly a turn-specific SHIFT (`feature_localise.py`)
 
 - Probes for the factors of the exact P(o' | b, FORWARD) (wall / unvisited ahead, P(gold, pit, live wumpus) ahead, glitter, breeze, stench) trained on each run's buffer, scored on (a) held-out buffer states, (b) the declined roots, (c) the turned latents. 5 seeds of `wumpus_retrain` best.pt; every replay = report.json; header section 4 has the table.
