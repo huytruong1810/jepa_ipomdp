@@ -184,6 +184,29 @@
 #        runs/sweeps/wumpus_retrain (pre-registered there), then 5 seeds.
 #      * FAIL: neither passes -> report per seed (with the probe accuracies, to see whether the term hurt the
 #        latent) and take the next variant (multi-step value equivalence, a reward term) to the user.
+#    - Result 2026-10-18 (runs/wumpus/ve_screen/, chain ve_screen_chain.sh at 712dbe3; ~77 min per retrain, 3 in
+#      parallel; every best.pt replay = report.json). **FAIL: no arm reaches +50 over control on any seed.**
+#                 control (vs best.pt)    VE25 vs control   VE100 vs control   deaths c / 25 / 100     unfinished c / 25 / 100
+#      seed 0     270.0 (+33.3 +- 30.5)   -57.0 +- 36.9     -63.8 +- 36.0      1.0 / 4.7 / 4.3%        64.3 / 63.5 / 64.3%
+#      seed 1     214.7 (+57.9 +- 36.2)    +2.0 +- 26.4     +30.7 +- 26.0      1.8 / 1.4 / 0.8%        69.1 / 69.1 / 67.8%
+#      seed 2     194.3 (-38.8 +- 40.4)   +27.3 +- 34.8     +12.4 +- 43.7      7.2 / 0.4 / 5.7%        60.2 / 69.9 / 62.3%
+#      Probes (held-out pool), cell / heading / gold error / head danger error / head held-out NLL:
+#        control  88 / 93 / .023 / .056 / .269;  87 / 91 / .024 / .070 / .299;  82 / 86 / .023 / .086 / .342
+#        VE25     88 / 93 / .023 / .056 / .273;  86 / 91 / .024 / .080 / .316;  81 / 82 / .024 / .079 / .349
+#        VE100    79 / 70 / .024 / .112 / .320;  81 / 73 / .024 / .115 / .367;  82 / 84 / .023 / .090 / .357
+#    - Reading: at w = 25 the term changes neither the latent (probes within 1-3 points, gold error identical) nor
+#      the unfinished games; the return differences are within the retrain-to-retrain noise (the control alone
+#      moves -39 to +58 against best.pt). At w = 100 it damages the latent (heading -23 / -17 points on seeds 0-1,
+#      danger error doubled, held-out NLL up) without putting gold information into it (gold error unchanged).
+#      The value-of-information gap is not closed by a next-VALUE equivalence term on this latent.
+#    - Mechanism hypothesis (untested): the term matches only V-bar(z_{t+1}); on Wumpus the death penalty and the
+#      gold reward are in the REWARD (r_t), not in the next value, and the learned V-bar at game-over latents is
+#      co-adapted (exact_model_play.py 3a), so the term is blind to the outcomes that matter most and trades
+#      death/danger calibration for value matching (danger error up with w). A Q-equivalent variant would need
+#      observation-conditioned rewards, sum_o P(o)[r(o) + gamma V-bar(tau)] against the realised r + gamma V-bar.
+#    - Also learned: n = 3 retrain screens have retrain-to-retrain noise of ~+-50 per seed (control vs best.pt),
+#      so a +50 bar on 2 of 3 is underpowered for effects below ~+50 (HANDOFF 1c, gap 2). Per the readout: report
+#      and take the next variant to the user.
 #
 # 3. Usage:
 #    uv run python reports/2026-10-02_wumpus_diagnostics/objective_ab.py --representation jepa \
