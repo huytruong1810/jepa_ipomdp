@@ -2,10 +2,16 @@
 
 **The user's goal for the paper (2026-10-17):** "combine state-of-the-art theories into the algorithm to have the strongest publication in deep learning and decision theory and representation learning". Every next step should be tied to a theory and tested by a pre-registered screen; score-chasing by trial and error is out (two weeks of it did not close the gap).
 
-**The next session's job:**
-1. **Ask the user** which way to go after the failed Step C screen (section 0, 2026-10-18 evening). Options, recommended first: (a) the publication-hygiene work of section 1c (freeze a held-out evaluation protocol, add an exact-simulator POMCP reference and a model-free recurrent baseline, add RockSample), which every framing needs and which does not depend on Step C; (b) a Q-equivalent model variant (observation-conditioned rewards, section 0 mechanism hypothesis), screened the same way at higher power (5 seeds).
-- Housekeeping, pre-authorised whenever the machine is free: the slow suite (`uv run pytest -m slow`, ~45 min; not run since `privileged_belief_loss`).
-- Check first: `ps -eo pid,args | grep "[p]ython"`, `uptime` (ipomcp load), `nvidia-smi`.
+**The next session's job (fresh session; nothing is running, everything is pushed):**
+1. **Ask the user which direction to take** (one question, recommended option first). The user moved to a new session before choosing:
+   - **(a) Recommended: the publication groundwork of section 1c**, needed by every framing and independent of Step C. Suggested order, cheapest first:
+     1. Freeze an evaluation protocol: held-out training seeds (e.g. 5-9) and a fresh analysis game seed that no screen has read, the IQM / stratified-bootstrap statistics (rliable), and a confirmatory-vs-exploratory register (append it to section 1c).
+     2. An exact-simulator online planner on Wumpus as the real upper reference: POMCP over `WumpusSimulator` / `step_rules`, with particles drawn from the layout-enumeration belief (`WumpusBeliefTracker`). `exact_model_play.py`'s hybrid model is a related piece: the exact one-step model inside our own search.
+     3. A model-free recurrent baseline (R2D2/DRQN or PPO-LSTM) at matched environment steps.
+     4. RockSample(7,8) as a second real domain (a `FinitePOMDP`-style exact model, exact Bayes filter and SARSOP/alpha-vector references; check that the solver scales or use published values).
+   - **(b) A reward-aware (Q-equivalent) model term** (section 0, 2026-10-18 evening, mechanism hypothesis), screened like `objective_ab.py` 2i but on 5 seeds (n = 3 resolves only effects above ~+50).
+2. Housekeeping, pre-authorised whenever the machine is free: the slow suite (`uv run pytest -m slow`, ~45 min). It has not run since `privileged_belief_loss`; three default-off options have been added since (`value_estimator`, `retrain_every`, `value_equivalent_weight`).
+3. Check first: `ps -eo pid,args | grep "[p]ython"`, `uptime` (ipomcp load; on 2026-10-18 it ran a 6-worker job at load ~15), `nvidia-smi`.
 
 Section 1c is the publication-gap list (self-critique, 2026-10-18): read it before planning experiments. Section 1b holds the working conjectures and the research principles ("taste in research"), including the compute-efficiency rules (updated 2026-10-17). Section 7 lists what failed: do not repeat it.
 
@@ -126,7 +132,7 @@ Stages:
 
 **Where Wumpus stands against the stage-3 goal (2026-10-18):** the latent can now be shown against the exact belief convincingly (agent-history probes cell 87%, heading 92%; random histories 69 / 75%). Playing well is not reached: 200 per game against the heuristic's 573, and ~67% of games end unfinished. The open problem is localised (C9): the learned observation (and, less, reward) head is wrong exactly where it decides whether to enter a new cell; the value and the search are not the blocker.
 
-**Publication framing (2026-10-17, my proposal to the user; not yet agreed in detail).** Three theory-backed findings plus a method:
+**Publication framing (2026-10-17, my proposal to the user; superseded in detail by section 1c's self-critique and preferred framing, 2026-10-18).** Three theory-backed findings plus a method:
 - Representation learning: a JEPA belief filter that matches the exact optimum on Tiger, with span-Hölder error bounds against the exact belief (contribution 3).
 - Two biases that compound in learned belief-space planning: maximisation bias (van Hasselt 2010; double estimation only helps once the model is accurate, C2/C6) and primacy bias (Nikishin et al. 2022; the growing-buffer schedule caps the latent, whole-buffer retraining lifts it, C7).
 - Decision theory: exact-component localisation (exact P, R swapped in at the planner's own states) shows the residual failure is a lost value of information in the model, not value bias or search (C9).
@@ -163,6 +169,9 @@ The user trusts the agent's research judgement (2026-10-10: "run the experiments
 **C4. The current agent's filter is not belief-consistent on uninformative actions.** (Measured 2026-10-15 night: real, 4-7x the oracle latent's drift, but it costs no cell/heading information; not an R1 arm. `noop_drift_cost.py`.) The exact belief is unchanged by a failed GRAB, but the latent moves by half its norm. It is untested as a cause. With the double value in place it is one candidate difference between the agent's latent and the oracle's (which is nearly idempotent on no-ops); a cheap CPU check on stored games can measure it on the double runs.
 
 **Principles that picked the experiments (keep using them):**
+- **When swapping exact parts into a learned planner, keep the learned value everywhere, terminal latents included** (2026-10-18). The learned value is co-adapted with its own model; zeroing it at exact game-over children made the planner bump into walls at the gold (`exact_model_play.py` 3a). A 32-game smoke with per-game trajectories found it in minutes.
+- **Size a new loss term by its gradient share before screening** (2026-10-18): at w = 1 the value-equivalent term was 1-2% of the filter gradient. Measure on trained networks (the zero-initialised value makes such terms vanish at init).
+- **Know the noise floor of the screen** (2026-10-18): two control retrains of the same run differ from best.pt by -39 to +58 per seed, so a 3-seed "+50 on 2 of 3" bar only resolves large effects. Use 5+ seeds, or a paired control per seed, for effects below ~+50.
 - **Tie every step to a theory and to the paper** (user, 2026-10-17). Before proposing an experiment, say which theory it tests and which branch of the readout leads to which method.
 - **Localise with exact components before building a remedy** (2026-10-17). Where an exact model exists, swap exact parts (P, R, terminal flags) into the learned Q at the planner's own declined states, keeping the rest learned. One CPU-scale screen (`q_localise_diag.py`, ~50 min for 5 seeds) located what two weeks of value remedies had not.
 - **Before adding a search edge or option, check whether the tree already dominates it** (2026-10-17). In expectimax, an expanded child's value is max over its actions, so a macro scored by the same model is never above its first action (`macro_reach_diag.py`: void, ~45 min instead of a 5-seed play screen plus training).
@@ -303,13 +312,13 @@ Verdict: not yet a top-venue paper. The method results are weak and from one rea
 ## 3. Current state
 
 **Git**
-- **Everything is pushed** (2026-10-18, through the commit that wrote this file). The working tree is clean. `runs/` is untracked: keep it.
-- **Nothing is running** (2026-10-18; machine idle). The last chains, `runs/wumpus/macro_reach_chain.sh` and `q_localise_chain.sh`, finished on 2026-10-17 (logs `runs/wumpus/{macro_reach,q_localise}_seed{0..4}.log`). Before them `retrain_seeds34_chain.sh` finished at 05:48 (seeds 3-4 + the 5-seed sweep). The machine crashed once on 2026-10-16 ~00:30 (cause unknown, not this project's memory); the chain was relaunched unchanged and finished.
+- **Everything is pushed** (2026-10-18 evening, through the commit that wrote this file). The working tree is clean. `runs/` is untracked: keep it.
+- **Nothing is running** (2026-10-18 22:30). The day's chains all finished: `runs/wumpus/obs_fit_chain.sh` (Step A; logs `obs_fit_seed{0..4}.log`), `exact_play_chain.sh` (Step B; logs `exact_play_{learned,EPR,EP}_seed{0..4}.log`, `exact_play_sysmon.log`; smoke logs `exact_play_smoke_seed0.log` = EPRt, `exact_play_smoke_EPRv_seed0.log` = EPR), `ve_screen_chain.sh` (Step C screen; `runs/wumpus/ve_screen/`). Earlier: `macro_reach_chain.sh`, `q_localise_chain.sh` (2026-10-17), `retrain_seeds34_chain.sh`. The machine crashed once on 2026-10-16 ~00:30 (cause unknown, not this project's memory).
 - Chains of 2026-10-14/15, all finished or stopped on purpose, with logs beside them: `c2_chain.sh` (self-loop v2), `fvi_chain.sh` then `fvi_queue.sh` (FVI screen; `fvi_queue.log` records the relaunches and the stop of current seed 2), `double_chain.sh` (training with `value_estimator=double`, both recipes, then `analyze.py`).
 - **Health checks for any chain:** `cat <chain>.log`; `tail -3 <run>.<diag>.log` (progress lines should advance); `ps -eo pid,etime,args | grep "^ *[0-9]* *[0-9:-]* [^ ]*python[^ ]* \(main.py\|reports/\)"`; `nvidia-smi`; `uptime` (ipomcp load). **Never `pkill -f`** a pattern in your own command line; kill by PID (chain shell, `xargs`, then the python jobs).
 
 **Tests**
-- The fast suite passes: 182 tests (2026-10-16; 3 new in `TestWholeBufferRetrain`), about 1.5 min on an idle machine (6 min under load).
+- The fast suite passes: 185 tests (2026-10-18; 3 new in `TestValueEquivalentTerm`), about 1.5 min on an idle machine (6 min under load).
 - **The slow suite passed 7/7 at `f1e5bbf` on 2026-10-11** (42.5 min; log `runs/slow_suite_f1e5bbf.log`). It covers every option added since 2026-10-05.
 - **Checkpoints from before `52ac3fc` cannot be resumed:** their buffer state has no `greedy` flags (no back-compat, by rule). They still load for analysis (`load_trained_run` reads networks only).
 - **The Tiger acceptance test now trains 6000 updates.** At 3000 the value gate (mean |V − V*| < 8) failed at 3–5 of 9 seeds. The two worst seeds drop to 5.3 and 1.1 at 6000. The seed table is in the test header; the logs are in `runs/tiger_acceptance_seeds/`.
@@ -320,6 +329,8 @@ Verdict: not yet a top-venue paper. The method results are weak and from one rea
 | Path | What |
 |---|---|
 | `runs/sweeps/polyak` | Tiger JEPA, 5 seeds: **the Tiger numbers to cite** |
+| `runs/sweeps/wumpus_retrain/seed{0..4}` | **The newest Wumpus recipe** (retrain + double, 200 ± 44). `analysis/` holds `report.json`, `macro_reach.npz`, `q_localise.npz`, `obs_fit_vs_latent.json` + `obs_fit_*_pfwd.npy` (Step A) and `exact_play_{learned,EPR,EP}.npz` (Step B: per-game returns, rewards, actions) |
+| `runs/wumpus/ve_screen/` | Step C retrain screen: `{control,VE25,VE100}_seed{0,1,2}.pt` (saved networks) + `.returns.npy` (per-game returns), `train_*.log` (probe RESULT lines), `play_seed*.log`, `chain.log`, `sysmon.log` |
 | `runs/sweeps/decoder` | Tiger decoder baseline, 5 seeds |
 | `runs/sweeps/wumpus_current/` | **The Wumpus numbers to cite**: symlinks to the 5 current-agent seeds plus `aggregate.json` (182 ± 62). Re-aggregate with `uv run sweep.py wumpus_current --seeds 0,1,2,3,4 env=wumpus model.representation=decoder model.observation_horizon=5 training.updates_per_collection=64 training.total_episodes=6400 training.store_eval_episodes=true agent.epsilon=0.25 agent.epsilon_min=0.1` |
 | `runs/wumpus/u64_store_eval_eps_decoder_k5_seed{0,1,2,3,4}` | **The current Wumpus agent**, analysed (`analysis/report.json`) with `unfinished_diag` logs. Seeds 0–2 were trained at `f5740e4`, and seeds 3–4 at `f1e5bbf` (default-off options only in between). Seed 0 also has `analysis/latents_umap_input.npz` |
@@ -909,6 +920,14 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 - 2026-10-18: HANDOFF rewrite for the next session (plan Steps A-C, publication framing, new principles).
 
 ## 9. Files touched since `9a9b726` (all pushed)
+
+**Added or changed 2026-10-18**
+- `src/ipomdp/training/trainer.py` (section 2f; `value_equivalent_weight` / `value_equivalent_scale`; `_value_targets_and_children`, `_pair_value_targets_and_children` return the expansion's child values; the public `value_targets` / `pair_value_targets` are unchanged), `training/run.py` (section 15; `RunConfig.value_equivalent_weight`; passes max|R| = value_bound * (1 - gamma)), `experiments/runs.py`, `conf/config.yaml` (`model.value_equivalent_weight: 0.0`). Tiger fingerprint identical at `51abf72`.
+- Tests: `TestValueEquivalentTerm` in `tests/test_training.py`; the field in the `_config`s of `test_training_run.py` and `test_wumpus.py`.
+- Every `runs/**/.hydra/config.yaml` (75) back-filled with `value_equivalent_weight: 0.0` (untracked).
+- `reports/2026-10-02_wumpus_diagnostics/obs_fit_vs_latent.py` (new, Step A), `exact_model_play.py` (new, Step B; `HybridSearchModel`, an exact layout-enumeration one-step model per tree node), `objective_ab.py` (2i and `--set` dotlist overrides), `retrain_play.py` (section 5: several saved sets, paired with the first; per-game returns saved).
+- `runs/wumpus/obs_fit_chain.sh`, `exact_play_chain.sh`, `ve_screen_chain.sh` (untracked).
+- `HANDOFF.md` (sections 0, 1c new, 1b C9, 3, 6, 7, 9), `CLAUDE.md` (project paragraph), memory files.
 
 **Added or changed 2026-10-17 evening**
 - `reports/2026-10-02_wumpus_diagnostics/q_localise_diag.py` (new; result in header 4); `runs/wumpus/q_localise_chain.sh` (untracked); per-seed `analysis/q_localise.npz`.
