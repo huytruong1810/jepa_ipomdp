@@ -11,12 +11,13 @@
 #      fixes its configuration BEFORE any held-out play (PROTOCOL.md, "Frozen choices").
 #
 # 2. Usage:
-#      uv run reports/2026-10-19_eval_protocol/exact_planner_smoke.py <sims> <rollouts> [games]
+#      uv run reports/2026-10-19_eval_protocol/exact_planner_smoke.py <sims> <leaf> <rollouts> [games]
 #    Plays `games` (default 32) of the DEVELOPMENT set: the first games of analysis seed
 #    12345's simulator stream (experiments/wumpus.py), the stream every development number
 #    used, so the result is directly comparable to the heuristic and the learned planner on
 #    the same layouts. Search settings follow conf/env/wumpus.yaml (c_puct 1.25, observation
-#    prune 1e-3, greedy argmax Q). Writes runs/wumpus/exact_planner/smoke_s<sims>_k<rollouts>_n<games>.npz.
+#    prune 1e-3, greedy argmax Q). <leaf> is full_info, zero or rollout (planning/wumpus_exact_model.py,
+#    section 4). Writes runs/wumpus/exact_planner/smoke_s<sims>_<leaf>_k<rollouts>_n<games>.npz.
 #
 # 3. Readout (no pass threshold; this is a budget screen):
 #    - Mean discounted return, win / death / unfinished rates, action mix, seconds per
@@ -41,8 +42,8 @@ from ipomdp.planning import BeliefTreeSearch
 from ipomdp.planning.wumpus_exact_model import ExactWumpusSearchModel
 from ipomdp.training import discounted_returns, play_episodes, stream_seed
 
-sims, rollouts = int(sys.argv[1]), int(sys.argv[2])
-games = int(sys.argv[3]) if len(sys.argv) > 3 else 32
+sims, leaf, rollouts = int(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+games = int(sys.argv[4]) if len(sys.argv) > 4 else 32
 dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 settings = WumpusAnalysisSettings()
 MAX_STEPS, C_PUCT, PRUNE = 50, 1.25, 1e-3
@@ -103,8 +104,9 @@ def summary(name: str, rewards: torch.Tensor, seconds: float | None = None) -> n
     return returns
 
 
-print(f"[{time.strftime('%H:%M:%S')}] exact planner: {sims} simulations, {rollouts} rollouts, {games} development games")
-model = ExactWumpusSearchModel(world, games, sims, MAX_STEPS, rollouts, seed=stream_seed(settings.seed, 5))
+print(f"[{time.strftime('%H:%M:%S')}] exact planner: {sims} simulations, {leaf} leaves, {rollouts} rollouts, "
+      f"{games} development games")
+model = ExactWumpusSearchModel(world, games, sims, MAX_STEPS, leaf, rollouts, seed=stream_seed(settings.seed, 5))
 planner = PlanningAgent(model, BeliefTreeSearch(model, sims, C_PUCT, 0.3, dirichlet_epsilon=0.0,
                                                 seed=stream_seed(settings.seed, 2), observation_prune=PRUNE),
                         games, temperature=0.0, seed=stream_seed(settings.seed, 3), device=dev)
@@ -124,5 +126,5 @@ print(f"paired gap planner - heuristic: {gap.mean():.2f} +- {gap.std() / len(gap
 
 out = Path("runs/wumpus/exact_planner")
 out.mkdir(parents=True, exist_ok=True)
-np.savez(out / f"smoke_s{sims}_k{rollouts}_n{games}.npz", returns=planner_returns, reference=reference_returns,
+np.savez(out / f"smoke_s{sims}_{leaf}_k{rollouts}_n{games}.npz", returns=planner_returns, reference=reference_returns,
          actions=actions.cpu().numpy(), rewards=episodes.rewards[:games].cpu().numpy(), seconds=seconds)

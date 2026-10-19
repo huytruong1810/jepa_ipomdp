@@ -42,8 +42,26 @@
 #      game-over child is worth exactly 0. With an exact model that is correct (the
 #      co-adaptation caveat of exact_model_play.py, header 3a, concerns learned values only).
 #
-# 4. Leaf Values by Monte-Carlo Rollouts (POMCP's estimator):
-#    - A new non-terminal child with k > 0 steps left gets the mean discounted return of
+# 4. Leaf Values (`leaf`; development smoke of 2026-10-19 in
+#    reports/2026-10-19_eval_protocol/exact_planner_smoke.py, 128 development games, heuristic
+#    544 on the same games):
+#    - "full_info" (the reference's leaf): the posterior mean of the KNOWN-LAYOUT value with the
+#      child's remaining window, V(child) = mean over its consistent layouts l of V_k(l, h), where
+#      V_k is the exact k-step full-information value of hunter state h in layout l
+#      (full_information_values: finite-horizon value iteration over 16,380 layouts x 257 hunter
+#      states with the true rules). This is hindsight optimisation (Yoon et al. 2008) and the
+#      leaf upper bound of DESPOT (Somani et al. 2013): optimistic about information beyond the
+#      leaf, while every risk INSIDE the tree is evaluated exactly. It is computed exactly per
+#      branch by a bincount over consistent layouts (no sampling), so it is deterministic.
+#    - "zero": every leaf 0. 50 simulations: 145 per game, 0% deaths, 80% unfinished, FORWARD
+#      on 92% of live steps (walking into walls: a safe bump costs only -1 and an unexpanded
+#      continuation is worth 0, the same as exploring).
+#    - "rollout" (POMCP's estimator), described below. 50 simulations, 8 rollouts: 11 per game,
+#      91% unfinished, a near-uniform action mix. A uniform hunter dies in ~55% of games, so
+#      every leaf looks equally doomed and the argmax is noise; the uninformed rollout policy
+#      is the known weak point of POMCP (Silver & Veness use domain "preferred actions"). The
+#      200-simulation arms were stopped: more search cannot repair the leaf estimator.
+#    - Rollouts: a new non-terminal child with k > 0 steps left gets the mean discounted return of
 #      `rollouts` simulated continuations: each draws a layout uniformly from the child's
 #      consistent set (an exact posterior sample, POMCP's particle) and plays the default
 #      policy on the true rules for the child's remaining k steps.
@@ -52,8 +70,6 @@
 #      (gold in the hunter's cell), SHOOT only with the arrow. That is the uninformed rollout
 #      policy of Silver & Veness (2010) with legal-action pruning, and it uses nothing a real
 #      hunter could not perceive.
-#    - rollouts = 0 sets every leaf to 0 (pure expectimax over the tree with zero leaves), a
-#      cheap alternative the smoke screen compares (reports/2026-10-19_eval_protocol/).
 #    - All rollouts of one expand call run as ONE batch on the device, with a private
 #      torch.Generator, so a search is reproducible and costs ~k batched step_rules calls per
 #      expand rather than per node.
@@ -75,26 +91,66 @@ from ..domain.wumpus import WumpusAction, WumpusBeliefTracker, WumpusState, Wump
 from .search_model import Expansion
 
 CHUNK = 128
+LEAVES = ("full_info", "zero", "rollout")
 _OWN_FIELDS = ("cell", "heading", "arrow", "alive", "done")
+HUNTER_STATES = 257          # cell * 16 + heading * 4 + arrow * 2 + alive (256), and 256 = game over
+
+
+def hunter_index(state: WumpusState) -> Tensor:
+    """Index of the hunter's own state in 0..256 (HUNTER_STATES); 256 for a finished game."""
+    index = state.cell * 16 + state.heading * 4 + state.arrow.long() * 2 + state.wumpus_alive.long()
+    return torch.where(state.done, HUNTER_STATES - 1, index)
+
+
+def full_information_values(world: WumpusWorld, horizon: int) -> Tensor:
+    """
+    V_k(layout, hunter) for k = 0..horizon steps left, float32 (horizon + 1, L, 257): the exact
+    finite-horizon value with the layout KNOWN (section 4), V_0 = 0 and the game-over state worth
+    0, by backward induction with the domain's own step_rules (as
+    reports/2026-10-02_wumpus_diagnostics/full_info_vi.py, which runs it to convergence instead).
+    """
+    num_layouts, device = world.num_layouts, world.device
+    hunters = torch.arange(HUNTER_STATES - 1, device=device)
+    layouts = torch.arange(num_layouts, device=device)[:, None].expand(num_layouts, HUNTER_STATES - 1)
+    h = hunters[None].expand(num_layouts, -1)
+    state = WumpusState(layouts, h // 16, (h // 4) % 4, ((h // 2) % 2).bool(), (h % 2).bool(),
+                        torch.zeros_like(h, dtype=torch.bool))
+    successors, rewards = [], []
+    for a in range(world.num_actions):
+        nxt, _, reward = world.step_rules(state, torch.full_like(h, a))
+        successors.append(hunter_index(nxt))
+        rewards.append(reward.double())
+    successors, rewards = torch.stack(successors, -1).view(num_layouts, -1), torch.stack(rewards, -1)
+    values = torch.zeros(horizon + 1, num_layouts, HUNTER_STATES, dtype=torch.float32, device=device)
+    value = torch.zeros(num_layouts, HUNTER_STATES, dtype=torch.float64, device=device)
+    for k in range(1, horizon + 1):
+        q = rewards + world.discount * value.gather(1, successors).view(num_layouts, HUNTER_STATES - 1, -1)
+        value = torch.cat([q.max(-1).values, value[:, -1:]], 1)
+        values[k] = value.float()
+    return values
 
 
 class ExactWumpusSearchModel:
-    """Exact layout-mask beliefs, exact R and P, rollout leaf values (module header)."""
+    """Exact layout-mask beliefs, exact R and P, exact or rollout leaf values (module header)."""
 
-    def __init__(self, world: WumpusWorld, batch_size: int, num_simulations: int, max_steps: int, rollouts: int,
-                 seed: int):
+    def __init__(self, world: WumpusWorld, batch_size: int, num_simulations: int, max_steps: int, leaf: str,
+                 rollouts: int, seed: int):
         """
         Args:
             world: The Wumpus rules (its device is the model's device).
             batch_size: Number of roots B (parallel games).
             num_simulations: Simulations per search; sizes the registry (one expansion per root and simulation).
             max_steps: The window length; roots start with max_steps steps left (section 3).
-            rollouts: Rollouts per new non-terminal leaf (section 4); 0 for zero leaves.
+            leaf: "full_info", "zero" or "rollout" (section 4).
+            rollouts: Rollouts per new non-terminal leaf; > 0 exactly when leaf is "rollout".
             seed: Seed of the rollout generator.
         """
-        if rollouts < 0 or max_steps < 1 or num_simulations < 1:
-            raise ValueError(f"need rollouts >= 0, max_steps >= 1, num_simulations >= 1; got "
-                             f"{rollouts}, {max_steps}, {num_simulations}.")
+        if leaf not in LEAVES or (rollouts > 0) != (leaf == "rollout") or rollouts < 0:
+            raise ValueError(f"leaf must be one of {LEAVES}, with rollouts > 0 exactly for 'rollout'; got {leaf}, {rollouts}.")
+        if max_steps < 1 or num_simulations < 1:
+            raise ValueError(f"need max_steps >= 1 and num_simulations >= 1; got {max_steps}, {num_simulations}.")
+        self.leaf = leaf
+        self.full_info = full_information_values(world, max_steps).view(-1) if leaf == "full_info" else None
         self.world, self.device = world, world.device
         self.num_actions, self.num_observations, self.discount = world.num_actions, world.num_observations, world.discount
         self.batch, self.max_steps, self.rollouts = batch_size, max_steps, rollouts
@@ -195,12 +251,11 @@ class ExactWumpusSearchModel:
         self.next_id += num * num_a * num_o
         if self.next_id > self.parent.shape[0]:
             raise RuntimeError("node registry full: num_simulations does not match the search.")
-        rewards, probs, live, samples = [], [], [], []
+        rewards, probs, live, samples, leaves = [], [], [], [], []
         for i in range(0, num, CHUNK):
-            r, p, alive, sample = self._exact(ids[i:i + CHUNK], child_ids[i:i + CHUNK])
-            rewards.append(r), probs.append(p), live.append(alive), samples.append(sample)
-        rewards, probs, live = torch.cat(rewards), torch.cat(probs), torch.cat(live)
-        values = torch.zeros(num, num_a, num_o, dtype=torch.float64, device=self.device)
+            r, p, alive, sample, leaf = self._exact(ids[i:i + CHUNK], child_ids[i:i + CHUNK])
+            rewards.append(r), probs.append(p), live.append(alive), samples.append(sample), leaves.append(leaf)
+        rewards, probs, live, values = torch.cat(rewards), torch.cat(probs), torch.cat(live), torch.cat(leaves)
         # Chunks are contiguous node ranges and each chunk's samples are in (g, A, O) row-major order,
         # so their concatenation is in the order of values[live].
         samples = [s for s in samples if s is not None]
@@ -208,11 +263,12 @@ class ExactWumpusSearchModel:
             values[live] = self._rollout(child_ids[live], torch.cat(samples))
         return Expansion(rewards, probs, child_ids.unsqueeze(-1), values)
 
-    def _exact(self, ids: Tensor, child_ids: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor | None]:
+    def _exact(self, ids: Tensor, child_ids: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor | None, Tensor]:
         """
         Exact R(b, a) (g, A), P(o | b, a) (g, A, O), the live-leaf flags (g, A, O) (reachable, not
-        game over, steps left) and, for every live child in (g, A, O) order, `rollouts` layouts
-        drawn from its consistent set (n_live, rollouts); registers the children.
+        game over, steps left), for every live child in (g, A, O) order `rollouts` layouts drawn
+        from its consistent set (n_live, rollouts) or None, and the exact leaf values (g, A, O)
+        (full_info; zeros otherwise, rollouts fill them in expand); registers the children.
         """
         g, num_a, num_o = ids.shape[0], self.num_actions, self.num_observations
         masks = self._materialise(ids)                                                 # (g, L)
@@ -227,6 +283,7 @@ class ExactWumpusSearchModel:
         rewards = torch.zeros(g, num_a, dtype=torch.float64, device=self.device)
         probs = torch.zeros(g, num_a, num_o, dtype=torch.float64, device=self.device)
         live = torch.zeros(g, num_a, num_o, dtype=torch.bool, device=self.device)
+        leaf_values = torch.zeros(g, num_a, num_o, dtype=torch.float64, device=self.device)
         samples = []
         for a in range(num_a):
             nxt, obs, reward = self.world.step_rules(hypotheses, torch.full((g, 1), a, dtype=torch.int64,
@@ -248,6 +305,13 @@ class ExactWumpusSearchModel:
             for k, field in zip(_OWN_FIELDS, (nxt.cell, nxt.heading, nxt.arrow, nxt.wumpus_alive, nxt.done)):
                 self.own[k][cid] = pick(field).to(torch.int8)
             live[:, a] = (branch.view(g, num_o) > 0) & ~pick(nxt.done) & (child_steps > 0).unsqueeze(1)
+            if self.leaf == "full_info":
+                # Posterior mean of V_k(l, h) per branch: one bincount weighted by the table entries.
+                entry = ((child_steps.long().unsqueeze(1) * self.num_layouts + self.layouts) * HUNTER_STATES
+                         + hunter_index(nxt))
+                sums = torch.bincount(key, weights=self.full_info[entry[masks]].double(), minlength=g * num_o)
+                mean = sums.view(g, num_o) / branch.view(g, num_o).clamp(min=1)
+                leaf_values[:, a] = torch.where(live[:, a], mean, 0.0)
             if self.rollouts > 0 and bool(live[:, a].any()):
                 # Uniform posterior samples per live branch: sort the consistent layouts by branch key,
                 # then draw offsets inside each branch's contiguous run.
@@ -258,13 +322,13 @@ class ExactWumpusSearchModel:
                            * branch[branches, None]).long()
                 samples.append((a, sorted_layouts[starts[branches, None] + offsets]))
         if not samples:
-            return rewards, probs, live, None
+            return rewards, probs, live, None, leaf_values
         # Reorder the per-action samples into (g, A, O) row-major order, the order of values[live].
         flat = torch.cat([s for _, s in samples])
         action_of = torch.cat([torch.full((s.shape[0],), a, device=self.device) for a, s in samples])
         node, obs_index = torch.cat([torch.nonzero(live[:, a]) for a, _ in samples]).unbind(1)
         order = torch.argsort(node * num_a * num_o + action_of * num_o + obs_index)
-        return rewards, probs, live, flat[order]
+        return rewards, probs, live, flat[order], leaf_values
 
     def _rollout(self, leaves: Tensor, layouts: Tensor) -> Tensor:
         """Mean discounted return of the default policy from each leaf (section 4); leaves (n,), layouts (n, K)."""

@@ -497,7 +497,7 @@ class TestExactSearchModel:
     def test_exact_rewards_and_probabilities_match_a_per_node_reference(self, world):
         from ipomdp.planning.wumpus_exact_model import ExactWumpusSearchModel
         first, actions, observations, _ = _random_play(world, 6, 5, seed=3)
-        model = ExactWumpusSearchModel(world, 6, num_simulations=4, max_steps=50, rollouts=0, seed=0)
+        model = ExactWumpusSearchModel(world, 6, num_simulations=4, max_steps=50, leaf="zero", rollouts=0, seed=0)
         states = model.initial_states(6, first)
         for t in range(5):
             states = model.update(states, actions[:, t], observations[:, t])
@@ -519,7 +519,7 @@ class TestExactSearchModel:
     def test_the_window_ends_the_search(self, world):
         from ipomdp.planning.wumpus_exact_model import ExactWumpusSearchModel
         first, _, _, _ = _random_play(world, 4, 1, seed=4)
-        model = ExactWumpusSearchModel(world, 4, num_simulations=4, max_steps=1, rollouts=8, seed=0)
+        model = ExactWumpusSearchModel(world, 4, num_simulations=4, max_steps=1, leaf="rollout", rollouts=8, seed=0)
         root = model.expand(model.initial_states(4, first))
         assert bool((root.next_values == 0.0).all())                     # children have 0 steps left
         leaf = model.expand(root.next_states[torch.arange(4), A.TURN_LEFT, first])   # a turn keeps the percepts
@@ -530,7 +530,7 @@ class TestExactSearchModel:
         # its exact value is the mean over consistent layouts of the mean reward over allowed actions.
         from ipomdp.planning.wumpus_exact_model import ExactWumpusSearchModel
         first, _, _, _ = _random_play(world, 2, 1, seed=5)
-        model = ExactWumpusSearchModel(world, 2, num_simulations=4, max_steps=2, rollouts=4000, seed=1)
+        model = ExactWumpusSearchModel(world, 2, num_simulations=4, max_steps=2, leaf="rollout", rollouts=4000, seed=1)
         root = model.expand(model.initial_states(2, first))
         for row in range(2):
             o = int(root.observation_probs[row, A.FORWARD].argmax())
@@ -561,7 +561,7 @@ class TestExactSearchModel:
         from ipomdp.planning.wumpus_exact_model import ExactWumpusSearchModel
         layout = _layout(world, (10, 11), wumpus=15, gold=4)          # gold straight ahead of the start (North)
         state = world.initial_state(torch.tensor([layout]))
-        model = ExactWumpusSearchModel(world, 1, num_simulations=10, max_steps=50, rollouts=4, seed=0)
+        model = ExactWumpusSearchModel(world, 1, num_simulations=10, max_steps=4, leaf="full_info", rollouts=0, seed=0)
         states = model.initial_states(1, world.initial_observation(state))
         state, observation, _ = world.step_rules(state, torch.tensor([int(A.FORWARD)]))
         states = model.update(states, torch.tensor([int(A.FORWARD)]), observation)
@@ -569,3 +569,38 @@ class TestExactSearchModel:
         policy = BeliefTreeSearch(model, 10, 1.25, 0.3, dirichlet_epsilon=0.0, seed=0,
                                   observation_prune=1e-3).search(states, temperature=0.0)
         assert int(policy.argmax()) == A.GRAB
+
+    def test_full_information_values(self, world):
+        from ipomdp.planning.wumpus_exact_model import full_information_values, hunter_index
+        values = full_information_values(world, 3)
+        layout = _layout(world, (10, 11), wumpus=15, gold=4)          # gold straight ahead of the start (North)
+        start = world.initial_state(torch.tensor([layout]))
+        on_gold, _, _ = world.step_rules(start, torch.tensor([int(A.FORWARD)]))
+        assert float(values[0, layout, hunter_index(start)]) == 0.0
+        assert float(values[1, layout, hunter_index(on_gold)]) == pytest.approx(999.0)
+        assert float(values[2, layout, hunter_index(start)]) == pytest.approx(-1.0 + DISCOUNT * 999.0, rel=1e-6)
+        assert bool((values[:, :, -1] == 0.0).all())                  # game over is worth 0
+
+    def test_full_information_leaves_are_posterior_means(self, world):
+        from ipomdp.planning.wumpus_exact_model import ExactWumpusSearchModel, full_information_values, hunter_index
+        first, actions, observations, _ = _random_play(world, 3, 2, seed=6)
+        model = ExactWumpusSearchModel(world, 3, num_simulations=4, max_steps=5, leaf="full_info", rollouts=0, seed=0)
+        states = model.initial_states(3, first)
+        for t in range(2):
+            states = model.update(states, actions[:, t], observations[:, t])
+        root = model.expand(states)
+        table = full_information_values(world, 5)
+        for row in range(3):
+            mask = model._unpack(model.bank[model.bank_row[states[row]]])[0]
+            layouts = mask.nonzero().squeeze(1)
+            own = {f: int(model.own[f][row]) for f in ("cell", "heading", "arrow", "alive", "done")}
+            state = WumpusState(layouts, *(torch.full_like(layouts, own[f]).to(dtype) for f, dtype in
+                                           (("cell", torch.int64), ("heading", torch.int64), ("arrow", torch.bool),
+                                            ("alive", torch.bool), ("done", torch.bool))))
+            for a in range(world.num_actions):
+                nxt, obs, _ = world.step_rules(state, torch.full_like(layouts, a))
+                for o in obs.unique().tolist():
+                    keep = obs == o
+                    expected = 0.0 if bool(nxt.done[keep][0]) else float(
+                        table[2, layouts[keep], hunter_index(nxt)[keep]].double().mean())
+                    assert float(root.next_values[row, a, o]) == pytest.approx(expected, abs=1e-3)
