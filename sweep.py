@@ -54,6 +54,9 @@
 #      must come from the sweep's analysis seed (checked) and be played on the same games
 #      (checked against the heuristic's per-game returns, experiments/aggregate.py section 6).
 #      It changes the aggregate only, so it is not part of the recorded condition.
+#    - --baseline-runs (Wumpus) adds the model-free baseline (PROTOCOL.md C-c), trained per seed by
+#      reports/2026-10-19_eval_protocol/recurrent_dqn_baseline.py: seed k's games from
+#      <dir>/seed<k>/<analysis output>/games.npz, same checks, aggregate only.
 # ==============================================================================
 
 import argparse
@@ -124,6 +127,8 @@ def main() -> None:
                         help="Wumpus only: analysis directory under each seed (section 5; default analysis).")
     parser.add_argument("--exact-planner-games", type=Path, default=None,
                         help="Wumpus only: the exact planner's games.npz of the same analysis seed (section 6).")
+    parser.add_argument("--baseline-runs", type=Path, default=None,
+                        help="Wumpus only: runs/baselines/<name>, read seed<k>/<analysis output>/games.npz (section 5).")
     parser.add_argument("overrides", nargs="*", help="Hydra overrides passed to every main.py run.")
     args = parser.parse_intermixed_args()
     for override in args.overrides:
@@ -142,8 +147,8 @@ def main() -> None:
         output = settings.output
         analyze = analyze_wumpus_run
     else:
-        if args.analysis_output is not None or args.exact_planner_games is not None:
-            raise ValueError("--analysis-output and --exact-planner-games apply to Wumpus World only.")
+        if args.analysis_output is not None or args.exact_planner_games is not None or args.baseline_runs is not None:
+            raise ValueError("--analysis-output, --exact-planner-games and --baseline-runs apply to Wumpus World only.")
         output = "analysis"
         tolerance = defaults.solver_tolerance if args.solver_tolerance is None else args.solver_tolerance
         settings = AnalysisSettings(args.episodes, tolerance, args.mlp_probe_steps, args.analysis_seed)
@@ -180,7 +185,15 @@ def main() -> None:
             if int(exact_planner["analysis_seed"]) != settings.seed:
                 raise ValueError(f"{args.exact_planner_games} was played on analysis seed "
                                  f"{int(exact_planner['analysis_seed'])}, not {settings.seed}.")
-        hierarchical = aggregate_games(games, exact_planner)
+        baseline = None
+        if args.baseline_runs is not None:
+            baseline = []
+            for seed in args.seeds:
+                with np.load(args.baseline_runs / f"seed{seed}" / output / "games.npz") as rows:
+                    baseline.append(dict(rows))
+                if int(baseline[-1]["analysis_seed"]) != settings.seed:
+                    raise ValueError(f"{args.baseline_runs}/seed{seed} was analysed on another analysis seed.")
+        hierarchical = aggregate_games(games, exact_planner, baseline)
     aggregate = {"domain": domain, "seeds": args.seeds, **reference,
                  "metrics": {name: asdict(stat) for name, stat in statistics.items()},
                  "hierarchical": {name: asdict(stat) for name, stat in hierarchical.items()}}

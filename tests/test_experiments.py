@@ -176,6 +176,13 @@ class TestRobustStatistics:
         exact["reference_risk0.4.return"] = heuristic[::-1].copy()
         with pytest.raises(ValueError):
             aggregate_games(games, exact)
+        baseline = [{"recurrent_dqn.return": g["learned_planner.return"] - 2.0, "recurrent_dqn.won": g["learned_planner.won"],
+                     "recurrent_dqn.died": g["learned_planner.died"], "reference_risk0.4.return": heuristic}
+                    for g in games]
+        gap = aggregate_games(games, baseline=baseline)["gap/learned_planner - recurrent_dqn"]
+        assert gap.mean == pytest.approx(2.0) and gap.ci95 == pytest.approx((2.0, 2.0))
+        with pytest.raises(ValueError):
+            aggregate_games(games, baseline=baseline[:2])
 
 
 class TestSweepCondition:

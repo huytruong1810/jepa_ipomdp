@@ -67,6 +67,9 @@
 #      and the paired gap holds both. Pairing is verified, not assumed: the planner file carries
 #      the heuristic's per-game returns on the same rows, which must equal every seed's
 #      reference_risk0.4.return exactly (the heuristic is deterministic given the layout).
+#    - The model-free baseline (baselines/recurrent_dqn.py; PROTOCOL.md C-c) is trained per
+#      training seed: aggregate_games(..., baseline=[rows per seed]) merges seed k's baseline rows
+#      into seed k's games (same pairing check) and adds BASELINE_GAME_METRICS.
 # ==============================================================================
 
 from dataclasses import dataclass
@@ -219,11 +222,29 @@ EXACT_PLANNER_GAME_METRICS = {
 }
 
 
+# Added when baseline rows are given per seed (section 6); "recurrent_dqn.*" come from each seed's baseline games.npz.
+BASELINE_GAME_METRICS = {
+    "return/recurrent_dqn": lambda g: g["recurrent_dqn.return"],
+    "win_rate/recurrent_dqn": lambda g: g["recurrent_dqn.won"].astype(np.float64),
+    "death_rate/recurrent_dqn": lambda g: g["recurrent_dqn.died"].astype(np.float64),
+    "unfinished_rate/recurrent_dqn": lambda g: (~g["recurrent_dqn.won"] & ~g["recurrent_dqn.died"]).astype(np.float64),
+    "gap/learned_planner - recurrent_dqn": lambda g: g["learned_planner.return"] - g["recurrent_dqn.return"],
+}
+
+
+def _check_pairing(seed_games: dict[str, np.ndarray], other: dict[str, np.ndarray], what: str) -> None:
+    if not np.array_equal(seed_games["reference_risk0.4.return"], other["reference_risk0.4.return"]):
+        raise ValueError(f"{what} was not played on the same games: the heuristic's per-game returns differ "
+                         "(another analysis seed or game count).")
+
+
 def aggregate_games(games: list[dict[str, np.ndarray]],
-                    exact_planner: dict[str, np.ndarray] | None = None) -> dict[str, HierarchicalStatistic]:
+                    exact_planner: dict[str, np.ndarray] | None = None,
+                    baseline: list[dict[str, np.ndarray]] | None = None) -> dict[str, HierarchicalStatistic]:
     """
-    Section 6: one games.npz (as a dict of arrays) per seed of a Wumpus sweep, and optionally the
-    exact planner's games.npz of the same analysis seed (paired game by game; checked here).
+    Section 6: one games.npz (as a dict of arrays) per seed of a Wumpus sweep; optionally the
+    exact planner's games.npz of the same analysis seed and one baseline games.npz per seed (in
+    the sweep's seed order). Both are paired game by game, which is checked here.
     """
     lengths = {len(seed_games["learned_planner.return"]) for seed_games in games}
     if len(lengths) != 1:
@@ -231,12 +252,18 @@ def aggregate_games(games: list[dict[str, np.ndarray]],
     metrics = dict(WUMPUS_GAME_METRICS)
     if exact_planner is not None:
         for index, seed_games in enumerate(games):
-            if not np.array_equal(seed_games["reference_risk0.4.return"], exact_planner["reference_risk0.4.return"]):
-                raise ValueError(f"Seed entry {index} was not played on the exact planner's games: the heuristic's "
-                                 "per-game returns differ (another analysis seed or game count).")
+            _check_pairing(seed_games, exact_planner, f"Seed entry {index} vs the exact planner")
         games = [{**seed_games, **{k: v for k, v in exact_planner.items() if k.startswith("exact_planner.")}}
                  for seed_games in games]
         metrics.update(EXACT_PLANNER_GAME_METRICS)
+    if baseline is not None:
+        if len(baseline) != len(games):
+            raise ValueError(f"{len(baseline)} baseline seeds for {len(games)} sweep seeds.")
+        for index, (seed_games, rows) in enumerate(zip(games, baseline)):
+            _check_pairing(seed_games, rows, f"Seed entry {index} vs its baseline")
+        games = [{**seed_games, **{k: v for k, v in rows.items() if k.startswith("recurrent_dqn.")}}
+                 for seed_games, rows in zip(games, baseline)]
+        metrics.update(BASELINE_GAME_METRICS)
     return {name: hierarchical_bootstrap(np.stack([metric(seed_games) for seed_games in games]))
             for name, metric in metrics.items()}
 
