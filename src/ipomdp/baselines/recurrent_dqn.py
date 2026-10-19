@@ -57,6 +57,15 @@
 #    - Defaults follow R2D2 where it applies: Adam lr 1e-4 with eps 1e-3, gradient clip 40,
 #      n = 5, gamma = the domain's 0.99. The screen varies lr and n on development seeds and
 #      records the chosen setting here.
+#    - Screen result (2026-10-19; training seeds 0-2, the 512 development games of analysis seed
+#      12345; best-network return per seed, mean +- standard error; runs/baselines/r2d2_lr*_n*):
+#        lr 1e-4, n 5  (R2D2):  65 / 70 / 126 -> 87.2 +- 19.6 (win 12-19%, deaths 0-1%)
+#        lr 1e-4, n 10:        99 / 73 / 102 -> 91.1 +-  9.2
+#        lr 3e-4, n 5:         22 / 97 /   4 -> 40.8 +- 28.7 (final networks -69 / -168 / -49, deaths up to 12%)
+#        lr 3e-4, n 10:        59 / 58 /  32 -> 49.8 +-  8.9
+#      CHOSEN by the registered rule: the R2D2 defaults (lr 1e-4, n 5), since the best arm (n 10)
+#      lies within one standard error of them. lr 3e-4 destabilises the learner (final networks
+#      die), so the faster rate is not an untried lever. Fixed for the held-out runs.
 # ==============================================================================
 
 from dataclasses import dataclass
