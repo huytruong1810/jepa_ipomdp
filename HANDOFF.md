@@ -30,6 +30,21 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
 - **Before 2026-10-14** (sections 5.6–5.9): every value-side remedy failed (time-aware value, n-step greedy returns, γ = 0.95, detached planning head, offline value targets, teacher values in play). An oracle-latent arm (`model.privileged_belief_loss`; cell 96–98%, heading 100% decodable) idled as much or more, so the value/planner was judged the bottleneck.
 - **2026-10-14:** no-op self-loops are a symptom (C1 closed); the heads are exact on no-ops (no phantom reward); the oracle networks' value exceeds 999, which no game can pay, on 36–58% of live steps, and two oracle seeds refuse the gold for it. That pointed to C2, maximisation bias in the backup.
 
+### 2026-10-19: publication groundwork (user's choice; HANDOFF 1c items 1-2)
+
+- **Frozen evaluation protocol** (`3f41017`; `reports/2026-10-19_eval_protocol/PROTOCOL.md`). Held-out set = training seeds 5-9 + analysis seed 20261019 into `analysis_heldout/`. `games.npz` (per-game returns and outcome flags per agent) next to every new report. Aggregates add the IQM over seeds with a bootstrap CI and a hierarchical bootstrap (seeds, then games; paired per game for gaps), `aggregate.py` section 6. The seed-0 development report was reproduced exactly.
+- **Running** (`runs/wumpus/heldout_chain.sh`, launched 23:20 2026-10-18, sysmon `heldout_sysmon.log`):
+  - (i) the confirmatory sweep `runs/sweeps/wumpus_retrain_heldout` (retrain + double recipe, seeds 5-9; ~7 min per collection under ipomcp load ~25-35, so ~12 h per seed);
+  - (ii) the exploratory re-analysis of development seeds 0-4 on the held-out games, `runs/sweeps/wumpus_retrain_devseeds_heldoutgames` (symlinks to the same runs; aggregate goes to `aggregate_analysis_heldout.json`).
+  - Do not read the held-out sweep's numbers before C-a/C-b are read as registered.
+- **Exact-belief online planner** (`fdd8866`, `33f6f6e`; `planning/wumpus_exact_model.py`): the agent's own BeliefTreeSearch with the true rules over exact layout-mask beliefs (bit-packed registry, steps-left window, exact R/P by bincount).
+  - Leaf screen on 128 development games (heuristic 544 on them; `exact_planner_smoke.py`):
+    - zero leaves: 145 (FORWARD into walls);
+    - uninformed POMCP rollouts: 11 (all leaves look doomed; 200-sim arms stopped);
+    - **full-information (hindsight-optimisation) leaf: 335 at 50 sims, 424 ± 41 at 200 sims** (win 56%, deaths 2.3%, unfinished 41%; paired -120 ± 28 vs the heuristic).
+  - 1000 sims running (`exact_smoke_s1000_full_info.log`); the choice rule in the smoke header then fixes the configuration before any held-out play.
+  - Reading so far: a standard exact-model planner beats the learned agent by ~+200 but stays below the hand-written heuristic. The QMDP-style leaf undervalues information-gathering risks (0 deaths, many unfinished games at 50 sims). Cite both references.
+
 ### 2026-10-18 evening: Step C, value-equivalent observation term, FAILS its retrain screen
 
 - **Built** (`51abf72`): `model.value_equivalent_weight` w (trainer.py 2f, run.py 15): w * mean(((sum_o P(o | z_t, a_t) sg V-bar(tau(z_t, a_t, o)) - sg V-bar(z_{t+1})) / max|R|)^2), gradients through the observation head into the filter, decoder only; branch values reused from the value-target expansion. Default off; Tiger fingerprint identical (both representations, max and double); fast suite 185 passed; every run's `.hydra/config.yaml` back-filled with 0.0.
