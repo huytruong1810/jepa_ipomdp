@@ -26,6 +26,12 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
 - **Before 2026-10-14** (sections 5.6–5.9): every value-side remedy failed (time-aware value, n-step greedy returns, γ = 0.95, detached planning head, offline value targets, teacher values in play). An oracle-latent arm (`model.privileged_belief_loss`; cell 96–98%, heading 100% decodable) idled as much or more, so the value/planner was judged the bottleneck.
 - **2026-10-14:** no-op self-loops are a symptom (C1 closed); the heads are exact on no-ops (no phantom reward); the oracle networks' value exceeds 999, which no game can pay, on 36–58% of live steps, and two oracle seeds refuse the gold for it. That pointed to C2, maximisation bias in the backup.
 
+### 2026-10-19 (afternoon): Step D running (`feature_localise.py`)
+
+- Script and pre-registered readout (D1 shift / D2 composition / D3 representation) in its header; one pre-launch correction (the majority margin applies on the buffer set only; recorded in the header). An 8-game CPU smoke ran end to end (35 states, not read).
+- Chain `runs/wumpus/feature_localise_chain.sh` waits for the exact-planner play (PID 575725) to free GPU memory, then runs seeds 0-4 on the GPU (logs `runs/wumpus/feature_localise_seed{0..4}.log`, readout `runs/wumpus/feature_localise_summary.log`, sysmon `feature_localise_sysmon.log`). Outputs per seed in `<run>/analysis/`: `feature_localise.json/.npz` and `declined_states.pt` (declined root and turned latents with exact targets, for later method screens without a replay).
+- CPU is not an option for the replay: ~8 s per decision at 8 games, and CPU float paths may not reproduce report.json.
+
 ### 2026-10-19 (later): back to algorithm design (user decision)
 
 - I asked whether to plan RockSample (groundwork item 4). The user asked why we were adding a domain and whether the current design and results were good. My answer: no. Tiger is solved but a toy. On Wumpus the agent makes ~35% of the heuristic and the learned model costs ~+200 per game (Step B), and a second domain would only replicate that weakness. **User: "let's go back to algorithm design and improvement."** RockSample is shelved until the method works; the groundwork (protocol, exact planner, R2D2-lite) becomes the test bench.
