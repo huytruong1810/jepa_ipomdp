@@ -45,6 +45,13 @@
 #      (c) the declined TURNED latents. Binary factors: accuracy (prediction > 0.5) against the majority class of
 #      the TRAINING buffer; probability factors: mean abs error against the training-buffer mean as a constant.
 #      Also the calibration ratio mean(pred) / mean(exact), and the composed glitter (1 - wall^) * gold^ at (c).
+#    - --networks <saved .pt> (coverage_games.py readout (i), 2026-10-19): the states are still selected by the
+#      best.pt replay; then every network is replaced by the saved retrained set, the root latents are recomputed
+#      from the replayed histories with its acting filter (asserted equal to the planner's own with best.pt), and
+#      everything below uses the retrained networks. The probe data stay the same base-buffer slots for every
+#      arm. Adds q_localise's decision share M at (c) (the joint arm must reproduce q_localise.npz with best.pt).
+#      Outputs carry the suffix _<saved stem> (e.g. _cover_seed0); compare mode: <this> compare control cover <runs...>
+#      reads feature_localise_<arm>_<run name>.json.
 #    - Outputs in <run>/analysis/: feature_localise.json (summary), feature_localise.npz (per-row predictions and
 #      targets at (b) and (c)), declined_states.pt (root and turned latents, o_turn, exact P(o' | FORWARD) at both,
 #      factors, row metadata) so later method screens at these states skip the 512-game replay.
@@ -117,6 +124,27 @@ def decodable(m: dict, name: str, key: str) -> bool:
     return m["mae"] <= 0.05 and m["mae"] <= 0.5 * m["mae_constant"]
 
 
+if sys.argv[1] == "compare":
+    # coverage_games.py section 3: cover - control at (c), per seed.
+    control_stem, cover_stem = sys.argv[2], sys.argv[3]
+    for run in map(Path, sys.argv[4:]):
+        a = {stem: json.loads((run / "analysis" / f"feature_localise_{stem}_{run.name}.json").read_text())
+             for stem in (control_stem, cover_stem)}
+        get = lambda stem, k: a[stem][k]  # noqa: E731
+        d_glitter = get(cover_stem, "joint_glitter_ratio_c") - get(control_stem, "joint_glitter_ratio_c")
+        d_share = get(cover_stem, "decision_share_M") - get(control_stem, "decision_share_M")
+        print(f"{run.name}: joint glitter ratio {get(control_stem, 'joint_glitter_ratio_c'):.2f} -> "
+              f"{get(cover_stem, 'joint_glitter_ratio_c'):.2f} ({d_glitter:+.2f}); decision share M "
+              f"{get(control_stem, 'decision_share_M'):.3f} -> {get(cover_stem, 'decision_share_M'):.3f} "
+              f"({100 * d_share:+.1f} pts); TV median {get(control_stem, 'joint_tv_median_c'):.3f} -> "
+              f"{get(cover_stem, 'joint_tv_median_c'):.3f}; probe (c) gold ratio "
+              f"{a[control_stem]['mlp']['c']['gold']['calibration']:.2f} -> {a[cover_stem]['mlp']['c']['gold']['calibration']:.2f}, "
+              f"unvisited {a[control_stem]['mlp']['c']['unvisited']['acc']:.3f} -> "
+              f"{a[cover_stem]['mlp']['c']['unvisited']['acc']:.3f}; (a) unvisited "
+              f"{a[control_stem]['mlp']['a']['unvisited']['acc']:.3f} -> {a[cover_stem]['mlp']['a']['unvisited']['acc']:.3f}"
+              f"; MECHANISM {'pass' if d_glitter >= 0.15 and d_share >= 0.10 else 'fail'}")
+    sys.exit(0)
+
 if sys.argv[1] == "summary":
     # Section 3's readout over the seeds' feature_localise.json files.
     rows, verdicts = [], []
@@ -153,9 +181,15 @@ from ipomdp.planning import BeliefTreeSearch  # noqa: E402
 from ipomdp.training import discounted_returns, play_episodes, stream_seed  # noqa: E402
 from ipomdp.training.checkpointing import load_checkpoint  # noqa: E402
 
-run_dir, dev = Path(sys.argv[1]), torch.device(sys.argv[2])
+args = sys.argv[1:]
+networks_path = None
+if "--networks" in args:
+    i = args.index("--networks")
+    networks_path = Path(args[i + 1])
+    del args[i:i + 2]
+run_dir, dev = Path(args[0]), torch.device(args[1])
 settings = WumpusAnalysisSettings()
-n = int(sys.argv[3]) if len(sys.argv) > 3 else settings.episodes
+n = int(args[2]) if len(args) > 2 else settings.episodes
 full = n == settings.episodes
 trained = load_trained_run(run_dir, dev)
 world, run, cfg = trained.setup.domain, trained.run, trained.cfg
@@ -324,6 +358,29 @@ del planner
 
 rows = rec.rows
 z_root = torch.stack([r["z"] for r in rows])
+
+
+def history_latents() -> torch.Tensor:
+    """Acting-filter latents z_0..z_T (n, T + 1, D) of the replayed analysis games, float32, no autocast."""
+    with torch.no_grad():
+        return run.acting_filter.unroll(F.one_hot(episodes.actions, NUM_A).float(),
+                                        F.one_hot(episodes.observations, NUM_O).float(),
+                                        F.one_hot(episodes.initial_observations, NUM_O).float()).float()
+
+
+games_idx = torch.tensor([r["game"] for r in rows], device=dev)
+steps_idx = torch.tensor([r["t"] for r in rows], device=dev)
+if (history_latents()[games_idx, steps_idx] - z_root).abs().max() > 1e-4:
+    raise RuntimeError("Unrolled history latents do not reproduce the planner's own at the declined states.")
+if networks_path is not None:
+    states = torch.load(networks_path, map_location=dev)
+    if set(states) != set(run.networks):
+        raise ValueError(f"saved networks {sorted(states)} do not match the run's {sorted(run.networks)}.")
+    for name, net in run.networks.items():
+        net.load_state_dict(states[name])
+    z_root = history_latents()[games_idx, steps_idx]
+    print(f"  networks {networks_path}: root latents recomputed from the histories", flush=True)
+base_mode = networks_path is None
 o_turn, z_turn, p_joint = [], [], []
 for start in range(0, len(rows), CHUNK):
     batch = rows[start:start + CHUNK]
@@ -347,8 +404,8 @@ for r in rows:
     turn_p.append(p); turn_f.append(f)
 root_p, root_f, turn_p, turn_f = map(np.array, (root_p, root_f, turn_p, turn_f))
 tv_joint = 0.5 * np.abs(p_joint - turn_p).sum(1)
-if full:
-    saved = np.load(run_dir / "analysis" / "q_localise.npz")
+saved = np.load(run_dir / "analysis" / "q_localise.npz") if full else None
+if full and base_mode:
     if np.abs(tv_joint - saved["tv_fwd"]).max() > 1e-4:
         raise RuntimeError("The joint head at the turned latents does not reproduce q_localise.npz's tv_fwd.")
 print(f"  turned latents: joint-head TV median {np.median(tv_joint):.3f}; exact glitter at (c) "
@@ -358,7 +415,62 @@ torch.save({"z_root": z_root.cpu(), "z_turn": z_turn.cpu(), "o_turn": torch.tens
             "factors_root": torch.from_numpy(root_f), "factors_turn": torch.from_numpy(turn_f), "factor_names": FACTORS,
             "meta": [{k: r[k] for k in ("game", "t", "chosen", "turn", "own", "visited")} for r in rows],
             "layouts": [r["layouts"].cpu() for r in rows]},
-           run_dir / "analysis" / ("declined_states.pt" if full else "declined_states_smoke.pt"))
+           run_dir / "analysis" / ("declined_states_smoke.pt" if not full else "declined_states.pt" if base_mode
+                                   else f"declined_states_{networks_path.stem}.pt"))
+
+def pruned(probs: np.ndarray) -> np.ndarray:
+    """The search's branch weights over all |O| (planning/mcts.py section 6), along the last axis."""
+    if PRUNE == 0.0:
+        return probs
+    kept = np.where(probs >= PRUNE, probs, 0.0)
+    return kept / kept.sum(-1, keepdims=True)
+
+
+def expand_np(latents_: torch.Tensor):
+    """model.expand, chunked; numpy rewards (N, A), probs (N, A, O), values (N, A, O) and the child latents."""
+    rs, ps, vs, zs = [], [], [], []
+    for i in range(0, latents_.shape[0], CHUNK):
+        with torch.no_grad():
+            e = model.expand(latents_[i:i + CHUNK])
+        rs.append(e.rewards.double().cpu().numpy())
+        ps.append(e.observation_probs.double().cpu().numpy())
+        vs.append(e.next_values.double().cpu().numpy())
+        zs.append(e.next_states)
+    return np.concatenate(rs), np.concatenate(ps), np.concatenate(vs), torch.cat(zs)
+
+
+def arm_m() -> tuple[np.ndarray, np.ndarray]:
+    """q_localise's arm M (depth-2 expectimax, every part learned) at the root latents: Q_mac, Q2(chosen)."""
+    q_mac, q_cho = [], []
+    for start_ in range(0, len(rows), CHUNK):
+        batch, turns = rows[start_:start_ + CHUNK], o_turn[start_:start_ + CHUNK]
+        r1, p1, _, z1 = expand_np(z_root[start_:start_ + CHUNK])
+        jobs, child_z = [], []
+        for i, row in enumerate(batch):
+            for a1 in (row["turn"], row["chosen"]):
+                kept = set(np.flatnonzero(p1[i, a1] >= PRUNE).tolist()) | ({turns[i]} if a1 == row["turn"] else set())
+                for o1 in sorted(kept):
+                    jobs.append((i, a1, o1))
+                    child_z.append(z1[i, a1, o1])
+        r2, p2, v2, _ = expand_np(torch.stack(child_z))
+        child = {job: j for j, job in enumerate(jobs)}
+        for i, row in enumerate(batch):
+            for a1, macro in ((row["turn"], True), (row["chosen"], False)):
+                w = pruned(p1[i, a1])
+                total = 0.0
+                for o1 in np.flatnonzero(w > 0):
+                    j = child[(i, a1, int(o1))]
+                    inner = r2[j] + GAMMA * (pruned(p2[j]) * v2[j]).sum(-1)
+                    total += w[o1] * (inner[FWD] if macro else inner.max())
+                (q_mac if macro else q_cho).append(r1[i, a1] + GAMMA * total)
+    return np.array(q_mac), np.array(q_cho)
+
+
+q_mac, q_cho = arm_m()
+if full and base_mode and (np.abs(q_mac - saved["q_mac_M"]).max() > 1e-2 or np.abs(q_cho - saved["q_cho_M"]).max() > 1e-2):
+    raise RuntimeError("Arm M does not reproduce q_localise.npz.")
+decision_share = float((q_mac > q_cho).mean())
+print(f"  decision share M (Q_mac > Q2(chosen)) {decision_share:.3f}", flush=True)
 
 # --- 2. Training data: buffer at best.pt's collection, acting latents, exact factors per live state ---
 buf = load_checkpoint(run_dir / "checkpoints" / "latest.pt")["buffer"]
@@ -487,7 +599,8 @@ def predict(probe: nn.Module, z: torch.Tensor) -> np.ndarray:
 
 
 # --- 3. Probes and readout ---
-summary, per_row = {"states": len(rows), "collection": c, "joint_tv_median_c": float(np.median(tv_joint))}, {}
+summary, per_row = {"states": len(rows), "collection": c, "joint_tv_median_c": float(np.median(tv_joint)),
+                    "decision_share_M": decision_share, "networks": None if base_mode else str(networks_path)}, {}
 sets = {"a": (None, f_all[held].double().cpu().numpy()), "b": (z_root, root_f), "c": (z_turn, turn_f)}
 for name, z in (("mlp", z_all), ("linear", z_all), ("random", z_random)):
     t0 = time.time()
@@ -512,7 +625,7 @@ summary["joint_glitter_ratio_c"] = float(p_joint[:, BITS["glitter"]].sum(1).mean
 print(f"  glitter at (c), learned / exact: joint head {summary['joint_glitter_ratio_c']:.2f}, mlp direct "
       f"{summary['direct_glitter_ratio_c']:.2f}, composed (1 - wall^) gold^ {summary['composed_glitter_ratio_c']:.2f}",
       flush=True)
-suffix = "" if full else "_smoke"
+suffix = ("" if base_mode else f"_{networks_path.stem}") + ("" if full else "_smoke")
 np.savez(run_dir / "analysis" / f"feature_localise{suffix}.npz", factors_root=root_f, factors_turn=turn_f,
          p_joint_turn=p_joint, **per_row)
 (run_dir / "analysis" / f"feature_localise{suffix}.json").write_text(json.dumps(summary, indent=2))
