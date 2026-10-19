@@ -26,11 +26,13 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
 - **Before 2026-10-14** (sections 5.6–5.9): every value-side remedy failed (time-aware value, n-step greedy returns, γ = 0.95, detached planning head, offline value targets, teacher values in play). An oracle-latent arm (`model.privileged_belief_loss`; cell 96–98%, heading 100% decodable) idled as much or more, so the value/planner was judged the bottleneck.
 - **2026-10-14:** no-op self-loops are a symptom (C1 closed); the heads are exact on no-ops (no phantom reward); the oracle networks' value exceeds 999, which no game can pay, on 36–58% of live steps, and two oracle seeds refuse the gold for it. That pointed to C2, maximisation bias in the backup.
 
-### 2026-10-19 (afternoon): Step D running (`feature_localise.py`)
+### 2026-10-19 (afternoon): Step D, feature-level localisation: MIXED, mostly a turn-specific SHIFT (`feature_localise.py`)
 
-- Script and pre-registered readout (D1 shift / D2 composition / D3 representation) in its header; one pre-launch correction (the majority margin applies on the buffer set only; recorded in the header). An 8-game CPU smoke ran end to end (35 states, not read).
-- Chain `runs/wumpus/feature_localise_chain.sh` waits for the exact-planner play (PID 575725) to free GPU memory, then runs seeds 0-4 on the GPU (logs `runs/wumpus/feature_localise_seed{0..4}.log`, readout `runs/wumpus/feature_localise_summary.log`, sysmon `feature_localise_sysmon.log`). Outputs per seed in `<run>/analysis/`: `feature_localise.json/.npz` and `declined_states.pt` (declined root and turned latents with exact targets, for later method screens without a replay).
-- CPU is not an option for the replay: ~8 s per decision at 8 games, and CPU float paths may not reproduce report.json.
+- Probes for the factors of the exact P(o' | b, FORWARD) (wall / unvisited ahead, P(gold, pit, live wumpus) ahead, glitter, breeze, stench) trained on each run's buffer, scored on (a) held-out buffer states, (b) the declined roots, (c) the turned latents. 5 seeds of `wumpus_retrain` best.pt; every replay = report.json; header section 4 has the table.
+- **Registered readout MIXED** (D3 3 of 5, D1 2 of 5, D2 0 of 5; random-filter control selective on 5 of 5). D3 fires only through "unvisited ahead" at (a), 0.89-0.90 against the 0.90 bar, on the three seeds with the earliest best.pt.
+- **On 5 of 5 seeds:** P(gold ahead) is calibrated on buffer states (ratio 0.94-1.09) but under-rated ~2x at the turned latents (0.51-0.59), and the turned latent reads the always-unvisited cell ahead as visited in 19-35% of states. The composed glitter (1 - wall^) gold^ equals the direct probe (~0.5-0.6 of exact), so composition is not the failure (D2 refuted). Step A's "not decodable" is this shift.
+- Reading: a support shift specific to "turn towards the unvisited safe cell at a state where the agent declines" (rare in its own data), plus a marginal "visited"-tracking deficit on weaker seeds. Supports the feedback-loop conjecture (section 1b). Per section 3 of the script, the branch is the user's call.
+- `declined_states.pt` per seed (`<run>/analysis/`) holds the declined root and turned latents with exact targets for the next screens.
 
 ### 2026-10-19 (later): back to algorithm design (user decision)
 
@@ -776,7 +778,7 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 
 ### 6.2 The plan (2026-10-19, algorithm phase)
 
-**Step D: feature-level localisation of the latent gap (next; CPU, pre-authorised).** Question: at the declined states, which factor of the exact P(o' | b, FORWARD) is missing from the turned latent, and is it missing only there?
+**Step D: feature-level localisation of the latent gap. DONE 2026-10-19: MIXED, mostly a turn-specific SHIFT (section 0; `feature_localise.py`).** Question: at the declined states, which factor of the exact P(o' | b, FORWARD) is missing from the turned latent, and is it missing only there?
 - States and latents: exactly those of `q_localise_diag.py` (re-select as there; the count must equal `analysis/q_localise.npz`), on `runs/sweeps/wumpus_retrain/seed0-4` `best.pt`. Use the turned latent (after TURN with the branch observation), as in Step A.
 - Targets from the exact filter (`WumpusBeliefTracker`): the factors that make up P(o' | b, FORWARD): cell ahead is a wall; cell ahead is new; P(gold in the cell ahead); P(pit), P(live wumpus) in the cell ahead; and P(glitter) itself.
 - Fit MLP probes on ordinary buffer states (the run's replay buffer; `obs_fit_vs_latent.py` has the data plumbing), then evaluate them (a) on held-out buffer states, (b) on the declined turned latents.

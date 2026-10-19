@@ -67,7 +67,30 @@
 #    - Sanity: if the random-filter probe is decodable on (a) for every glitter-driving factor, the probe metric
 #      does not select for learned information; report it and do not read the branch.
 #
-# 4. Result: (to be filled after the runs.)
+# 4. Result 2026-10-19 (runs/sweeps/wumpus_retrain seeds 0-4, best.pt, GPU; replays = report.json, states =
+#    macro_reach.npz, joint-head TV = q_localise.npz on every seed; logs runs/wumpus/feature_localise_seed{0..4}.log,
+#    readout runs/wumpus/feature_localise_summary.log; 10-15 min per seed). **Readout: MIXED** (D3 on 3 of 5 seeds,
+#    D1 on 2 of 5, D2 on 0; the random-filter control is selective on 5 of 5). mlp probe, per seed 0-4:
+#    | Factor                 | (a) held-out buffer          | (b) declined roots           | (c) turned latents            |
+#    | unvisited ahead (acc)  | .97 / .90 / .98 / .89 / .90  | .93 / .94 / .96 / .91 / .90  | .72 / .77 / .81 / .77 / .65   |
+#    | wall ahead (acc)       | .99 / .93 / .99 / .92 / .93  | .97 / .96 / .98 / .95 / .90  | .97 / .96 / .99 / .92 / .96   |
+#    | P(gold ahead) MAE      | .009/.014/.009/.014/.014     | .018/.014/.015/.014/.024     | .069/.054/.057/.077/.065      |
+#    | P(gold ahead) mean ratio| .99/1.05/.94/.97/1.09       | (exact ~0 there)             | .59 / .59 / .58 / .51 / .55   |
+#    (constant baselines: unvisited 51-53% on (a); gold MAE .034-.035 on (a), .088-.097 on (c); random filter on (a):
+#    unvisited 70-73%, gold .024-.026; linear probe on (a): unvisited 80-95%.)
+#    - D3 fires on seeds 1, 3, 4 by "unvisited" alone at (a), at 0.900 / 0.890 / 0.896 against the 0.90 bar (the
+#      seeds whose best.pt is earliest: collections 55 / 85 / 65). D1 fires on seeds 0 and 2.
+#    - The pattern that holds on 5 of 5 seeds: P(gold ahead) is decodable and calibrated on buffer states (and on
+#      the declined roots), but at the turned latents it is under-rated ~2x (ratio 0.51-0.59), and the turned latent
+#      reads the (always unvisited) cell ahead as visited in 19-35% of the states. The composed glitter
+#      (1 - wall^) gold^ (0.49-0.58 of exact) equals the direct probe (0.51-0.61): composition is NOT the failure
+#      (D2 refuted on 5 of 5); the factors themselves are wrong after the turn. The probe recovers about the same
+#      glitter as Step A's arm (iv) (0.49-0.62), so Step A's "not decodable" is this shift.
+#    - Reading: mostly a support SHIFT specific to the declined turn (the latent after "turn towards the unvisited
+#      safe cell" at states where the agent itself declines is rare in its data), plus a weaker, marginal
+#      representation deficit in "visited" tracking on the three weaker seeds. Consistent with the feedback-loop
+#      conjecture of HANDOFF 1b (idle -> no such data -> the model under-rates new cells -> idle). Decided with the
+#      user per section 3.
 # ==============================================================================
 
 import copy
