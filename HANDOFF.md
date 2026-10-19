@@ -42,8 +42,11 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
     - zero leaves: 145 (FORWARD into walls);
     - uninformed POMCP rollouts: 11 (all leaves look doomed; 200-sim arms stopped);
     - **full-information (hindsight-optimisation) leaf: 335 at 50 sims, 424 ± 41 at 200 sims** (win 56%, deaths 2.3%, unfinished 41%; paired -120 ± 28 vs the heuristic).
-  - 1000 sims running (`exact_smoke_s1000_full_info.log`); the choice rule in the smoke header then fixes the configuration before any held-out play.
-  - Reading so far: a standard exact-model planner beats the learned agent by ~+200 but stays below the hand-written heuristic. The QMDP-style leaf undervalues information-gathering risks (0 deaths, many unfinished games at 50 sims). Cite both references.
+    - **1000 sims: 476 ± 41** (win 61%, deaths 2.3%, unfinished 37%; paired -68 ± 25 vs the heuristic; 1000 minus 200 paired +51 ± 14; 193 s per decision of 128 roots).
+  - **Frozen (`d08492d`, 04:20, before any held-out play) by the pre-written choice rule: full_info, 1000 sims, no rollouts** (200 sims lies outside one SE of the best). Recorded in the module header 4 and PROTOCOL.md.
+  - Reading: a standard exact-model planner beats the learned agent by ~+250 but stays below the hand-written heuristic. The QMDP-style leaf undervalues information-gathering risks. Cite both references.
+- **Exact planner on the held-out games** (running since 04:22 2026-10-19): `uv run reports/2026-10-19_eval_protocol/exact_planner_play.py 20261019`, 4 chunks of 128 roots (~2.7 h each, resumable per chunk), log `runs/references/exact_play_20261019.log`, output `runs/references/wumpus_exact_planner/seed20261019/games.npz`. Blind: prints no return. It enters C-a through `sweep.py ... --exact-planner-games runs/references/wumpus_exact_planner/seed20261019/games.npz` (re-run the held-out sweep command with it once all seeds are done; aggregate.py section 6 checks the game pairing against the heuristic's per-game returns).
+- **Exploratory: development seeds 0-4 on the held-out games** (finished ~04:00): learned planner 164 ± 49 (t; hierarchical [129, 197]), heuristic 580, random -420; probes cell/heading 72/77% random, 88/91% agent histories. On the development games the same seeds gave 200 ± 44 against a heuristic of 573, so the development games flattered the learned agent by ~35 (within noise).
 
 ### 2026-10-18 evening: Step C, value-equivalent observation term, FAILS its retrain screen
 
@@ -330,12 +333,12 @@ Verdict: not yet a top-venue paper. The method results are weak and from one rea
 
 **Git**
 - **Everything is pushed** (2026-10-18 evening, through the commit that wrote this file). The working tree is clean. `runs/` is untracked: keep it.
-- **Nothing is running** (2026-10-18 22:30). The day's chains all finished: `runs/wumpus/obs_fit_chain.sh` (Step A; logs `obs_fit_seed{0..4}.log`), `exact_play_chain.sh` (Step B; logs `exact_play_{learned,EPR,EP}_seed{0..4}.log`, `exact_play_sysmon.log`; smoke logs `exact_play_smoke_seed0.log` = EPRt, `exact_play_smoke_EPRv_seed0.log` = EPR), `ve_screen_chain.sh` (Step C screen; `runs/wumpus/ve_screen/`). Earlier: `macro_reach_chain.sh`, `q_localise_chain.sh` (2026-10-17), `retrain_seeds34_chain.sh`. The machine crashed once on 2026-10-16 ~00:30 (cause unknown, not this project's memory).
+- **Running (2026-10-19):** the held-out sweep `runs/wumpus/heldout_chain.sh` (seed 5 at collection ~50 of 100 at 04:20, ~8 h per seed at load ~15-20) and the exact-planner held-out play (section 0, 2026-10-19). Earlier: **nothing was running** at 2026-10-18 22:30. The day's chains all finished: `runs/wumpus/obs_fit_chain.sh` (Step A; logs `obs_fit_seed{0..4}.log`), `exact_play_chain.sh` (Step B; logs `exact_play_{learned,EPR,EP}_seed{0..4}.log`, `exact_play_sysmon.log`; smoke logs `exact_play_smoke_seed0.log` = EPRt, `exact_play_smoke_EPRv_seed0.log` = EPR), `ve_screen_chain.sh` (Step C screen; `runs/wumpus/ve_screen/`). Earlier: `macro_reach_chain.sh`, `q_localise_chain.sh` (2026-10-17), `retrain_seeds34_chain.sh`. The machine crashed once on 2026-10-16 ~00:30 (cause unknown, not this project's memory).
 - Chains of 2026-10-14/15, all finished or stopped on purpose, with logs beside them: `c2_chain.sh` (self-loop v2), `fvi_chain.sh` then `fvi_queue.sh` (FVI screen; `fvi_queue.log` records the relaunches and the stop of current seed 2), `double_chain.sh` (training with `value_estimator=double`, both recipes, then `analyze.py`).
 - **Health checks for any chain:** `cat <chain>.log`; `tail -3 <run>.<diag>.log` (progress lines should advance); `ps -eo pid,etime,args | grep "^ *[0-9]* *[0-9:-]* [^ ]*python[^ ]* \(main.py\|reports/\)"`; `nvidia-smi`; `uptime` (ipomcp load). **Never `pkill -f`** a pattern in your own command line; kill by PID (chain shell, `xargs`, then the python jobs).
 
 **Tests**
-- The fast suite passes: 185 tests (2026-10-18; 3 new in `TestValueEquivalentTerm`), about 1.5 min on an idle machine (6 min under load).
+- The fast suite passes: 197 tests (2026-10-19), about 1.5 min on an idle machine (6 min under load).
 - **The slow suite passed 7/7 at `f1e5bbf` on 2026-10-11** (42.5 min; log `runs/slow_suite_f1e5bbf.log`). It covers every option added since 2026-10-05.
 - **Checkpoints from before `52ac3fc` cannot be resumed:** their buffer state has no `greedy` flags (no back-compat, by rule). They still load for analysis (`load_trained_run` reads networks only).
 - **The Tiger acceptance test now trains 6000 updates.** At 3000 the value gate (mean |V − V*| < 8) failed at 3–5 of 9 seeds. The two worst seeds drop to 5.3 and 1.1 at 6000. The seed table is in the test header; the logs are in `runs/tiger_acceptance_seeds/`.
@@ -937,6 +940,13 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 - 2026-10-18: HANDOFF rewrite for the next session (plan Steps A-C, publication framing, new principles).
 
 ## 9. Files touched since `9a9b726` (all pushed)
+
+**Added or changed 2026-10-19**
+- `src/ipomdp/domain/wumpus.py` (`game_outcome_flags`), `experiments/wumpus.py` (header 3; `WumpusAnalysisSettings.output`; `games.npz`), `experiments/aggregate.py` (section 6: IQM, `hierarchical_bootstrap`, `aggregate_games(games, exact_planner=None)`, `WUMPUS_GAME_METRICS`, `EXACT_PLANNER_GAME_METRICS`), `analyze.py` / `sweep.py` (`--analysis-output`; sweep `--exact-planner-games`, header 5).
+- `src/ipomdp/planning/wumpus_exact_model.py` (new; `ExactWumpusSearchModel`, `full_information_values`; frozen configuration in header 4).
+- Tests: `TestRobustStatistics` (6) in `tests/test_experiments.py`, `TestExactSearchModel` (6) in `tests/test_wumpus.py`. Fast suite 197 passed.
+- `reports/2026-10-19_eval_protocol/` (new): `PROTOCOL.md`, `exact_planner_smoke.py`, `exact_planner_play.py`.
+- `runs/sweeps/wumpus_{current,retrain}/sweep.json` back-filled with `"output": "analysis"`; `runs/wumpus/heldout_chain.sh`, `exact_smoke_*` chains (untracked).
 
 **Added or changed 2026-10-18**
 - `src/ipomdp/training/trainer.py` (section 2f; `value_equivalent_weight` / `value_equivalent_scale`; `_value_targets_and_children`, `_pair_value_targets_and_children` return the expansion's child values; the public `value_targets` / `pair_value_targets` are unchanged), `training/run.py` (section 15; `RunConfig.value_equivalent_weight`; passes max|R| = value_bound * (1 - gamma)), `experiments/runs.py`, `conf/config.yaml` (`model.value_equivalent_weight: 0.0`). Tiger fingerprint identical at `51abf72`.
