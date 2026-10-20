@@ -32,6 +32,13 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
 - **Play:** cover - control **-194 per game, t95 [-345, -43]** (significantly worse; -190 / -3 / -339 / -225 / -212). Unfinished games fall on 5 of 5 seeds (-31 points on average), deaths rise on 5 of 5 (+28 points: 4.5 -> 28%, 3.1 -> 33%, 5.5 -> 42%, 19 -> 43%, 2.7 -> 27%) and wins barely move (+4). The steps freed from idling end in deaths, not gold. Control vs best.pt (the retrain noise floor): +19 / -92 / -14 / -15 / +107.
 - Per the registered branches this is "localise again". The failure is deaths, so the localisation is `risk_localise.py` (below) instead of q_localise. Coverage from a privileged, safety-filtered teacher is a failed path as it stands (section 7).
 
+### 2026-10-20 (morning): risk localisation of the coverage deaths: MIXED, acted on as SELECTION (`risk_localise.py` header 4)
+
+- **VALUE refuted on 5 of 5:** the deaths are not knowingly taken risks. 83-100% of the cover arm's fatal FORWARDs had P(death) rated below half the exact danger.
+- **Selection is real but moderate:** the cover data lower the calibration on risky new cells by 12-36% (cover/control ratio 0.64-0.88; the 0.67 bar is met on 2 seeds) and the phantom risk at safe new cells by 30-70%, on 5 of 5 seeds.
+- **The planner amplifies it** (optimizer's curse): 2-15x more risky FORWARDs are taken, and at those the risk estimate is 0.5-17% of exact.
+- Next as queued: the non-privileged own arm (`runs/wumpus/own_coverage_chain.sh`). Noted for after it: whatever the coverage, the planner needs robustness to the risk head's error where it chooses (pessimism on P(GAME_OVER)); this is C6 again.
+
 ### 2026-10-19 (night): coverage interim and the queue while the user is away (8 h, "proceed with your taste in research")
 
 - Seeds 0-1 showed the pattern above first (cover vs control -190 +- 59 and -3 +- 62).

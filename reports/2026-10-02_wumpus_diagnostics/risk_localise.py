@@ -39,7 +39,26 @@
 #      FORWARDs are under-rated.
 #    - VALUE: the cover ratio is >= 0.85 x control's and < 30% of fatal FORWARDs are under-rated.
 #    - Otherwise MIXED: report per seed; act on the larger share.
-# 4. Result: (to be filled after the runs.)
+# 4. Result 2026-10-20 (runs/wumpus/coverage/risk_seed*.log; every replay = retrain_play.py's returns; all 5 seeds
+#    qualify, cover deaths >= control + 2 points). **Readout: MIXED by the rule (SELECTION 2 of 5, VALUE 0 of 5);
+#    acted on as SELECTION, the larger share.**
+#    | Seed | ratio risky-new ctl -> cov | cov / ctl | fatal under-rated ctl / cov | phantom risk safe-new ctl -> cov | risky FWD chosen ctl -> cov | ratio at chosen ctl / cov |
+#    | 0    | 0.995 -> 0.712             | 0.72      | 100 / 100%                  | 0.044 -> 0.030                   | 33 -> 279                   | 0.155 / 0.032             |
+#    | 1    | 0.820 -> 0.549             | 0.67      | 100 / 100%                  | 0.060 -> 0.040                   | 19 -> 306                   | 0.034 / 0.175             |
+#    | 2    | 0.828 -> 0.533             | 0.64      | 100 / 100%                  | 0.021 -> 0.006                   | 33 -> 272                   | 0.027 / 0.005             |
+#    | 3    | 0.704 -> 0.619             | 0.88      | 36 / 83%                    | 0.021 -> 0.007                   | 162 -> 376                  | 0.464 / 0.139             |
+#    | 4    | 1.007 -> 0.730             | 0.72      | 100 / 100%                  | 0.038 -> 0.018                   | 19 -> 270                   | 0.046 / 0.018             |
+#    - VALUE is refuted: the deaths are not knowingly taken risks; 83-100% of fatal FORWARDs had the risk rated at
+#      less than half of the exact danger (control too: every death is an under-rated step).
+#    - The selection effect is real on 5 of 5 seeds but moderate: the cover data lower the calibration on risky
+#      new cells by 12-36% and the phantom risk at provably safe new cells by 30-70%. The bar (<= 0.67x) is met on
+#      2 seeds only.
+#    - The amplifier is the planner: it takes 2-15x more risky FORWARDs, and at exactly those its estimate is
+#      0.5-17% of the exact danger (the optimizer's curse: the argmax selects the under-estimates). A moderate,
+#      broad calibration loss becomes a +28-point death rate.
+#    - Implication: (i) coverage data must not be safety-filtered (the own arm, coverage_games.py section 5); (ii)
+#      independently of coverage, the planner needs robustness to the risk head's error where it chooses
+#      (pessimism / an uncertainty margin on P(GAME_OVER)), the same coupling as C6.
 # ==============================================================================
 
 import sys
