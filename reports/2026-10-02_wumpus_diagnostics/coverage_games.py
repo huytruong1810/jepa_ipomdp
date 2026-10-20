@@ -52,7 +52,25 @@
 #    - Also reported: control vs best.pt (the retrain noise floor, -39 to +58 in objective_ab.py 2i) and the
 #      cover arm's probe accuracies on the base buffer (does coverage hurt the latent elsewhere?).
 #
-# 4. Result: (to be filled after the runs.)
+# 4. Result 2026-10-20 (runs/wumpus/coverage: compare.log, play_seed*.log, fl_*_seed*.log; every best.pt replay
+#    = report.json). **Readout: MECHANISM PASS (4 of 5), PLAY FAIL.**
+#    | Seed | glitter ratio ctl -> cov | share M ctl -> cov | return ctl / cov | cov - ctl (95%) | deaths ctl -> cov | unfinished ctl -> cov |
+#    | 0    | 0.45 -> 0.77             | 26 -> 58%          | 256 / 66         | -190 +- 59      | 4.5 -> 27.9%      | 59.4 -> 34.2%         |
+#    | 1    | 0.39 -> 0.61             | 42 -> 66%          | 65 / 62          | -3 +- 62        | 3.1 -> 33.0%      | 81.3 -> 26.4%         |
+#    | 2    | 0.33 -> 0.59             | 42 -> 55%          | 219 / -121       | -339 +- 59      | 5.5 -> 41.6%      | 61.5 -> 29.1%         |
+#    | 3    | 0.44 -> 0.58             | 46 -> 47% (fail)   | 160 / -65        | -225 +- 63      | 19.0 -> 43.0%     | 42.2 -> 21.3%         |
+#    | 4    | 0.60 -> 0.84             | 50 -> 71%          | 307 / 95         | -212 +- 58      | 2.7 -> 27.3%      | 57.0 -> 33.4%         |
+#    - Play: mean cover - control -194, t95 [-345, -43] over seeds (significantly WORSE); unfinished down on 5 of 5
+#      (-31 points on average) but deaths up +28 points (5 of 5) and wins only +4: the steps freed from idling end
+#      in deaths, not in gold. Control vs best.pt (the retrain noise floor): +19 / -92 / -14 / -15 / +107.
+#    - Mechanism: the coverage data repair the turned-latent model (glitter ratio +0.14 to +0.32, TV down), so the
+#      Step D shift is a data-coverage effect, as the feedback-loop conjecture says. The probe on base-buffer
+#      states mostly does not move (unvisited at (a) drops 0.955 -> 0.851 on seed 2).
+#    - Per section 3 the branch is "localise again". The failure is deaths, not idling, so the localisation is
+#      risk_localise.py (selection bias vs knowingly taken risk) rather than q_localise; the forced steps
+#      themselves were provably safe (exact danger 0; every death in both arms is a FORWARD with exact danger > 0).
+#      Coverage that comes from a privileged, safety-filtered teacher is not a usable lever as it stands; section 5
+#      tests coverage from the agent's own, unfiltered choices.
 #
 # 5. Arm "own" (2026-10-19 night; my call under research autonomy, user away): coverage from the agent's OWN
 #    choices, no privilege.

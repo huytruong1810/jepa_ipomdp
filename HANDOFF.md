@@ -26,9 +26,15 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
 - **Before 2026-10-14** (sections 5.6–5.9): every value-side remedy failed (time-aware value, n-step greedy returns, γ = 0.95, detached planning head, offline value targets, teacher values in play). An oracle-latent arm (`model.privileged_belief_loss`; cell 96–98%, heading 100% decodable) idled as much or more, so the value/planner was judged the bottleneck.
 - **2026-10-14:** no-op self-loops are a symptom (C1 closed); the heads are exact on no-ops (no phantom reward); the oracle networks' value exceeds 999, which no game can pay, on 36–58% of live steps, and two oracle seeds refuse the gold for it. That pointed to C2, maximisation bias in the backup.
 
-### 2026-10-19 (night): coverage screen, interim (seeds 0-1), and the queue while the user is away (8 h, "proceed with your taste in research")
+### 2026-10-20 (early): coverage screen READOUT: MECHANISM PASS (4 of 5), PLAY FAIL (`coverage_games.py` header 4 has the table)
 
-- **Interim, not the readout** (seeds 2-4 still running): MECHANISM passes on seeds 0-1 (glitter ratio +0.32 / +0.22, decision share +32 / +24 points), but PLAY fails badly: cover vs control -190 +- 59 (seed 0) and -3 +- 62 (seed 1). Coverage cures most of the idling (unfinished 59 -> 34% and 81 -> 26%, wins +2 / +25 points) but deaths explode (4.5 -> 28%, 3.1 -> 33%).
+- **Mechanism:** the privileged coverage data repair the turned-latent model on 4 of 5 seeds (joint-head glitter ratio +0.14 to +0.32; decision share M +14 to +32 points, seed 3 +1). So Step D's shift is a data-coverage effect, as the feedback-loop conjecture says.
+- **Play:** cover - control **-194 per game, t95 [-345, -43]** (significantly worse; -190 / -3 / -339 / -225 / -212). Unfinished games fall on 5 of 5 seeds (-31 points on average), deaths rise on 5 of 5 (+28 points: 4.5 -> 28%, 3.1 -> 33%, 5.5 -> 42%, 19 -> 43%, 2.7 -> 27%) and wins barely move (+4). The steps freed from idling end in deaths, not gold. Control vs best.pt (the retrain noise floor): +19 / -92 / -14 / -15 / +107.
+- Per the registered branches this is "localise again". The failure is deaths, so the localisation is `risk_localise.py` (below) instead of q_localise. Coverage from a privileged, safety-filtered teacher is a failed path as it stands (section 7).
+
+### 2026-10-19 (night): coverage interim and the queue while the user is away (8 h, "proceed with your taste in research")
+
+- Seeds 0-1 showed the pattern above first (cover vs control -190 +- 59 and -3 +- 62).
 - The forced steps are safe (exact danger of every FORWARD in `games_cover_seed1.pt`: +1791 after-turn FORWARDs, +15 risky; every death in both arms is a FORWARD with exact danger > 0). **Hypothesis: sample-selection bias.** The privileged data contain ~2700 survived "turn, step into a new cell" transitions per 2048 games and no risky ones, so a latent that separates safe from risky new cells only partly learns "new cells are safe". The 32-game smoke of the new `risk_localise.py` agrees: phantom risk at provably safe new cells falls from 0.043 to 0.005, and the chosen risky FORWARDs are rated at ~3% of their exact danger.
 - **Queued (my calls, pre-registered in the script headers):**
   1. `risk_localise.py` (SELECTION vs VALUE; `runs/wumpus/risk_localise_chain.sh`, logs `runs/wumpus/coverage/risk_seed*.log`).
@@ -800,6 +806,8 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 - Fit MLP probes on ordinary buffer states (the run's replay buffer; `obs_fit_vs_latent.py` has the data plumbing), then evaluate them (a) on held-out buffer states, (b) on the declined turned latents.
 - Pre-register (example thresholds; fix them in the header before running): a factor decodable on buffer states (accuracy or calibration close to the exact) but far at the turned latents -> **D1 SHIFT** (imagined latents off the filter's support; the remedy is coverage, candidate 4, or training the model on its own branches). Decodable at both, while P(glitter) is wrong -> **D2 OBJECTIVE/COMPOSITION** (candidates 2-3). Not decodable on buffer states either -> **D3 REPRESENTATION** (candidate 1, then an architecture A/B).
 
+**Coverage screen (user's D1 choice). DONE 2026-10-20: MECHANISM PASS 4 of 5, PLAY FAIL (-194, deaths +28 points; section 0).** Privileged, safety-filtered coverage repairs the turned-latent model but teaches "new cells are safe". Running: `risk_localise.py` (SELECTION vs VALUE reading of the deaths), then `coverage_games.py` arm **own** (section 5 of its header: the agent's own unfiltered turn-then-step trials, epsilon 0.2, same control). If own passes PLAY: a default-off collection option and 5 in-agent seeds. If its MECHANISM fails for lack of dose at the declined states: the representation branch (candidate 1; Step D's visited deficit is what a targeted, non-privileged mechanism would need).
+
 **Then:** the method candidate the branch points to (section 1b list), screened at the declined states first, then by an offline retrain with paired play, then in-agent on 3 and 5 development seeds. Register the claim in PROTOCOL.md and confirm on held-out seeds 10-14 (5-9 are spent on the current recipe's claims).
 
 ### 6.2a The 2026-10-18 plan (Steps A-C; done)
@@ -840,6 +848,7 @@ Current recipe + `model.privileged_belief_loss=true`, 3 seeds, trained at `54162
 ## 7. Failed paths and pitfalls: do not repeat
 
 **Representation and model**
+- **Coverage from a privileged, safety-filtered teacher** (`coverage_games.py` cover arm, 2026-10-20): forcing the exact-belief heuristic's provably safe turn-then-step at every declined state, then retraining on the extra games, repairs the turned-latent glitter prediction but costs -194 per game (deaths +28 points on 5 of 5 seeds). The data hold only safe entries into new cells, so the death predictions at new cells drop. Any coverage data must include the risky outcomes (sample-selection bias).
 - **VICReg** (any placement) made the latent less belief-like. **Pure JEPA without reward grounding** learns no belief.
 - **A stochastic (DreamerV3 discrete) latent transition for imagination** imagined biased beliefs, and predicting online targets collapsed the representation.
 - **Free bits** on the balanced KL: the prior never trained.
