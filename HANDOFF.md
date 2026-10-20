@@ -32,6 +32,12 @@ Read `CLAUDE.md` first: it covers the architecture, commands and conventions. Th
 - **Play:** cover - control **-194 per game, t95 [-345, -43]** (significantly worse; -190 / -3 / -339 / -225 / -212). Unfinished games fall on 5 of 5 seeds (-31 points on average), deaths rise on 5 of 5 (+28 points: 4.5 -> 28%, 3.1 -> 33%, 5.5 -> 42%, 19 -> 43%, 2.7 -> 27%) and wins barely move (+4). The steps freed from idling end in deaths, not gold. Control vs best.pt (the retrain noise floor): +19 / -92 / -14 / -15 / +107.
 - Per the registered branches this is "localise again". The failure is deaths, so the localisation is `risk_localise.py` (below) instead of q_localise. Coverage from a privileged, safety-filtered teacher is a failed path as it stands (section 7).
 
+### 2026-10-20 (afternoon): own coverage arm, interim (seed 0 only; NOT the readout)
+
+- Own games done for 5 of 5 seeds (per 2048 games: 5600-7800 trials, ~2800 into unvisited cells, ~1200 into risky cells, ~800 at declined states (cover: 2500-3150); collection deaths 34-46%). All 5 retrains done.
+- **Seed 0:** own 286 vs control 256, **+30 +- 35** (n.s.); deaths 4.5 -> 3.5%; risk calibration on risky new cells 0.972 (control 0.995, cover 0.712). Unfiltered coverage removes the selection bias. Mechanism weak: glitter ratio 0.45 -> 0.53, decision share M 26 -> 23%. Seed 1 mechanism: glitter 0.39 -> 0.54, M 42 -> 48%.
+- **VRAM incident 2:** the held-out sweep's parent keeps ~5 GB after each analysis, and the device reached 14.6 GB during seed 1's own play (34 guardrail alerts, no abort). I stopped the own chain at 13:18. `runs/wumpus/own_resume_chain.sh` runs the rest (seed 1 play/risk, seeds 2-4) once the held-out sweep has finished, in two streams.
+
 ### 2026-10-20 (morning): risk localisation of the coverage deaths: MIXED, acted on as SELECTION (`risk_localise.py` header 4)
 
 - **VALUE refuted on 5 of 5:** the deaths are not knowingly taken risks. 83-100% of the cover arm's fatal FORWARDs had P(death) rated below half the exact danger.
