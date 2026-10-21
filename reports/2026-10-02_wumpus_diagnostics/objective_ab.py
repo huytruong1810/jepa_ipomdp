@@ -214,6 +214,14 @@
 #    result: coverage_games.py. Several files may be given (2026-10-21, HANDOFF 6.2b E0): the union arm appends the
 #    cover AND own games of a seed (4096 extra games), the data upper bound of the two coverage deficits together.
 #
+# 2k. Bootstrapped whole-model retrains (2026-10-21, HANDOFF 6.2c C1; question, readout and result in
+#    ensemble_disagreement.py): --bootstrap <j> resamples the uniform retrain's games (buffer plus --extra-games)
+#    with replacement, as many as there are, from a generator seeded with j that is separate from the update
+#    sampler's. K such retrains with different --seed and --bootstrap form a bootstrapped ensemble of whole models,
+#    filter included (Osband et al. 2016; Lakshminarayanan et al. 2017), whose disagreement on a history is the
+#    candidate epistemic-uncertainty signal. Without the flag nothing changes (the resample draws from its own
+#    generator only when given).
+#
 # 3. Usage:
 #    uv run python reports/2026-10-02_wumpus_diagnostics/objective_ab.py --representation jepa \
 #        --horizon 5 --seed 1 --pool-cache runs/wumpus/supervised_filter/pools.pt
@@ -390,6 +398,8 @@ def main() -> None:
     parser.add_argument("--extra-games", type=Path, nargs="+", default=None,
                         help="With --train-buffer: append these coverage_games.py game files to the buffer (2j; "
                              "several files = the union arm of HANDOFF 6.2b E0).")
+    parser.add_argument("--bootstrap", type=int, default=None,
+                        help="With a uniform --train-buffer: resample its games with replacement, seed j (2k).")
     parser.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE",
                         help="Config overrides (OmegaConf dotlist), e.g. model.value_equivalent_weight=1.0 (2i).")
     parser.add_argument("--score-at", type=int, nargs="*", default=[],
@@ -445,6 +455,13 @@ def main() -> None:
         fit_rows = torch.arange(data["actions"].shape[0], device=device)
     if args.extra_games is not None and (args.train_buffer is None or args.buffer_schedule != "uniform"):
         raise ValueError("--extra-games extends a uniform --train-buffer retrain (2j).")
+    if args.bootstrap is not None:                                         # section 2k
+        if args.train_buffer is None or args.buffer_schedule != "uniform":
+            raise ValueError("--bootstrap resamples a uniform --train-buffer retrain (2k).")
+        resample = torch.Generator(device=device).manual_seed(args.bootstrap)
+        fit_rows = fit_rows[torch.randint(0, len(fit_rows), (len(fit_rows),), device=device, generator=resample)]
+        print(f"bootstrap {args.bootstrap}: {len(fit_rows)} games resampled with replacement, "
+              f"{len(torch.unique(fit_rows))} distinct", flush=True)
     if args.reset_at and args.buffer_schedule != "growing":
         raise ValueError("--reset-at emulates the agent's schedule; it needs --buffer-schedule growing.")
     if args.buffer_schedule == "growing" and (args.train_buffer is None or not cfg.training.store_eval_episodes):
