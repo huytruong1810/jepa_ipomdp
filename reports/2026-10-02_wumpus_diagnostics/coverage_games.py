@@ -134,6 +134,22 @@
 #      fix it at this latent: the representation branch (HANDOFF 1b, candidate 1).
 #      Also reported: glitter ratio and decision share M (MECHANISM as in section 3) and the risk calibration ratio
 #      (RISK as in section 5), so the two deficits are read separately.
+#    - Result 2026-10-21 (runs/wumpus/coverage: play_union_seed*.log, compare_union.log, risk_union_seed*.log; e0_chain.log;
+#      every best.pt replay = report.json). **Readout: FAIL (deaths up).**
+#      | Seed | union - ctl (95%) | deaths ctl -> union | unfinished ctl -> union | glitter ctl -> union | share M ctl -> union | risk ratio ctl / union | at chosen risky FWD ctl / union |
+#      | 0    | -90 +- 56         | 4.5 -> 16.4%        | 59.4 -> 46.3%           | 0.45 -> 0.69         | 26 -> 44%            | 0.995 / 0.875          | 0.155 / 0.051                   |
+#      | 1    | +135 +- 47        | 3.1 -> 5.3%         | 81.3 -> 65.0%           | 0.39 -> 0.55         | 42 -> 60%            | 0.820 / 0.834          | 0.034 / 0.044                   |
+#      | 2    | -21 +- 46         | 5.5 -> 15.6%        | 61.5 -> 45.1%           | 0.33 -> 0.59         | 42 -> 52%            | 0.828 / 0.847          | 0.027 / 0.028                   |
+#      | 3    | +77 +- 55         | 19.0 -> 10.9%       | 42.2 -> 49.8%           | 0.44 -> 0.66         | 46 -> 48%            | 0.704 / 0.942          | 0.464 / 0.043                   |
+#      | 4    | -161 +- 53        | 2.7 -> 20.1%        | 57.0 -> 42.0%           | 0.60 -> 0.71         | 50 -> 74%            | 1.007 / 0.907          | 0.046 / 0.024                   |
+#      - Play: union - control -12, t95 [-162, +138] over seeds; unfinished down on 4 of 5 (-10 points on average);
+#        deaths up by > 2 points on 4 of 5 (5.3% -> 13.7% on average).
+#      - Mechanism: the turned-latent prediction is repaired on 5 of 5 by the glitter ratio (+0.11 to +0.26), the
+#        decision share bar is met on 2 of 5 only. Risk: the AVERAGE calibration on risky new cells stays near
+#        control's (0.83-0.94; cover alone 0.53-0.73), yet at the risky FORWARDs the planner chooses, the predicted
+#        risk is still 2-5% of exact. The deaths are the optimizer's curse on a calibrated-on-average model.
+#      - Registered branch "FAIL with deaths up": even mixed data leave an exploitable risk error, so pessimism is
+#        required on top; but E0' (pessimism_play.py section 4) shows a uniform margin does not remove it either.
 # ==============================================================================
 
 import sys

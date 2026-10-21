@@ -42,6 +42,33 @@
 #      margin re-creates the idling (it also penalises the safe new cells, the phantom risk of risk_localise.py):
 #      again an uncertainty-scaled margin.
 #    - Also read (secondary, no branch): control at k minus control at k = 1 (pessimism alone, no coverage).
+#
+# 4. Result 2026-10-21 (runs/wumpus/coverage/pess_k{2,4}_seed*.log; <run>/analysis/pessimism_k*.json). **Readout: FAIL
+#    at both k (deaths still far above control).**
+#    | Seed | cover k1 / k2 / k4 - ctl k1  | cover deaths k1 -> k2 / k4 | ctl k2 - ctl k1 | ctl k4 - ctl k1 | ctl deaths k1 -> k2 / k4 |
+#    | 0    | -190 / -166 / -161           | 28 -> 22 / 20%             | +17 +- 23       | +11 +- 25       | 4.5 -> 1.0 / 0.2%        |
+#    | 1    | -3 / +68 / +47               | 33 -> 20 / 20%             | +19 +- 23       | +39 +- 27       | 3.1 -> 2.0 / 0.6%        |
+#    | 2    | -339 / -337 / -324           | 42 -> 42 / 40%             | +18 +- 22       | +42 +- 28       | 5.5 -> 4.1 / 2.3%        |
+#    | 3    | -225 / -191 / -80            | 43 -> 32 / 22%             | +80 +- 35       | +100 +- 38      | 19.0 -> 3.9 / 2.3%       |
+#    | 4    | -212 / -234 / -246           | 27 -> 27 / 27%             | +29 +- 21       | +11 +- 23       | 2.7 -> 0.6 / 0.8%        |
+#    - Cover + pessimism: -172 [-357, +13] (k = 2) and -153 [-332, +26] (k = 4) vs control; the cover networks still die
+#      in 20-42% of games. A uniform inflation of the predicted risk barely touches deaths whose risk was rated at
+#      2-5% of exact (risk_localise.py): x4 of 0.03 x danger is still far below the danger. Registered branch: the
+#      margin must be state-dependent (uncertainty-scaled), and E1 found no cheap signal for it.
+#    - Secondary (no branch; exploratory): pessimism alone on the CONTROL networks gains on 5 of 5 seeds at both k,
+#      +33 [-1, +66] (k = 2) and +41 [-5, +86] (k = 4) over seeds, deaths -> 0.2-4.1%, unfinished about unchanged.
+#      On networks without coverage data the under-rating is milder and a fixed margin removes most deaths.
+#
+# 5. Follow-up (2026-10-21 evening, my call under research autonomy; exploratory, pre-registered here before launch):
+#    own-arm networks (coverage_games.py section 5: non-privileged, unfiltered trials; +66 [+16, +116] over best.pt,
+#    from safety) with the same margin, k in {2, 4}. Question: do the two non-privileged pieces that each helped
+#    (own trials in collection, a fixed risk margin in acting) add up? Read against control at k = 1
+#    (control_seed<s>.returns.npy, paired per game) and against control at the same k.
+#    - PROMISING: own at some k - control at k = 1 >= +50 mean with the t95 interval over seeds above 0, and deaths
+#      at most control's + 2 points on >= 4 of 5 -> propose to the user an in-agent recipe (default-off options:
+#      own-trial collection rule, fixed risk margin at planning), 3 then 5 development seeds.
+#    - Otherwise: the fixed margin is a small, separate gain (section 4 secondary) and the method question returns
+#      to the user with the representation branch and a whole-model uncertainty signal as the options.
 # ==============================================================================
 
 import json
