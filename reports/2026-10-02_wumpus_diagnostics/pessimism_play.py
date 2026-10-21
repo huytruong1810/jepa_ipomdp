@@ -78,7 +78,7 @@
 #      | 3    | +144 +- 50      | +122 +- 51      | 303.7         | 0.4 / 0.4%     | 62.1%         |
 #      | 4    | -22 +- 34       | -37 +- 32       | 284.3         | 1.9 / 0.6%     | 60.4%         |
 #      - k = 2: +74 [-19, +168]; k = 4: +63 [-24, +150] over seeds (4 of 5 positive). Mean return 275 (k = 2), the best
-#        non-privileged Wumpus result so far; exploratory against best.pt: +75 [+33, +118], positive on 5 of 5.
+#        non-privileged Wumpus result so far; exploratory against best.pt: +75 [+34, +117], positive on 5 of 5.
 #      - The gain is safety (deaths 0-2.3%), not idling: unfinished stays 60-72%, as in every arm without targeted
 #        value-of-information data. Per the rule the method question returns to the user; this pair (own trials +
 #        a fixed margin) is the cheapest candidate to train in-agent if they want a safety-only improvement.
