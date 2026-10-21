@@ -117,6 +117,23 @@
 #      - Registered branch: MECHANISM fail with a small declined-state dose -> "targeting needs a novelty signal the
 #        latent does not carry: the representation branch". Its premise is contradicted: "cell ahead unvisited" decodes
 #        at 0.97-0.98 on buffer states under the own networks. The direction is re-argued in HANDOFF section 6.2 (2026-10-21).
+# 6. Arm "union" (2026-10-21, HANDOFF 6.2b E0, user-approved): the DATA UPPER BOUND of both coverage deficits.
+#    - Why: cover repairs the value-of-information deficit (V) but its safety-filtered data deepen the risk deficit
+#      (R); own keeps the risk calibrated but is too diluted to repair (V) (C10). Is the union of both data enough
+#      to get both at once? If not even the union helps, no collection rule that only reshapes these data will.
+#    - Method: no new games. objective_ab.py 2j with BOTH extra files (games_cover_seed<s>.pt games_own_seed<s>.pt,
+#      4096 extra games; twice either arm's extra data, which favours the union and is acceptable for an upper
+#      bound), the same retrain settings, then feature_localise.py --networks, retrain_play.py control vs union,
+#      risk_localise.py, exactly as for the other arms (runs/wumpus/e0_chain.sh).
+#    - Pre-registered readout (written before any union run; seeds 0-4; against the same control):
+#        PASS: union - control mean >= +50 with the t95 interval over seeds above 0, unfinished below control's on
+#              >= 4 of 5 seeds, deaths at most control's + 2 points on >= 4 of 5 seeds.
+#      PASS -> both deficits together are sufficient at this latent: build E2 (uncertainty-directed collection
+#      plus pessimistic planning, HANDOFF 6.2b). FAIL with deaths up -> even mixed data leave an exploitable risk
+#      error: pessimism (E0', pessimism_play.py) is required on top. FAIL with the idling kept -> data alone cannot
+#      fix it at this latent: the representation branch (HANDOFF 1b, candidate 1).
+#      Also reported: glitter ratio and decision share M (MECHANISM as in section 3) and the risk calibration ratio
+#      (RISK as in section 5), so the two deficits are read separately.
 # ==============================================================================
 
 import sys

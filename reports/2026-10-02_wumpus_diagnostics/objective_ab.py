@@ -211,7 +211,8 @@
 # 2j. Coverage screen (2026-10-19, coverage_games.py; HANDOFF 6.2 after Step D): --extra-games <file> appends the
 #    games saved by coverage_games.py (an EpisodeBatch-shaped dict) to the --train-buffer data, so the uniform
 #    retrain sees the run's whole buffer plus the arm's extra games. Question, arms, pre-registered readout and
-#    result: coverage_games.py.
+#    result: coverage_games.py. Several files may be given (2026-10-21, HANDOFF 6.2b E0): the union arm appends the
+#    cover AND own games of a seed (4096 extra games), the data upper bound of the two coverage deficits together.
 #
 # 3. Usage:
 #    uv run python reports/2026-10-02_wumpus_diagnostics/objective_ab.py --representation jepa \
@@ -386,8 +387,9 @@ def main() -> None:
                         help="Score this run's networks (--agent-checkpoint) without training (2e).")
     parser.add_argument("--agent-checkpoint", default="best.pt", help="Checkpoint of --agent-reference (2e).")
     parser.add_argument("--save", type=Path, default=None, help="Write run.networks' states here after training.")
-    parser.add_argument("--extra-games", type=Path, default=None,
-                        help="With --train-buffer: append these coverage_games.py games to the buffer (2j).")
+    parser.add_argument("--extra-games", type=Path, nargs="+", default=None,
+                        help="With --train-buffer: append these coverage_games.py game files to the buffer (2j; "
+                             "several files = the union arm of HANDOFF 6.2b E0).")
     parser.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE",
                         help="Config overrides (OmegaConf dotlist), e.g. model.value_equivalent_weight=1.0 (2i).")
     parser.add_argument("--score-at", type=int, nargs="*", default=[],
@@ -430,14 +432,14 @@ def main() -> None:
         if data["actions"].shape[1] != length:
             raise ValueError(f"buffer episodes have {data['actions'].shape[1]} steps, the pool {length}.")
         del buf
-        if args.extra_games is not None:                                   # section 2j
-            extra = torch.load(args.extra_games, map_location=device)
+        for extra_path in args.extra_games or []:                         # section 2j
+            extra = torch.load(extra_path, map_location=device)
             if extra["actions"].shape[1] != length:
-                raise ValueError(f"{args.extra_games} has {extra['actions'].shape[1]}-step games, the buffer {length}.")
+                raise ValueError(f"{extra_path} has {extra['actions'].shape[1]}-step games, the buffer {length}.")
             for key, source in (("actions", "actions"), ("observations", "observations"), ("rewards", "rewards"),
                                 ("initial", "initial_observations")):
                 data[key] = torch.cat([data[key], extra[source].to(device)])
-            print(f"extra games: {extra['actions'].shape[0]} from {args.extra_games} (arm {extra['arm']}, "
+            print(f"extra games: {extra['actions'].shape[0]} from {extra_path} (arm {extra['arm']}, "
                   f"{extra['overrides']} overrides)", flush=True)
             del extra
         fit_rows = torch.arange(data["actions"].shape[0], device=device)
