@@ -41,6 +41,24 @@
 #      (whole-model ensemble) or a fixed margin (E0').
 #    - (V) fails -> the members share the latent's blind spot at the turned latents: whole-model ensembles next, or
 #      a count-based novelty signal on the decodable "cell ahead unvisited" factor (Step D: it decodes at 0.97-0.98).
+#
+# 4. Result 2026-10-21 (runs/wumpus/coverage/e1_seed*.log; ~1-2 min per seed; seed 0 rerun identical). **Readout:
+#    FAIL, (V) 1 of 5, (R) 0 of 5.**
+#    | Seed | AUC (V) | AUC novelty-matched | rho(MI, glitter err) at declined | rho(sd_O, risk err) (R) | rho(MI, risk err) | joint risk calibration |
+#    | 0    | 0.768   | 0.631               | -0.16                            | 0.23                    | 0.32              | 0.92                   |
+#    | 1    | 0.560   | 0.435               | +0.05                            | 0.04                    | 0.17              | 0.79                   |
+#    | 2    | 0.730   | 0.548               | -0.08                            | 0.15                    | 0.24              | 0.92                   |
+#    | 3    | 0.674   | 0.564               | -0.06                            | 0.03                    | 0.21              | 0.83                   |
+#    | 4    | 0.653   | 0.525               | -0.13                            | -0.03                   | 0.22              | 0.82                   |
+#    - The members disagree more at the declined turned latents than on average buffer states, but about as much as
+#      at any held-out state facing an unvisited cell (novelty-matched AUC 0.44-0.63): the signal is NOVELTY of the
+#      cell ahead, which the latent already carries, not the model's error there. Within the declined states it is
+#      unrelated or anti-related to the glitter error (rho -0.16 to +0.05), and on risky new cells it barely ranks
+#      the risk error (sd_O rho <= 0.23; MI 0.17-0.32).
+#    - Reading: as feared in section 1, head members trained on one frozen latent share its blind spot; their
+#      spread measures data density, not the latent's missing information. Per the branch: whole-model ensembles
+#      (filter included) are the next signal candidate, or a count-based novelty signal directly. Neither is cheap
+#      evidence for E2 yet; E0 and E0' decide whether E2 is worth a costlier signal.
 # ==============================================================================
 
 import json
