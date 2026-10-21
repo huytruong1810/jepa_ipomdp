@@ -37,7 +37,21 @@ Every Wumpus screen, threshold and design choice up to 2026-10-18 was read on tr
   - **Held-out run:** the chosen setting on training seeds 5-9, analysis seed 20261019, `--output analysis_heldout`, then paired with the recipe's held-out games.
 - Later method claims (for example, a new objective against this recipe) must be added to this file **before** their held-out runs start. Each states its comparison, its interval and its decision rule.
 
+## Confirmatory results (read once, 2026-10-20 22:20)
+Recipe: whole-buffer retrain + double value, training seeds 5-9, analysis seed 20261019, 512 games each (`runs/sweeps/wumpus_retrain_heldout/aggregate_analysis_heldout.json`, log `runs/wumpus/heldout_confirmatory_readout.log`). Intervals are hierarchical-bootstrap 95% (seeds, then games); gaps are per-game paired.
+
+- **C-a.** Return **195.6 [155.3, 234.8]** per game (seeds: mean 195.6, t95 ± 58.1). Wins 28.6% [24.5, 32.6], deaths 2.0% [1.0, 3.1], unfinished 69.3% [65.5, 73.4].
+  - Gap to random **+615.8 [570.6, 659.3]**.
+  - Gap to the heuristic (risk 0.4; 579.9) **-384.2 [-426.5, -345.0]**.
+  - Gap to the exact-belief planner (493.9 [476.3, 511.0]; wins 62.3%, deaths 1.6%, unfinished 36.1%) **-298.2 [-340.4, -259.3]**.
+  - The exact planner itself is -86.0 [-97.6, -74.4] below the heuristic.
+- **C-b.** MLP probes, mean over seeds (t95):
+  - on random histories: cell 0.760 (± 0.057), heading 0.833 (± 0.076), pit hazard error 0.059 (± 0.005);
+  - on agent histories: cell 0.882 (± 0.043), heading 0.917 (± 0.021).
+- **C-c.** R2D2-lite 60.4 [36.4, 90.0] (wins 11.4%, deaths 0.0%, unfinished 88.6%). Recipe minus R2D2-lite, paired: **+135.2 [78.4, 190.7]**.
+- The development numbers replicate: development 200 ± 44 vs held-out 196 ± 58. The R2D2-lite development figure was ~90.
+
 ## Change log
 Any change after the first held-out read is logged here with its date and reason. A change makes the claims it affects exploratory.
 
-- (none)
+- No change to any claim. Operational note: held-out training seed 7 was aborted at collection 19 on 2026-10-19 by the VRAM guardrail (a diagnostic job beside it, not a property of the recipe). Before any held-out read it was moved to `runs/wumpus/heldout_seed7_aborted_20261019` and retrained from scratch with the identical command (training is deterministic per seed).
