@@ -97,6 +97,26 @@
 #      untargeted trials do not reach the declined states; targeting needs a novelty signal the latent does not
 #      carry (Step D's visited deficit): the representation branch. MECHANISM pass, PLAY fail with RISK pass ->
 #      localise again with q_localise on the own networks.
+#    - Result 2026-10-21 (runs/wumpus/coverage: compare_own.log, play_own_seed*.log, risk_own_seed*.log; own_chain.log
+#      had a pause for the held-out sweep's VRAM, with no effect on results). **Readout: PLAY FAIL, MECHANISM FAIL (0 of
+#      5), RISK PASS (5 of 5).**
+#      | Seed | dose/game: unvisited, risky, declined | glitter ctl -> own | share M ctl -> own | own - ctl (95%) | own - best.pt | deaths ctl -> own | unfinished ctl -> own | risk ratio own/ctl |
+#      | 0    | 1.3, 0.55, 0.34                       | 0.45 -> 0.53       | 26 -> 23%          | +30 +- 35       | +49           | 4.5 -> 3.5%       | 59.4 -> 58.2%         | 0.98               |
+#      | 1    | 1.4, 0.49, 0.41                       | 0.39 -> 0.54       | 42 -> 48%          | +174 +- 40      | +82           | 3.1 -> 0.4%       | 81.3 -> 69.0%         | 1.10               |
+#      | 2    | 1.4, 0.61, 0.39                       | 0.33 -> 0.37       | 42 -> 27%          | +68 +- 31       | +53           | 5.5 -> 0.4%       | 61.5 -> 63.3%         | 1.24               |
+#      | 3    | 1.3, 0.63, 0.39                       | 0.44 -> 0.68       | 46 -> 51%          | +141 +- 48      | +126          | 19.0 -> 0.4%      | 42.2 -> 62.5%         | 1.24               |
+#      | 4    | 1.7, 0.71, 0.50                       | 0.60 -> 0.60       | 50 -> 52%          | -87 +- 41       | +20           | 2.7 -> 16.0%      | 57.0 -> 42.2%         | 0.85               |
+#      (Dose per game from batch 3 of each seed's games log; cover had ~1.3 declined-state entries per game.)
+#      - Play: own - control mean +65, t95 [-62, +192] over seeds; unfinished down on 3 of 5 only; deaths -2.8 points on
+#        average. FAIL by the rule. Exploratory, not registered: own - best.pt +66, t95 [+16, +116], positive on 5 of 5;
+#        control - best.pt +1 [-88, +90]. The gain comes from safety (deaths 0.4% on seeds 1-3), not from idling.
+#      - Mechanism: unfiltered trials reach the declined states ~3x less often than the privileged arm and do not
+#        repair the turned-latent prediction (glitter +0.01 to +0.24; share M -15 to +7 points).
+#      - Risk: no selection bias (calibration 0.85-1.24x control's). Seed 4 is the exception in play: its deaths
+#        rise, and its fatal steps are mostly not under-rated (37%); those risks were taken knowingly.
+#      - Registered branch: MECHANISM fail with a small declined-state dose -> "targeting needs a novelty signal the
+#        latent does not carry: the representation branch". Its premise is contradicted: "cell ahead unvisited" decodes
+#        at 0.97-0.98 on buffer states under the own networks. The direction is re-argued in HANDOFF section 6.2 (2026-10-21).
 # ==============================================================================
 
 import sys
