@@ -69,6 +69,19 @@
 #      own-trial collection rule, fixed risk margin at planning), 3 then 5 development seeds.
 #    - Otherwise: the fixed margin is a small, separate gain (section 4 secondary) and the method question returns
 #      to the user with the representation branch and a whole-model uncertainty signal as the options.
+#    - Result 2026-10-21 (pess_own_k*_seed*.log, own_pess_chain.log; ~50 min). **Readout: not PROMISING by the rule
+#      (interval includes 0); deaths criterion met on 5 of 5.**
+#      | Seed | own k2 - ctl k1 | own k4 - ctl k1 | own k2 return | deaths k2 / k4 | unfinished k2 |
+#      | 0    | +34 +- 32       | +37 +- 30       | 290.3         | 2.3 / 0.4%     | 60.0%         |
+#      | 1    | +156 +- 40      | +137 +- 39      | 220.8         | 0.0 / 0.2%     | 71.5%         |
+#      | 2    | +59 +- 32       | +57 +- 32       | 278.2         | 0.0 / 0.0%     | 65.0%         |
+#      | 3    | +144 +- 50      | +122 +- 51      | 303.7         | 0.4 / 0.4%     | 62.1%         |
+#      | 4    | -22 +- 34       | -37 +- 32       | 284.3         | 1.9 / 0.6%     | 60.4%         |
+#      - k = 2: +74 [-19, +168]; k = 4: +63 [-24, +150] over seeds (4 of 5 positive). Mean return 275 (k = 2), the best
+#        non-privileged Wumpus result so far; exploratory against best.pt: +75 [+33, +118], positive on 5 of 5.
+#      - The gain is safety (deaths 0-2.3%), not idling: unfinished stays 60-72%, as in every arm without targeted
+#        value-of-information data. Per the rule the method question returns to the user; this pair (own trials +
+#        a fixed margin) is the cheapest candidate to train in-agent if they want a safety-only improvement.
 # ==============================================================================
 
 import json
