@@ -94,6 +94,21 @@
 #    - (V): the spread of P(glitter) at the declined turned latents is unrelated to the glitter error (rho -0.29 to
 #      +0.08, leave-acting-out the same) although union's glitter is repaired relative to control's: like E1, no
 #      sign that disagreement finds the value-of-information blind spot.
+#
+# 5. C1 result (2026-10-21; runs/wumpus/coverage/c1_{control,union}_seed0.log, train_boot*_seed0.log; members =
+#    boot0-4_seed0.pt). **STOPPED after seed 0 by user decision (19:55): seed 0 fails both halves clearly, and C0's
+#    apparent signal was the data-difference confound. Not a full registered readout (1 of 5 seeds), but no seed
+#    came near a bar.** boot0_seed1.pt is also saved; boot1-3 of seed 1 were killed mid-training.
+#    | Seed | act     | fatal | rho_sd | rho(p_act, err) | cover b1 / phantom b1 | cover b2 / phantom b2 | p_act + sd cover b1 | rho_v |
+#    | 0    | control | 23    | 0.06   | -0.04           | 0.57 / 3.13           | 0.57 / 4.38           | 0.39                | -0.13 |
+#    | 0    | union   | 84    | -0.30  | -0.35           | 0.56 / 1.96           | 0.69 / 2.81           | 0.23                | -0.12 |
+#    - With members that share the actor's data (control acting), the spread of five bootstrapped whole models does
+#      not rank the risk error (0.06), and a margin that catches half of the fatal steps triples the phantom risk on
+#      safe new cells, which would re-create the idling. On union's decisions the spread is anti-correlated with
+#      union's error (-0.30): the bootstraps agree where union is wrong. The glitter error is untracked (-0.13).
+#    - Reading: bootstrap resampling of a fixed buffer gives members that share the buffer's coverage holes, so they
+#      share the blind spots (the E1 failure one level up, filter included). Epistemic signals from ensembles do not
+#      find this model's errors in Wumpus; the errors are systematic (coverage), not variance.
 # ==============================================================================
 
 import argparse
