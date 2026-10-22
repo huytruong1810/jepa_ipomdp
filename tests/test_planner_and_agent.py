@@ -19,7 +19,8 @@ from ipomdp.agents import PlanningAgent
 from ipomdp.domain import (BatchedPOMDPEnv, TigerAction, belief_update, build_tiger_pomdp, observation_distribution,
                            solve_finite_horizon, solve_infinite_horizon)
 from ipomdp.models import BeliefFilter, HorizonValueHead, ObservationHead, RewardHead, TwoHotSymlog, ValueHead
-from ipomdp.planning import BeliefTreeSearch, ExactSearchModel, LearnedSearchModel, MinMaxStats
+from ipomdp.planning import (BeliefTreeSearch, ExactSearchModel, Expansion, LearnedSearchModel, MinMaxStats, RiskMarginModel,
+                             RiskSpec, SearchStatistics)
 
 CPU = torch.device("cpu")
 
@@ -260,6 +261,112 @@ class TestPlanningAgent:
         with pytest.raises(ValueError):
             PlanningAgent(model, BeliefTreeSearch(model, 4, 1.25, 0.3, 0.0, seed=0), 1, 0.0, seed=0, device=CPU,
                           epsilon=1.5)
+
+
+# A 5-action, 3-observation stand-in for Wumpus: step action 0, turns 1 and 2, fatal observation 2.
+_RISK = RiskSpec(step_action=0, turn_actions=(1, 2), fatal_observation=2, fatal_reward=-1000.0, step_cost=-1.0)
+
+
+class _FixedModel:
+    """A SearchModel stub whose every expansion is the given one."""
+
+    num_actions, num_observations, discount = 5, 3, 0.9
+
+    def __init__(self, expansion):
+        self.expansion = expansion
+
+    def initial_states(self, batch_size, initial_observations):
+        return torch.zeros(batch_size, 1)
+
+    def update(self, states, actions, observations):
+        return states
+
+    def expand(self, states):
+        return self.expansion
+
+
+class TestRiskMarginModel:
+    """planning/search_model.py, section 6 (reproduces pessimism_play.py's PessimisticModel)."""
+
+    @staticmethod
+    def _expansion():
+        probs = torch.softmax(torch.randn(2, 5, 3, generator=torch.Generator().manual_seed(0)), dim=-1)
+        probs[0, 0] = torch.tensor([0.6, 0.3, 0.1])
+        probs[1, 0] = torch.tensor([0.0, 0.0, 1.0])                       # a certain death
+        rewards = torch.tensor([[-1.0 - 1000.0 * 0.1, -1.0, -1.0, -1.0, -10.0], [-1001.0, -1.0, -1.0, 999.0, -10.0]])
+        return Expansion(rewards, probs, torch.randn(2, 5, 3, 4), torch.randn(2, 5, 3))
+
+    def test_inflates_only_the_step_actions_fatal_outcome(self):
+        e = self._expansion()
+        out = RiskMarginModel(_FixedModel(e), _RISK, 2.0).expand(torch.zeros(2, 1))
+        p = e.observation_probs[0, 0, 2]
+        assert out.observation_probs[0, 0, 2] == pytest.approx(float(2 * p))
+        assert torch.allclose(out.observation_probs[0, 0, :2], e.observation_probs[0, 0, :2] * (1 - 2 * p) / (1 - p))
+        assert torch.allclose(out.observation_probs.sum(-1), torch.ones(2, 5))
+        assert torch.equal(out.observation_probs[1, 0], torch.tensor([0.0, 0.0, 1.0]))   # clamped at 1
+        assert out.rewards[0, 0] == pytest.approx(-1.0 - 1000.0 * 0.2)
+        assert out.rewards[1, 0] == pytest.approx(-1001.0)
+        assert torch.equal(out.rewards[:, 1:], e.rewards[:, 1:])
+        assert torch.equal(out.observation_probs[:, 1:], e.observation_probs[:, 1:])
+        assert out.next_states is e.next_states and out.next_values is e.next_values
+
+    @pytest.mark.parametrize("margin", [1.0, 0.5])
+    def test_rejects_a_margin_that_is_not_above_one(self, margin):
+        with pytest.raises(ValueError):
+            RiskMarginModel(_FixedModel(self._expansion()), _RISK, margin)
+
+
+class _FixedPlanner:
+    """A planner stub: a fixed one-hot policy and fixed root Q values."""
+
+    def __init__(self, actions, q):
+        self.actions, self.statistics = actions, SearchStatistics(q_values=np.asarray(q, dtype=float))
+
+    def search(self, states, temperature):
+        return F.one_hot(self.actions, 5).float()
+
+    def state_dict(self):
+        return {}
+
+
+class TestOwnTrials:
+    """agents/planning_agent.py, section 4."""
+
+    def test_turn_with_higher_q_then_the_step_action(self):
+        q = [[0.0, 1.0, 2.0, 0.0, 0.0], [0.0, 3.0, 3.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0]]
+        planner = _FixedPlanner(torch.tensor([3, 4, 0]), q)
+        agent = PlanningAgent(_FixedModel(None), planner, 3, temperature=0.0, seed=0, device=CPU,
+                              trial=_RISK, trial_prob=1.0)
+        agent.reset(None)
+        assert agent.act().tolist() == [2, 1, 0]           # better turn (ties: the first); a step row is not trialled
+        assert agent.act().tolist() == [0, 0, 0]           # the pending steps override the planner's GRAB / SHOOT
+        assert agent.act().tolist() == [2, 1, 0]           # a new trial after the step
+        assert agent.reset_trial_count() == 4 and agent.trials == 0
+        agent.act()
+        agent.reset(None)                                  # reset clears the pending steps
+        assert agent.act().tolist() == [2, 1, 0]
+
+    def test_epsilon_rows_are_not_trialled(self):
+        planner = _FixedPlanner(torch.full((64,), 3), np.zeros((64, 5)))
+        agent = PlanningAgent(_FixedModel(None), planner, 64, temperature=0.0, seed=0, device=CPU, epsilon=1.0,
+                              trial=_RISK, trial_prob=1.0)
+        agent.reset(None)
+        agent.act()
+        assert agent.trials == 0
+
+    def test_off_draws_nothing(self):
+        planner = _FixedPlanner(torch.tensor([3, 4]), np.zeros((2, 5)))
+        off = PlanningAgent(_FixedModel(None), planner, 2, temperature=0.0, seed=0, device=CPU, trial=_RISK)
+        plain = PlanningAgent(_FixedModel(None), planner, 2, temperature=0.0, seed=0, device=CPU)
+        for agent in (off, plain):
+            agent.reset(None)
+            agent.act()
+        assert torch.equal(off.state_dict()["generator"], plain.state_dict()["generator"])
+
+    def test_trials_need_a_risk_spec(self):
+        with pytest.raises(ValueError):
+            PlanningAgent(_FixedModel(None), _FixedPlanner(torch.tensor([3]), np.zeros((1, 5))), 1, temperature=0.0,
+                          seed=0, device=CPU, trial_prob=0.2)
 
 
 def _discounted_returns(tiger, agent, steps, seed):

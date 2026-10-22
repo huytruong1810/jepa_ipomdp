@@ -45,10 +45,10 @@ import torch
 from ..agents import PlanningAgent, UniformRandomAgent
 from ..domain import (BatchedPOMDPEnv, FinitePOMDP, WumpusBeliefTracker, WumpusSimulator, WumpusWorld,
                       action_value_functions, build_tiger_pomdp, game_outcomes, solve_infinite_horizon)
-from ..domain.wumpus import NUM_CELLS
+from ..domain.wumpus import DEATH_REWARD, GAME_OVER, NUM_CELLS, STEP_COST, WumpusAction
 from ..interpretability import BeliefAnalysis, analyze_beliefs, build_probe_dataset, build_wumpus_dataset, plot_latent_pca
 from ..models import BeliefFilter, ValueEstimator
-from ..planning import BeliefTreeSearch
+from ..planning import BeliefTreeSearch, RiskSpec
 from ..telemetry import BeliefGeometryVisualizer
 from ..training import (Domain, DomainSetup, EpisodeBatch, PrivilegedSpec, PrivilegedTargets, Representation, RunConfig,
                         TrainerConfig, TrainingRun, load_checkpoint, play_episodes, stream_seed)
@@ -76,7 +76,9 @@ def wumpus_setup(device: torch.device, discount: float) -> DomainSetup:
 
     return DomainSetup(world, lambda batch, steps, seed, dev: WumpusSimulator(world, batch, steps, seed, dev),
                        lambda episodes: game_outcomes(episodes.rewards),
-                       PrivilegedSpec((NUM_CELLS, 4), 3 * NUM_CELLS + 1, privileged_targets))
+                       PrivilegedSpec((NUM_CELLS, 4), 3 * NUM_CELLS + 1, privileged_targets),
+                       RiskSpec(int(WumpusAction.FORWARD), (int(WumpusAction.TURN_LEFT), int(WumpusAction.TURN_RIGHT)),
+                                GAME_OVER, DEATH_REWARD, STEP_COST))
 
 
 # Domains selectable through conf/env/<name>.yaml (section 2).
@@ -104,7 +106,7 @@ def build_run_config(cfg: DictConfig) -> RunConfig:
         value_nstep=m.value_nstep, value_nstep_mix=m.value_nstep_mix, detached_planning_head=m.detached_planning_head,
         privileged_belief_loss=m.privileged_belief_loss, value_estimator=ValueEstimator(m.value_estimator),
         retrain_every=t.retrain_every, retrain_updates=t.retrain_updates,
-        value_equivalent_weight=m.value_equivalent_weight)
+        value_equivalent_weight=m.value_equivalent_weight, risk_margin=s.risk_margin, trial_prob=a.trial_prob)
 
 
 def build_training_run(cfg: DictConfig, device: torch.device) -> tuple[DomainSetup, TrainingRun]:

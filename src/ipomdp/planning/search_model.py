@@ -49,6 +49,25 @@
 #      through the truncation and values a wasted step at only about 1 + (1 - gamma) * V
 #      (reports/2026-10-02_wumpus_diagnostics/unfinished_diag.py).
 #    - horizon=None (the default and canonical Tiger) leaves every computation unchanged.
+#
+# 6. Fixed Planning-Time Risk Margin (RiskMarginModel; mcts.risk_margin, 2026-10-22; training/run.py, 16):
+#    - A domain with a fatal outcome describes it by a RiskSpec: the step action whose outcome can be fatal
+#      (Wumpus: FORWARD), the fatal observation (GAME_OVER, which FORWARD only emits on a death; a win ends on
+#      GRAB), the fatal reward (-1000) and the ordinary step cost (-1). No literal of a domain appears here.
+#    - RiskMarginModel(inner, spec, k) wraps any SearchModel. At every expansion, for the step action only:
+#         P(fatal) -> min(k p, 1), the other outcomes rescaled to sum to 1 - min(k p, 1);
+#         p_R = clip((R - step_cost) / fatal_reward, 0, 1)   (the death risk the reward head implies),
+#         R -> R + fatal_reward (min(k p_R, 1) - p_R).
+#      Successor states and their values are unchanged; so is every other action.
+#    - Why: the planner's argmax picks out exactly the steps whose death risk the learned model under-rates
+#      (the optimizer's curse, Smith & Winkler 2006; reports/2026-10-02_wumpus_diagnostics/risk_localise.py:
+#      83-100% of fatal steps rated below half the exact danger). A lower-confidence model at planning time
+#      (MOPO, Yu et al. 2020; SPIBB, Laroche et al. 2019) counters it. The uncertainty-scaled margin was the
+#      aim, but no ensemble located the errors (disagreement_screen.py, ensemble_disagreement.py), so k is
+#      fixed. Offline (pessimism_play.py, PessimisticModel, which this reproduces exactly) k = 2 on the control
+#      networks gained +33 on 5 of 5 seeds, deaths 0.2-4.1%.
+#    - Used by the PLANNER only (collection and evaluation). The trainer's Bellman value targets keep the
+#      unwrapped model: the value must stay an unbiased backup of the learned model.
 # ==============================================================================
 
 from dataclasses import dataclass
@@ -141,6 +160,17 @@ class ExactSearchModel:
         return Expansion(rewards, observation_probs, next_states, self._values(next_states))
 
 
+@dataclass(frozen=True)
+class RiskSpec:
+    """A domain's fatal outcome (section 6): action indices, the fatal observation, the fatal reward and the step cost."""
+
+    step_action: int
+    turn_actions: tuple[int, int]
+    fatal_observation: int
+    fatal_reward: float
+    step_cost: float
+
+
 class LearnedSearchModel:
     """Learned latents: BeliefFilter successors, two-hot reward/value heads, observation head."""
 
@@ -224,3 +254,41 @@ class LearnedSearchModel:
             next_states = torch.cat([next_states, next_steps.unsqueeze(-1)], dim=-1)
         next_values = self.values(next_states).view(n, num_a, num_o)
         return Expansion(rewards, observation_probs, next_states.view(n, num_a, num_o, -1), next_values)
+
+
+class RiskMarginModel:
+    """A SearchModel whose step action's predicted fatal risk is inflated by a fixed factor k (section 6)."""
+
+    def __init__(self, inner: SearchModel, spec: RiskSpec, margin: float):
+        """
+        Args:
+            inner: The model whose expansions are made pessimistic.
+            spec: The domain's fatal outcome.
+            margin: k > 1 (k = 1 is "off" and is never wrapped).
+        """
+        if not margin > 1.0:
+            raise ValueError(f"risk margin must exceed 1 (1 = off, not wrapped), got {margin}.")
+        if not spec.fatal_reward < 0.0:
+            raise ValueError(f"the fatal reward must be negative, got {spec.fatal_reward}.")
+        self.inner, self.spec, self.margin = inner, spec, margin
+        self.num_actions, self.num_observations, self.discount = inner.num_actions, inner.num_observations, inner.discount
+
+    def initial_states(self, batch_size: int, initial_observations: Tensor | None) -> Tensor:
+        return self.inner.initial_states(batch_size, initial_observations)
+
+    def update(self, states: Tensor, actions: Tensor, observations: Tensor) -> Tensor:
+        return self.inner.update(states, actions, observations)
+
+    @torch.no_grad()
+    def expand(self, states: Tensor) -> Expansion:
+        e = self.inner.expand(states)
+        a, fatal, k = self.spec.step_action, self.spec.fatal_observation, self.margin
+        probs, rewards = e.observation_probs.clone(), e.rewards.clone()
+        p_o = probs[:, a, fatal]
+        inflated = (k * p_o).clamp(max=1.0)
+        rest_scale = torch.where(p_o < 1.0, (1.0 - inflated) / (1.0 - p_o).clamp(min=1e-12), torch.zeros_like(p_o))
+        probs[:, a] = probs[:, a] * rest_scale.unsqueeze(-1)
+        probs[:, a, fatal] = inflated
+        p_r = ((rewards[:, a] - self.spec.step_cost) / self.spec.fatal_reward).clamp(0.0, 1.0)
+        rewards[:, a] = rewards[:, a] + self.spec.fatal_reward * ((k * p_r).clamp(max=1.0) - p_r)
+        return Expansion(rewards, probs, e.next_states, e.next_values)

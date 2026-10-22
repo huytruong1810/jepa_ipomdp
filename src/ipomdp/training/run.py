@@ -214,6 +214,30 @@
 #      (exact_model_play.py: the exact model with the agent's own value plays 408 vs 200, 5 of 5 seeds), and the
 #      missing information is not decodable from the frozen latent (obs_fit_vs_latent.py: LATENT).
 #    - w = 0 (the default, canonical Tiger) computes nothing new.
+#
+# 16. Fixed Planning-Time Risk Margin (2026-10-22; planning/search_model.py, section 6; HANDOFF 6.2d option (a)):
+#    - cfg.risk_margin = k > 1 wraps the acting LearnedSearchModel in RiskMarginModel(k) for the collection and
+#      evaluation planners (and so for analysis, which plans with eval_agent.model). The trainer's value
+#      targets keep the unwrapped model. The domain describes its fatal outcome in DomainSetup.risk (a
+#      RiskSpec); a domain without one (Tiger) raises.
+#    - k = 1 (the default, canonical Tiger) wraps nothing.
+#
+# 17. Own Turn-then-Step Trials (2026-10-22; agents/planning_agent.py, section 4; HANDOFF 6.2d option (a)):
+#    - cfg.trial_prob = p > 0 gives the COLLECTION agent the trial rule (constant p, as offline); evaluation
+#      never trials. The step and turn actions come from DomainSetup.risk. Logged: collect_trials_per_game.
+#    - p = 0 (the default, canonical Tiger) draws and logs nothing new.
+#    - Pre-registered in-agent screen (2026-10-22, before launch): the retrain recipe (runs/sweeps/wumpus_retrain/
+#      sweep.json overrides) on development seeds 0, 1, 2, two arms:
+#         wumpus_own_margin  agent.trial_prob=0.2 mcts.risk_margin=2   (option (a))
+#         wumpus_margin      mcts.risk_margin=2                        (the margin alone)
+#      each paired per game against runs/sweeps/wumpus_retrain/seed<s>/analysis/games.npz (512 games, analysis
+#      seed 12345; reports/2026-10-22_option_a/paired_readout.py).
+#      * PASS (per arm): paired mean >= +50 on 2 of 3 seeds, and deaths <= retrain + 2 points on each seed ->
+#        seeds 3, 4 for that arm; it becomes a banked component of the method (a safety gain; unfinished
+#        games are expected to stay near 67%, which is reported, not part of the bar).
+#      * FAIL: the offline gain does not survive in-agent training (dose and timing differ: trials enter the
+#        growing buffer from the start); report, keep the options (default off), go to the representation
+#        branch (HANDOFF 6.2d, Step 2) on the plain retrain recipe.
 # ==============================================================================
 
 from collections.abc import Callable
@@ -226,7 +250,7 @@ import torch
 from ..agents import PlanningAgent, UniformRandomAgent
 from ..models import (BeliefFilter, HorizonValueHead, LatentPredictor, MultiStepObservationPredictor, ObservationHead, RecurrentJEPA, RewardHead, TwoHotSymlog, ValueEstimator, ValueHead, ValuePair,
                       ema_update, frozen_copy)
-from ..planning import BeliefTreeSearch, LearnedSearchModel
+from ..planning import BeliefTreeSearch, LearnedSearchModel, RiskMarginModel, RiskSpec
 from .episode_buffer import EpisodeBatch, EpisodeBuffer
 from .privileged import PrivilegedBeliefLoss, PrivilegedSpec
 from .rollout import Simulator, discounted_returns, play_episodes
@@ -265,12 +289,14 @@ class DomainSetup:
         make_simulator: (batch_size, max_steps, seed, device) -> a seeded Simulator.
         episode_metrics: Domain-specific summary of played episodes (e.g. win rate); may be empty.
         privileged: Exact-belief targets for the privileged term (section 12), or None if the domain has none.
+        risk: The domain's fatal outcome, for the risk margin and the trials (sections 16, 17), or None.
     """
 
     domain: Domain
     make_simulator: Callable[[int, int, int, torch.device], Simulator]
     episode_metrics: Callable[[EpisodeBatch], dict[str, float]]
     privileged: PrivilegedSpec | None = None
+    risk: RiskSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -314,6 +340,8 @@ class RunConfig:
     retrain_every: int                # whole-buffer retrain every N collections (section 14); 0 = off
     retrain_updates: int              # uniform updates on the whole buffer after each retrain
     value_equivalent_weight: float    # value-equivalent observation term (section 15); 0 = off
+    risk_margin: float                # fixed planning-time risk margin k (section 16); 1 = off
+    trial_prob: float                 # own turn-then-step trials in collection (section 17); 0 = off
 
 
 class TrainingRun:
@@ -329,6 +357,8 @@ class TrainingRun:
             raise ValueError("a double or clipped-double value is not combined with time_aware_value or value_nstep (section 13).")
         if (cfg.retrain_every > 0) != (cfg.retrain_updates > 0):
             raise ValueError("retrain_every and retrain_updates must both be positive or both 0 (section 14).")
+        if (cfg.risk_margin != 1.0 or cfg.trial_prob > 0.0) and setup.risk is None:
+            raise ValueError("risk_margin and trial_prob need a domain with a fatal outcome (DomainSetup.risk; sections 16, 17).")
         domain = self.domain = setup.domain
         seed = lambda stream: stream_seed(cfg.seed, stream)  # noqa: E731
         torch.manual_seed(seed(RunStream.NETWORK_INIT))
@@ -374,10 +404,13 @@ class TrainingRun:
                                else self.acting_planning_observation_head)
         model = LearnedSearchModel(self.acting_filter, self.acting_reward_head, planner_observation,
                                    self.acting_value_head, self.codec, num_a, num_o, domain.discount, horizon)
+        if cfg.risk_margin != 1.0:                                                                        # section 16
+            model = RiskMarginModel(model, setup.risk, cfg.risk_margin)
         self.train_agent = PlanningAgent(
             model, BeliefTreeSearch(model, cfg.num_simulations, cfg.c_puct, cfg.dirichlet_alpha, cfg.dirichlet_epsilon,
                                     seed=seed(RunStream.TRAIN_PLANNER), observation_prune=cfg.observation_prune),
-            cfg.env_batch_size, cfg.temperature, seed(RunStream.TRAIN_AGENT), device, epsilon=cfg.epsilon)
+            cfg.env_batch_size, cfg.temperature, seed(RunStream.TRAIN_AGENT), device, epsilon=cfg.epsilon,
+            trial=setup.risk, trial_prob=cfg.trial_prob)                                                  # section 17
         self.eval_agent = PlanningAgent(
             model, BeliefTreeSearch(model, cfg.num_simulations, cfg.c_puct, cfg.dirichlet_alpha, dirichlet_epsilon=0.0,
                                     seed=seed(RunStream.EVAL_PLANNER), observation_prune=cfg.observation_prune),
@@ -462,6 +495,8 @@ class TrainingRun:
         for a, name in enumerate(self.domain.action_names):
             metrics[f"collect_action_fraction/{name}"] = float((episodes.actions == a).double().mean())
         metrics["warmup"] = float(warmup)
+        if self.cfg.trial_prob > 0.0:                                                                     # section 17
+            metrics["collect_trials_per_game"] = self.train_agent.reset_trial_count() / self.cfg.env_batch_size
         if self.cfg.retrain_every > 0:
             metrics["retrained"] = float(retrain)
         metrics["temperature"] = self.train_agent.temperature

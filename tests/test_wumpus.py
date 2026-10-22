@@ -213,7 +213,7 @@ class TestLearningStack:
             temperature=1.0, temperature_min=0.1, temperature_decay=0.5, epsilon=0.0, epsilon_min=0.0, store_eval_episodes=False,
             time_aware_value=False, value_nstep=0, value_nstep_mix=0.5,
             detached_planning_head=False, privileged_belief_loss=False, value_estimator=ValueEstimator.MAX,
-            retrain_every=0, retrain_updates=0, value_equivalent_weight=0.0)
+            retrain_every=0, retrain_updates=0, value_equivalent_weight=0.0, risk_margin=1.0, trial_prob=0.0)
         values.update(overrides)
         return RunConfig(**values)
 
@@ -232,6 +232,29 @@ class TestLearningStack:
         resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
         continued = [resumed.collect_and_train() for _ in range(2)] + [resumed.evaluate()]
         assert repr(continued) == repr(expected[1:])      # repr: NaN (no game won yet) equals NaN
+
+    def test_risk_margin_and_trials_train_and_resume(self, tmp_path):
+        # training/run.py, sections 16 and 17: the planners plan with the margin, the collection agent trials
+        # (eval never does), and resume stays bit-exact.
+        from ipomdp.experiments import wumpus_setup
+        from ipomdp.planning import RiskMarginModel
+        from ipomdp.training import TrainingRun, load_checkpoint, save_checkpoint
+        setup = wumpus_setup(CPU, DISCOUNT)
+        config = lambda **kw: self._config(risk_margin=2.0, trial_prob=0.5, **kw)  # noqa: E731
+        reference = TrainingRun(setup, config(), CPU)
+        assert isinstance(reference.train_agent.model, RiskMarginModel) and reference.eval_agent.model is reference.train_agent.model
+        assert reference.trainer.target_model is not reference.train_agent.model.inner       # value targets unwrapped
+        assert reference.eval_agent.trial_prob == 0.0
+        expected = [reference.collect_and_train() for _ in range(3)] + [reference.evaluate()]
+        assert expected[0]["collect_trials_per_game"] == 0.0                                   # warm-up: no planner
+        assert expected[2]["collect_trials_per_game"] > 0.0
+        first = TrainingRun(setup, config(), CPU)
+        first.collect_and_train()
+        save_checkpoint(tmp_path / "latest.pt", first.state_dict())
+        resumed = TrainingRun(setup, config(seed=99), CPU)
+        resumed.load_state_dict(load_checkpoint(tmp_path / "latest.pt"))
+        continued = [resumed.collect_and_train() for _ in range(2)] + [resumed.evaluate()]
+        assert repr(continued) == repr(expected[1:])
 
     def test_time_aware_value_trains_and_resumes(self, tmp_path):
         # training/run.py, section 9: the agent's state carries the steps left; resume stays bit-exact.

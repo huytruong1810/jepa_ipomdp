@@ -92,6 +92,7 @@ agent:
   temperature_decay: 0.97     # Multiplicative decay per collection (after warm-up)
   epsilon: 0.0                # P(uniform random action) per collected step after warm-up (training/run.py, 7); 0 = off
   epsilon_min: 0.0            # Floor of epsilon, which decays with temperature_decay
+  trial_prob: 0.0             # P(own turn-then-FORWARD trial) at a collected non-FORWARD step (Wumpus; run.py, 17); 0 = off
 
 model:
   latent_dim: 32              # Belief latent dimension D
@@ -113,6 +114,7 @@ model:
 mcts:
   num_simulations: 50         # Search simulations per decision (per parallel episode)
   observation_prune: 0.0      # Drop observation branches with P(o|s,a) below this (planning/mcts.py, 6); 0 = exact
+  risk_margin: 1.0            # k > 1: planner inflates FORWARD's predicted death risk by k (Wumpus; run.py, 16); 1 = off
   c_puct: 1.25                # PUCT exploration constant (Q is min-max normalised per tree)
   dirichlet_alpha: 0.3        # Root prior noise concentration
   dirichlet_epsilon: 0.25     # Root prior noise weight during training collection
