@@ -254,6 +254,31 @@
 #    - Power caveat stated in advance: retrain-to-retrain noise is ~+-50 per seed (2i), so the bar detects only large
 #      effects; probes and the mechanism readout carry the reading of a null.
 #
+# 2m. Grokking screen: long fixed-buffer retrain with strong weight decay (2026-10-22, HANDOFF 6.2d; the user asked
+#    about grokking, I queued it after Step 2 and started it when a GPU slot freed; written before the run):
+#    - Question: trained far past the overfitting point (~6400 updates, 2b) on the FIXED whole buffer with strong
+#      decoupled weight decay, does the model generalise late (grokking: Power et al. 2022; Omnigrok, Liu et al. 2023:
+#      weight decay drives the weight norm to the generalising solution on non-algorithmic data too; Nanda et al.
+#      2023), in particular OFF the data's support, i.e. the glitter prediction at the declined turned latents?
+#      Wumpus has crisp rules (glitter iff gold in the cell entered), the setting where grokking is reported.
+#    - Why it is not a repeat: 2b tried weight decay <= 0.1 up to ~25600 updates on the pool data and saw held-out NLL
+#      rise; grokking needs decay ~1 and training many times past the rise. In-agent, the growing buffer is
+#      non-stationary (no fixed dataset to grok), so the screen is offline on the whole-buffer retrain.
+#    - Arm: runs/sweeps/wumpus_retrain/seed0's config and buffer, --representation decoder --horizon 5 --seed 0,
+#      --weight-decay 1.0, --updates 51200, --score-at 6400 12800 25600 51200 with --save (checkpoints
+#      runs/wumpus/grok_screen/wd1_seed0_u<k>.pt). Reference: the 2i control (weight decay 1e-4, 6400 updates;
+#      held-out NLL 0.269, glitter ratio 0.41 at the declined turned latents, sp_screen fl_ctl_seed0.log).
+#    - Measures per checkpoint: the probe and held-out NLL lines (RESULT@k), feature_localise.py --networks (glitter
+#      ratio, TV, decision share M at the declined turned latents).
+#    - Pre-registered readout:
+#      * GROK: the held-out NLL falls by >= 0.02 below its 6400-update value at a later checkpoint after not falling
+#        between 6400 and 12800, OR the glitter ratio at a late checkpoint (>= 25600) is >= ctl + 0.1. -> play the best
+#        late checkpoint vs ctl (retrain_play.py); >= +50 paired -> seeds 1-2, then an in-agent schedule question.
+#      * NO GROK: neither -> training length and weight decay are not the lever at this data scale; recorded as a
+#        negative (the paper can say the off-support model error is not an optimisation-length artefact).
+#      * Collapse check: if probes (cell / heading) fall by > 10 points at 6400 against ctl, weight decay 1 is too
+#        strong for this network; report and rerun at 0.3 once.
+#
 # 3. Usage:
 #    uv run python reports/2026-10-02_wumpus_diagnostics/objective_ab.py --representation jepa \
 #        --horizon 5 --seed 1 --pool-cache runs/wumpus/supervised_filter/pools.pt
@@ -435,7 +460,8 @@ def main() -> None:
     parser.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE",
                         help="Config overrides (OmegaConf dotlist), e.g. model.value_equivalent_weight=1.0 (2i).")
     parser.add_argument("--score-at", type=int, nargs="*", default=[],
-                        help="Also score at these update counts (lines 'RESULT@<updates> name value').")
+                        help="Also score at these update counts (lines 'RESULT@<updates> name value'); with --save, "
+                             "also save the networks there as <save stem>_u<updates>.pt (section 2m).")
     args = parser.parse_args()
 
     device = torch.device("cuda")
@@ -539,6 +565,9 @@ def main() -> None:
             print(f"reset after update {update}: {args.catch_up} catch-up updates on {available} games", flush=True)
         if update in args.score_at:
             score_both(run, train, held, fit_rows, num_a, num_o, cfg, device, args.planning_head, f"RESULT@{update}")
+            if args.save is not None:                                       # section 2m: checkpoints along one run
+                path = args.save.with_name(f"{args.save.stem}_u{update}{args.save.suffix}")
+                torch.save({name: net.state_dict() for name, net in run.networks.items()}, path)
         if update % 1600 == 0:
             print(f"update {update}: " + " ".join(f"{k} {v:.4f}" for k, v in metrics.items() if k.startswith("loss")),
                   flush=True)
