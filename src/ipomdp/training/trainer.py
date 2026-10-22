@@ -168,6 +168,24 @@
 #      the exact belief? Either representation; nothing else changes.
 #    - None (the default and canonical Tiger) builds nothing and leaves the parameter order unchanged.
 #
+# 2g. Optional Self-Predictive Term in the Decoder Representation (self_predictive_weight = w > 0;
+#     model.self_predictive_weight, 2026-10-22; HANDOFF 6.2d Step 2):
+#      SelfPred     w * MSE( g(z_t, a_t), sg(z-bar_{t+1}) )      the JEPA term of section 2, gradients INTO the filter
+#    - The decoder representation keeps its observation likelihood INTO the filter (section 2b) and adds JEPA's
+#      latent self-prediction against the EMA target filter (jepa holds the predictor and the target; the
+#      representation stays DECODER, so the observation head is not detached).
+#    - Theory: self-predictive representations (Ni et al. 2024, "Bridging State and History Representations"):
+#      the ZP condition (the latent predicts its own expected next latent) together with reward prediction
+#      makes a history representation sufficient for Q*; the observation-predictive (OP) term alone does
+#      not imply it. SPR (Schwarzer et al. 2021) and the stop-gradient/EMA target (BYOL-style; Ni et al. show
+#      it avoids collapse) are the practical form. The Wumpus diagnosis (q_localise_diag.py, obs_fit_vs_latent.py,
+#      feature_localise.py) located the planner's error in a latent that lacks "gold ahead / cell ahead new" at the
+#      turned latents of declined states; ZP asks every latent to carry what the NEXT latent will hold, i.e.
+#      the information the one-step model needs, at every action of the data.
+#    - w = 1 is JEPA's own weight, so decoder (OP), JEPA (ZP, OP detached) and this hybrid (OP + ZP) form a
+#      factorial on the same data. Decoder only (with JEPA the term is already present, weight 1); w = 0 (the
+#      default and canonical Tiger) builds nothing.
+#
 # 4. No Imagination Losses:
 #    - An earlier version also trained V on latents imagined by a stochastic latent
 #      transition ("consistency"). Planning now imagines through the real filter
@@ -242,6 +260,7 @@ class WorldModelTrainer:
         privileged: PrivilegedBeliefLoss | None = None,
         value_equivalent_weight: float = 0.0,
         value_equivalent_scale: float = 1.0,
+        self_predictive_weight: float = 0.0,
     ):
         """
         Args:
@@ -255,11 +274,16 @@ class WorldModelTrainer:
             privileged: The privileged exact-belief term (section 2e), or None.
             value_head: A ValuePair selects the double or clipped-double targets (section 3e).
             value_equivalent_weight, value_equivalent_scale: w and max|R| of the value-equivalent term (section 2f).
+            self_predictive_weight: w of the self-predictive term in the decoder representation (section 2g); needs jepa.
         """
         if nstep < 0 or not 0.0 <= nstep_mix <= 1.0 or (nstep > 0 and nstep_mix == 0.0):
             raise ValueError(f"need nstep >= 0 and nstep_mix in (0, 1] when nstep > 0; got {nstep}, {nstep_mix}.")
         if jepa is not None and jepa.belief_filter is not belief_filter:
             raise ValueError("jepa must wrap the trained belief_filter")
+        if self_predictive_weight < 0.0:
+            raise ValueError(f"need self_predictive_weight >= 0, got {self_predictive_weight}.")
+        if self_predictive_weight > 0.0 and jepa is None:
+            raise ValueError("the self-predictive term needs the JEPA predictor and target filter (section 2g).")
         if jepa is not None and planning_observation_head is not None:
             raise ValueError("a detached planning head needs the decoder representation (section 3d).")
         if isinstance(value_head, ValuePair) and (horizon is not None or nstep > 0):
@@ -274,7 +298,9 @@ class WorldModelTrainer:
         self.value_equivalent_scale = value_equivalent_scale
         self.belief_filter = belief_filter
         self.jepa = jepa
-        self.representation = Representation.DECODER if jepa is None else Representation.JEPA
+        self.self_predictive_weight = self_predictive_weight
+        self.representation = (Representation.DECODER if jepa is None or self_predictive_weight > 0.0
+                               else Representation.JEPA)
         self.value_head = value_head
         self.reward_head = reward_head
         self.observation_head = observation_head
@@ -407,6 +433,8 @@ class WorldModelTrainer:
                     targets = self.jepa.target_filter.unroll(actions, observations, initial)  # (B, T+1, D)
                 predicted = self.jepa.predictor(current, action_flat)
                 losses["prediction"] = F.mse_loss(predicted.float(), flat(targets[:, 1:]).float())
+                if self.self_predictive_weight > 0.0:                                        # section 2g
+                    losses["prediction"] = self.self_predictive_weight * losses["prediction"]
 
             losses["reward"] = self.twohot.loss(self.reward_head(current, action_flat),
                                                 episodes.rewards.reshape(-1)).mean()

@@ -110,6 +110,7 @@ model:
   privileged_belief_loss: false  # diagnostic: exact-belief targets train the filter (Wumpus only; run.py, section 12)
   value_estimator: max        # max | double | clipped_double value targets (run.py, section 13; trainer.py, 3e)
   value_equivalent_weight: 0.0  # w > 0: value-equivalent observation term into the filter, decoder only (run.py, 15; trainer.py, 2f)
+  self_predictive_weight: 0.0   # w > 0: JEPA latent self-prediction added to the decoder representation (run.py, 18; trainer.py, 2g)
 
 mcts:
   num_simulations: 50         # Search simulations per decision (per parallel episode)

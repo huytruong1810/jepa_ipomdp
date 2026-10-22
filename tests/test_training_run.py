@@ -27,7 +27,7 @@ def _config(**overrides) -> RunConfig:
         temperature_min=0.1, temperature_decay=0.5, epsilon=0.0, epsilon_min=0.0, store_eval_episodes=False,
         time_aware_value=False, value_nstep=0, value_nstep_mix=0.5,
         detached_planning_head=False, privileged_belief_loss=False, value_estimator=ValueEstimator.MAX,
-        retrain_every=0, retrain_updates=0, value_equivalent_weight=0.0, risk_margin=1.0, trial_prob=0.0)
+        retrain_every=0, retrain_updates=0, value_equivalent_weight=0.0, risk_margin=1.0, trial_prob=0.0, self_predictive_weight=0.0)
     values.update(overrides)
     return RunConfig(**values)
 
@@ -303,6 +303,24 @@ class TestRiskOptions:
         from ipomdp.planning import LearnedSearchModel
         run = TrainingRun(tiger_setup(CPU), _config(), CPU)
         assert type(run.train_agent.model) is LearnedSearchModel and run.train_agent.trial_prob == 0.0
+
+
+class TestSelfPredictiveTerm:
+    """training/run.py, section 18; trainer.py, section 2g."""
+
+    def test_decoder_hybrid_builds_jepa_parts_and_keeps_the_observation_gradient(self):
+        run = TrainingRun(tiger_setup(CPU), _config(representation=Representation.DECODER, self_predictive_weight=2.0), CPU)
+        assert run.jepa is not None and "world_model" in run.networks and "belief_filter" not in run.networks
+        assert run.trainer.representation is Representation.DECODER
+        for _ in range(2):
+            metrics = run.collect_and_train()
+        assert metrics["loss_prediction"] > 0.0
+
+    def test_jepa_with_the_weight_raises_and_off_builds_nothing(self):
+        with pytest.raises(ValueError):
+            TrainingRun(tiger_setup(CPU), _config(self_predictive_weight=1.0), CPU)
+        run = TrainingRun(tiger_setup(CPU), _config(representation=Representation.DECODER), CPU)
+        assert run.jepa is None and "belief_filter" in run.networks
 
 
 class TestCheckpointFiles:

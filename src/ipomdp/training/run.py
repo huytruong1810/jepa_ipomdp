@@ -238,6 +238,12 @@
 #      * FAIL: the offline gain does not survive in-agent training (dose and timing differ: trials enter the
 #        growing buffer from the start); report, keep the options (default off), go to the representation
 #        branch (HANDOFF 6.2d, Step 2) on the plain retrain recipe.
+#
+# 18. Self-Predictive Term in the Decoder Representation (2026-10-22; trainer.py 2g; HANDOFF 6.2d Step 2):
+#    - cfg.self_predictive_weight = w > 0 (decoder only) builds the JEPA predictor and EMA target filter around the
+#      filter (RecurrentJEPA; networks key "world_model" instead of "belief_filter") and adds w x the JEPA term to
+#      the decoder's loss. The planner, heads and acting copies are unchanged.
+#    - w = 0 (the default, canonical Tiger) builds nothing new.
 # ==============================================================================
 
 from collections.abc import Callable
@@ -342,6 +348,7 @@ class RunConfig:
     value_equivalent_weight: float    # value-equivalent observation term (section 15); 0 = off
     risk_margin: float                # fixed planning-time risk margin k (section 16); 1 = off
     trial_prob: float                 # own turn-then-step trials in collection (section 17); 0 = off
+    self_predictive_weight: float     # self-predictive term in the decoder representation (section 18); 0 = off
 
 
 class TrainingRun:
@@ -357,6 +364,8 @@ class TrainingRun:
             raise ValueError("a double or clipped-double value is not combined with time_aware_value or value_nstep (section 13).")
         if (cfg.retrain_every > 0) != (cfg.retrain_updates > 0):
             raise ValueError("retrain_every and retrain_updates must both be positive or both 0 (section 14).")
+        if cfg.self_predictive_weight > 0.0 and cfg.representation is not Representation.DECODER:
+            raise ValueError("self_predictive_weight is for the decoder representation; JEPA has the term already (section 18).")
         if (cfg.risk_margin != 1.0 or cfg.trial_prob > 0.0) and setup.risk is None:
             raise ValueError("risk_margin and trial_prob need a domain with a fatal outcome (DomainSetup.risk; sections 16, 17).")
         domain = self.domain = setup.domain
@@ -368,7 +377,7 @@ class TrainingRun:
         self.jepa = (RecurrentJEPA(self.belief_filter,
                                    LatentPredictor(cfg.latent_dim, num_a, cfg.hidden_dim, cfg.num_blocks),
                                    cfg.ema_momentum).to(device)
-                     if cfg.representation is Representation.JEPA else None)
+                     if cfg.representation is Representation.JEPA or cfg.self_predictive_weight > 0.0 else None)
         horizon = cfg.episode_length if cfg.time_aware_value else None
         self.value_head = (HorizonValueHead(cfg.latent_dim, cfg.hidden_dim, cfg.num_blocks, cfg.num_bins, horizon)
                            if cfg.time_aware_value
@@ -391,7 +400,7 @@ class TrainingRun:
                                          self.codec, num_a, num_o, domain.discount, cfg.trainer, device,
                                          self.multistep_predictor, horizon, cfg.value_nstep, cfg.value_nstep_mix,
                                          self.planning_observation_head, self.privileged, cfg.value_equivalent_weight,
-                                         domain.value_bound * (1.0 - domain.discount))
+                                         domain.value_bound * (1.0 - domain.discount), cfg.self_predictive_weight)
 
         # Polyak-averaged copies the agent acts with (section 4).
         self.acting_filter = frozen_copy(self.belief_filter)

@@ -181,6 +181,9 @@ from ipomdp.planning import BeliefTreeSearch  # noqa: E402
 from ipomdp.training import discounted_returns, play_episodes, stream_seed  # noqa: E402
 from ipomdp.training.checkpointing import load_checkpoint  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).parent))
+from saved_networks import in_layout  # noqa: E402  (same diagnostics directory)
+
 args = sys.argv[1:]
 networks_path = None
 if "--networks" in args:
@@ -373,9 +376,7 @@ steps_idx = torch.tensor([r["t"] for r in rows], device=dev)
 if (history_latents()[games_idx, steps_idx] - z_root).abs().max() > 1e-4:
     raise RuntimeError("Unrolled history latents do not reproduce the planner's own at the declined states.")
 if networks_path is not None:
-    states = torch.load(networks_path, map_location=dev)
-    if set(states) != set(run.networks):
-        raise ValueError(f"saved networks {sorted(states)} do not match the run's {sorted(run.networks)}.")
+    states = in_layout(torch.load(networks_path, map_location=dev), run.networks)   # saved_networks.py
     for name, net in run.networks.items():
         net.load_state_dict(states[name])
     z_root = history_latents()[games_idx, steps_idx]

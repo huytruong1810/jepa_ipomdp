@@ -106,7 +106,8 @@ def build_run_config(cfg: DictConfig) -> RunConfig:
         value_nstep=m.value_nstep, value_nstep_mix=m.value_nstep_mix, detached_planning_head=m.detached_planning_head,
         privileged_belief_loss=m.privileged_belief_loss, value_estimator=ValueEstimator(m.value_estimator),
         retrain_every=t.retrain_every, retrain_updates=t.retrain_updates,
-        value_equivalent_weight=m.value_equivalent_weight, risk_margin=s.risk_margin, trial_prob=a.trial_prob)
+        value_equivalent_weight=m.value_equivalent_weight, risk_margin=s.risk_margin, trial_prob=a.trial_prob,
+        self_predictive_weight=m.self_predictive_weight)
 
 
 def build_training_run(cfg: DictConfig, device: torch.device) -> tuple[DomainSetup, TrainingRun]:

@@ -222,6 +222,38 @@
 #    candidate epistemic-uncertainty signal. Without the flag nothing changes (the resample draws from its own
 #    generator only when given).
 #
+# 2l. Self-predictive latent, retrain screen (2026-10-22, HANDOFF 6.2d Step 2; my "taste in research" call while the
+#    user is away, recorded in HANDOFF section 0):
+#    - Question: does adding latent self-prediction (the ZP condition, Ni et al. 2024; trainer.py 2g) make the
+#      retrain recipe's networks play better on the same games than the same retrain without it? And does JEPA (ZP
+#      with the one-step observation term detached; contribution 1) on the retrain recipe match or beat the decoder?
+#    - Arms (runs/sweeps/wumpus_retrain seeds 0-2, each run's own .hydra config, --horizon 5 --seed <s> --train-buffer
+#      <run>, 6400 updates, --save into runs/wumpus/sp_screen/):
+#        ctl   the existing 2i control retrains (runs/wumpus/ve_screen/control_seed<s>.pt, linked as ctl_seed<s>.pt;
+#              same data, config and seed; their returns are re-played here as the pairing's first set)
+#        zp    --representation decoder --set model.self_predictive_weight=1.0   (OP + ZP: the hybrid)
+#        jepa  --representation jepa                                              (ZP, OP detached)
+#      w = 1 is JEPA's own weight, so ctl / zp / jepa form a factorial on identical data. One dose only (compute:
+#      the in-agent option (a) sweeps hold two GPU slots).
+#    - Played with retrain_play.py <run> ctl zp jepa (paired per game with ctl on the 512 analysis games; JEPA-layout
+#      sets play through saved_networks.py) and scored with feature_localise.py --networks (glitter ratio and decision
+#      share M at the declined turned latents) plus this script's probe lines (cell / heading / gold / danger / NLL).
+#    - Pre-registered readout (written before any run):
+#      * PASS for an arm: paired gain over ctl >= +50 on >= 2 of 3 seeds, with unfinished down and deaths up by at
+#        most 2 points on those seeds. If both pass, the larger mean gain is taken.
+#        -> zp: the in-agent option (model.self_predictive_weight=1 on the retrain recipe, stacked on option (a) if
+#        (a) passes), 3 seeds paired with runs/sweeps/wumpus_retrain (or the (a) sweep). jepa: the same with
+#        model.representation=jepa, and contribution 1 is rescued on Wumpus.
+#      * MECHANISM (reported for both, decides the reading of a FAIL): glitter ratio at the declined turned latents up
+#        by >= 0.1 over ctl on >= 2 of 3 seeds.
+#      * FAIL with MECHANISM pass: the latent gained the missing information but play did not follow (planner
+#        exploitation again) -> stack with option (a)'s margin offline (pessimism_play.py on the saved sets).
+#      * FAIL without MECHANISM: self-prediction does not put the declined-state information into the latent at this
+#        data -> the latent objective is not the lever; next is the grokking screen (long fixed-buffer retrains with
+#        weight decay; HANDOFF 6.2d) and decision-aware weighting (1b candidate 2).
+#    - Power caveat stated in advance: retrain-to-retrain noise is ~+-50 per seed (2i), so the bar detects only large
+#      effects; probes and the mechanism readout carry the reading of a null.
+#
 # 3. Usage:
 #    uv run python reports/2026-10-02_wumpus_diagnostics/objective_ab.py --representation jepa \
 #        --horizon 5 --seed 1 --pool-cache runs/wumpus/supervised_filter/pools.pt

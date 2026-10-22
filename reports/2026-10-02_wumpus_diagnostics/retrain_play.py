@@ -76,6 +76,9 @@ from ipomdp.experiments.wumpus import WumpusAnalysisSettings
 from ipomdp.planning import BeliefTreeSearch
 from ipomdp.training import discounted_returns, play_episodes, stream_seed
 
+sys.path.insert(0, str(Path(__file__).parent))
+from saved_networks import in_layout  # noqa: E402  (same diagnostics directory)
+
 run_dir = Path(sys.argv[1])
 saved_sets = [Path(a) for a in sys.argv[2:] if a.endswith(".pt")]
 rest = [a for a in sys.argv[2:] if not a.endswith(".pt")]
@@ -158,9 +161,7 @@ if n == settings.episodes:
 
 control = None
 for saved in saved_sets:
-    states = torch.load(saved, map_location=dev)
-    if set(states) != set(run.networks):
-        raise ValueError(f"saved networks {sorted(states)} do not match the run's {sorted(run.networks)}.")
+    states = in_layout(torch.load(saved, map_location=dev), run.networks)       # saved_networks.py
     for name, net in run.networks.items():
         net.load_state_dict(states[name])
     returns = report(saved.stem, play(), base, control)
