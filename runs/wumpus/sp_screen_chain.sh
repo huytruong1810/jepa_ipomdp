@@ -7,16 +7,8 @@ cd /home/andyj1810/projects/jepa_ipomdp
 O=runs/wumpus/sp_screen
 D=reports/2026-10-02_wumpus_diagnostics
 log() { echo "[$(date '+%F %T')] $*" >> $O/chain.log; }
-mem() { nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits; }
+source runs/wumpus/gpu_window.sh       # mem, big (2026-10-24 restart after the reboot: shared lock for big jobs)
 wait_mem() { while [ "$(mem)" -ge "$1" ]; do sleep 60; done; }
-window() {
-  while true; do
-    m=$(mem); ages=$(ps -eo etimes,args | awk '/[m]ain.py seed=/{print $1}')
-    if [ -z "$ages" ]; then [ "$m" -lt 3000 ] && return; else
-      old=$(echo "$ages" | awk '$1 > 10800' | wc -l); [ "$old" -eq 0 ] && [ "$m" -lt 7500 ] && return; fi
-    sleep 60
-  done
-}
 log "commit $(git log -1 --format=%h)"
 ( while true; do echo "$(date +%T) $(nvidia-smi --query-gpu=temperature.gpu,memory.used,power.draw --format=csv,noheader) | $(cut -d' ' -f1-3 /proc/loadavg)"; sleep 60; done ) > $O/sysmon.log 2>&1 &
 MON=$!
@@ -33,13 +25,15 @@ for s in 0 1 2; do
       > $O/train_${arm}_seed$s.log 2>&1
     log "seed $s train $arm exit $?"
   done
-  window; log "seed $s play"
-  OMP_NUM_THREADS=2 .venv/bin/python $D/retrain_play.py $R $O/ctl_seed$s.pt $O/zp_seed$s.pt $O/jepa_seed$s.pt \
-    > $O/play_seed$s.log 2>&1
-  log "seed $s play exit $?"
+  if ! grep -q "^DONE" $O/play_seed$s.log 2>/dev/null; then
+    log "seed $s play"
+    OMP_NUM_THREADS=2 big $O/play_seed$s.log .venv/bin/python $D/retrain_play.py $R $O/ctl_seed$s.pt $O/zp_seed$s.pt $O/jepa_seed$s.pt
+    log "seed $s play exit $?"
+  fi
   for arm in ctl zp jepa; do
-    window; log "seed $s feature_localise $arm"
-    OMP_NUM_THREADS=2 .venv/bin/python $D/feature_localise.py $R cuda --networks $O/${arm}_seed$s.pt > $O/fl_${arm}_seed$s.log 2>&1
+    grep -q "^DONE" $O/fl_${arm}_seed$s.log 2>/dev/null && continue
+    log "seed $s feature_localise $arm"
+    OMP_NUM_THREADS=2 big $O/fl_${arm}_seed$s.log .venv/bin/python $D/feature_localise.py $R cuda --networks $O/${arm}_seed$s.pt
     log "seed $s feature_localise $arm exit $?"
   done
 done
