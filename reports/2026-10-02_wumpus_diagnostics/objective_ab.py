@@ -278,7 +278,7 @@
 #        negative (the paper can say the off-support model error is not an optimisation-length artefact).
 #      * Collapse check: if probes (cell / heading) fall by > 10 points at 6400 against ctl, weight decay 1 is too
 #        strong for this network; report and rerun at 0.3 once.
-    - Result, seed 0 (2026-10-24; the run died past 40000 updates in the 2026-10-22 reboot, so 51200 is missing; every
+#    - Result, seed 0 (2026-10-24; the run died past 40000 updates in the 2026-10-22 reboot, so 51200 is missing; every
 #      best.pt / ctl replay reproduces report.json and the 2i returns). Strict grokking clause FAIL (NLL falls already
 #      by 12800, no rise first); glitter clause PASS (u25600 0.55 vs ctl 0.41).
 #                 held-out NLL  cell / heading   glitter ratio (c)  TV (c)   share M   return vs ctl (95%)   deaths   unfinished
