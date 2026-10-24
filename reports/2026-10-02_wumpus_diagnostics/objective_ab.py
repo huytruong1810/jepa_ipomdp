@@ -278,6 +278,24 @@
 #        negative (the paper can say the off-support model error is not an optimisation-length artefact).
 #      * Collapse check: if probes (cell / heading) fall by > 10 points at 6400 against ctl, weight decay 1 is too
 #        strong for this network; report and rerun at 0.3 once.
+    - Result, seed 0 (2026-10-24; the run died past 40000 updates in the 2026-10-22 reboot, so 51200 is missing; every
+#      best.pt / ctl replay reproduces report.json and the 2i returns). Strict grokking clause FAIL (NLL falls already
+#      by 12800, no rise first); glitter clause PASS (u25600 0.55 vs ctl 0.41).
+#                 held-out NLL  cell / heading   glitter ratio (c)  TV (c)   share M   return vs ctl (95%)   deaths   unfinished
+#      ctl        0.269         88 / 93          0.41               0.355    0.25      270.0                 1.0%     64.3%
+#      u6400      0.276         84 / 86          0.46               0.455    0.27      -
+#      u12800     0.234         92 / 93          0.58               0.286    0.31      +5.9 +- 24.1          0.2%     66.2%
+#      u25600     0.232         93 / 93          0.55               0.257    0.38      +35.5 +- 25.6         0.0%     63.5%
+#      Play is below the registered +50 single-seed bar. DEVIATION, stated openly: a single seed is underpowered
+#      (retrain noise ~+-50 per seed, 2i) and the mechanism passed, so seeds 1-2 are run under a 3-seed criterion
+#      written here before they run:
+#    - Extension (seeds 1, 2; weight decay 1.0, 25600 updates, checkpoint 12800; paired with the 2i ctl's stored
+#      returns runs/wumpus/ve_screen/control_seed<s>.returns.npy, whose replay was identical on seed 0 twice):
+#      * PASS: u25600 - ctl > 0 on 3 of 3 seeds, mean >= +30, deaths <= ctl + 2 points on each seed, and the glitter
+#        ratio >= ctl + 0.1 on >= 2 of 3 -> the agent option question: an in-agent schedule whose final whole-buffer
+#        retrain uses weight decay 1 and 25600 updates (training.retrain_updates plus a retrain weight-decay key),
+#        3 seeds paired with runs/sweeps/wumpus_retrain.
+#      * FAIL: otherwise; seed 0 reported as a single-seed positive.
 #
 # 3. Usage:
 #    uv run python reports/2026-10-02_wumpus_diagnostics/objective_ab.py --representation jepa \
