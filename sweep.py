@@ -19,6 +19,10 @@
 #      process, so it is launched exactly as a hand-started run would be (same Hydra config
 #      composition, same run-directory contents) and its GPU memory is released before the
 #      next seed.
+#    - The analysis, by contrast, runs in THIS process, so its CUDA cache is released right after it
+#      (2026-10-24). Before that, the ~5.6 GB cached by one seed's analysis stayed allocated while the
+#      next seed's main.py trained beside it, which with a second sweep's work tripped main.py's
+#      device-wide VRAM guardrail on 2026-10-22. Releasing the cache changes no result.
 #    - main.py exits with 0 only when every collection completed (main.py, section 4). Any
 #      other status stops the sweep.
 #
@@ -168,6 +172,8 @@ def main() -> None:
                 train(seed_dir, seed, args.overrides)
             print(f"[sweep] analysing seed {seed}", flush=True)
             analyze(seed_dir, settings, device)
+            if device.type == "cuda":
+                torch.cuda.empty_cache()     # section 2: the analysis runs in this process; free its cache
         reports.append(json.loads(report_path.read_text()))
 
     statistics = aggregate_reports(reports, domain)
